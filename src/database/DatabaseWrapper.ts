@@ -2,7 +2,6 @@ import { IDatabase } from './interfaces/IDatabase';
 import {
   Deposit,
   ProcessingCheckpoint,
-  ScoreEvent,
   ProcessingQueueItem,
   TransactionQueueItem,
   ProcessingQueueStatus,
@@ -10,7 +9,6 @@ import {
 } from './interfaces/types';
 import * as supabaseDb from './supabase/deposits';
 import * as supabaseCheckpoints from './supabase/checkpoints';
-import * as supabaseScoreEvents from './supabase/score_events';
 import * as supabaseProcessingQueue from './supabase/processing_queue';
 import * as supabaseTransactionQueue from './supabase/transaction_queue';
 import { JsonDatabase } from './json/JsonDatabase';
@@ -35,15 +33,6 @@ export class DatabaseWrapper implements IDatabase {
         getAllDeposits: supabaseDb.getAllDeposits,
         updateCheckpoint: supabaseCheckpoints.updateCheckpoint,
         getCheckpoint: supabaseCheckpoints.getCheckpoint,
-        createScoreEvent: supabaseScoreEvents.createScoreEvent,
-        updateScoreEvent: supabaseScoreEvents.updateScoreEvent,
-        deleteScoreEvent: supabaseScoreEvents.deleteScoreEvent,
-        getScoreEvent: supabaseScoreEvents.getScoreEvent,
-        getLatestScoreEvent: supabaseScoreEvents.getLatestScoreEvent,
-        getScoreEventsByBlockRange:
-          supabaseScoreEvents.getScoreEventsByBlockRange,
-        deleteScoreEventsByBlockRange:
-          supabaseScoreEvents.deleteScoreEventsByBlockRange,
 
         // Processing Queue Operations
         createProcessingQueueItem:
@@ -116,51 +105,6 @@ export class DatabaseWrapper implements IDatabase {
     componentType: string,
   ): Promise<ProcessingCheckpoint | null> {
     return this.db.getCheckpoint(componentType);
-  }
-
-  // Score Events
-  async createScoreEvent(event: ScoreEvent): Promise<void> {
-    return this.db.createScoreEvent(event);
-  }
-
-  async updateScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-    update: Partial<ScoreEvent>,
-  ): Promise<void> {
-    return this.db.updateScoreEvent(delegatee, blockNumber, update);
-  }
-
-  async deleteScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-  ): Promise<void> {
-    return this.db.deleteScoreEvent(delegatee, blockNumber);
-  }
-
-  async getScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-  ): Promise<ScoreEvent | null> {
-    return this.db.getScoreEvent(delegatee, blockNumber);
-  }
-
-  async getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null> {
-    return this.db.getLatestScoreEvent(delegatee);
-  }
-
-  async getScoreEventsByBlockRange(
-    fromBlock: number,
-    toBlock: number,
-  ): Promise<ScoreEvent[]> {
-    return this.db.getScoreEventsByBlockRange(fromBlock, toBlock);
-  }
-
-  async deleteScoreEventsByBlockRange(
-    fromBlock: number,
-    toBlock: number,
-  ): Promise<void> {
-    return this.db.deleteScoreEventsByBlockRange(fromBlock, toBlock);
   }
 
   // Processing Queue methods

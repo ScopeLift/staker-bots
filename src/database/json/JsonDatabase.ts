@@ -4,7 +4,6 @@ import { IDatabase } from '../interfaces/IDatabase';
 import {
   Deposit,
   ProcessingCheckpoint,
-  ScoreEvent,
   ProcessingQueueItem,
   TransactionQueueItem,
   ProcessingQueueStatus,
@@ -19,7 +18,6 @@ export class JsonDatabase implements IDatabase {
   public data: {
     deposits: Record<string, Deposit>;
     checkpoints: Record<string, ProcessingCheckpoint>;
-    score_events: Record<string, Record<number, ScoreEvent>>;
     processing_queue: Record<string, ProcessingQueueItem>;
     transaction_queue: Record<string, TransactionQueueItem>;
   };
@@ -30,7 +28,6 @@ export class JsonDatabase implements IDatabase {
     this.data = {
       deposits: {},
       checkpoints: {},
-      score_events: {},
       processing_queue: {},
       transaction_queue: {},
     };
@@ -47,7 +44,6 @@ export class JsonDatabase implements IDatabase {
       this.data = {
         deposits: loadedData.deposits || {},
         checkpoints: loadedData.checkpoints || {},
-        score_events: loadedData.score_events || {},
         processing_queue: loadedData.processing_queue || {},
         transaction_queue: loadedData.transaction_queue || {},
       };
@@ -133,116 +129,6 @@ export class JsonDatabase implements IDatabase {
     return checkpoint;
   }
 
-  // Score Events
-  async createScoreEvent(event: ScoreEvent): Promise<void> {
-    if (!this.data.score_events[event.delegatee]) {
-      this.data.score_events[event.delegatee] = {};
-    }
-    const delegateeEvents = this.data.score_events[event.delegatee]!; // Now safe to use !
-
-    const now = new Date().toISOString();
-    delegateeEvents[event.block_number] = {
-      ...event,
-      created_at: now,
-      updated_at: now,
-    };
-    await this.saveToFile();
-  }
-
-  async updateScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-    update: Partial<ScoreEvent>,
-  ): Promise<void> {
-    const delegateeEvents = this.data.score_events[delegatee];
-    const event = delegateeEvents?.[blockNumber];
-    if (!event || !delegateeEvents) {
-      throw new Error(
-        `Score event not found for delegatee ${delegatee} at block ${blockNumber}`,
-      );
-    }
-
-    delegateeEvents[blockNumber] = {
-      ...event,
-      ...update,
-      updated_at: new Date().toISOString(),
-    };
-    await this.saveToFile();
-  }
-
-  async deleteScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-  ): Promise<void> {
-    const delegateeEvents = this.data.score_events[delegatee];
-    if (!delegateeEvents?.[blockNumber]) {
-      throw new Error(
-        `Score event not found for delegatee ${delegatee} at block ${blockNumber}`,
-      );
-    }
-
-    delete delegateeEvents[blockNumber];
-    if (Object.keys(delegateeEvents).length === 0) {
-      delete this.data.score_events[delegatee];
-    }
-    await this.saveToFile();
-  }
-
-  async getScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-  ): Promise<ScoreEvent | null> {
-    return this.data.score_events[delegatee]?.[blockNumber] || null;
-  }
-
-  async getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null> {
-    const events = this.data.score_events[delegatee];
-    if (!events) return null;
-
-    const blockNumbers = Object.keys(events).map(Number);
-    if (blockNumbers.length === 0) return null;
-
-    const latestBlock = Math.max(...blockNumbers);
-    return events[latestBlock] || null;
-  }
-
-  async getScoreEventsByBlockRange(
-    fromBlock: number,
-    toBlock: number,
-  ): Promise<ScoreEvent[]> {
-    const events: ScoreEvent[] = [];
-
-    Object.values(this.data.score_events).forEach((delegateeEvents) => {
-      Object.entries(delegateeEvents).forEach(([blockStr, event]) => {
-        const blockNumber = Number(blockStr);
-        if (blockNumber >= fromBlock && blockNumber <= toBlock) {
-          events.push(event);
-        }
-      });
-    });
-
-    return events.sort((a, b) => a.block_number - b.block_number);
-  }
-
-  async deleteScoreEventsByBlockRange(
-    fromBlock: number,
-    toBlock: number,
-  ): Promise<void> {
-    Object.entries(this.data.score_events).forEach(([delegatee, events]) => {
-      Object.keys(events).forEach((blockStr) => {
-        const blockNumber = Number(blockStr);
-        if (blockNumber >= fromBlock && blockNumber <= toBlock) {
-          delete events[blockNumber];
-        }
-      });
-      // Clean up empty delegatee entries
-      if (Object.keys(events).length === 0) {
-        delete this.data.score_events[delegatee];
-      }
-    });
-    await this.saveToFile();
-  }
-
   // Processing Queue methods
   async createProcessingQueueItem(
     item: Omit<
@@ -250,20 +136,17 @@ export class JsonDatabase implements IDatabase {
       'id' | 'created_at' | 'updated_at' | 'attempts'
     >,
   ): Promise<ProcessingQueueItem> {
-    const now = new Date().toISOString();
     const id = uuidv4();
-
+    const now = new Date().toISOString();
     const newItem: ProcessingQueueItem = {
-      ...item,
       id,
+      ...item,
+      attempts: 0,
       created_at: now,
       updated_at: now,
-      attempts: 0,
     };
-
     this.data.processing_queue[id] = newItem;
     await this.saveToFile();
-
     return newItem;
   }
 
@@ -274,26 +157,21 @@ export class JsonDatabase implements IDatabase {
     >,
   ): Promise<void> {
     const item = this.data.processing_queue[id];
-
     if (!item) {
-      throw new Error(`Processing queue item with id ${id} not found`);
+      throw new Error(`Processing queue item ${id} not found`);
     }
-
     this.data.processing_queue[id] = {
       ...item,
       ...update,
       updated_at: new Date().toISOString(),
     };
-
     await this.saveToFile();
   }
 
   async getProcessingQueueItem(
     id: string,
   ): Promise<ProcessingQueueItem | null> {
-    return id in this.data.processing_queue
-      ? this.data.processing_queue[id]!
-      : null;
+    return this.data.processing_queue[id] || null;
   }
 
   async getProcessingQueueItemsByStatus(
@@ -310,16 +188,13 @@ export class JsonDatabase implements IDatabase {
     const items = Object.values(this.data.processing_queue).filter(
       (item) => item.deposit_id === depositId,
     );
-
-    // Return the most recently updated item if multiple exist
-    if (items.length > 0) {
-      return items.sort(
-        (a, b) =>
-          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-      )[0]!;
-    }
-
-    return null;
+    if (items.length === 0) return null;
+    // Sort by updated_at descending to get the most recent item
+    const sortedItems = items.sort(
+      (a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    );
+    return sortedItems[0] ?? null;
   }
 
   async getProcessingQueueItemsByDelegatee(
@@ -331,10 +206,8 @@ export class JsonDatabase implements IDatabase {
   }
 
   async deleteProcessingQueueItem(id: string): Promise<void> {
-    if (this.data.processing_queue[id]) {
-      delete this.data.processing_queue[id];
-      await this.saveToFile();
-    }
+    delete this.data.processing_queue[id];
+    await this.saveToFile();
   }
 
   // Transaction Queue methods
@@ -344,20 +217,17 @@ export class JsonDatabase implements IDatabase {
       'id' | 'created_at' | 'updated_at' | 'attempts'
     >,
   ): Promise<TransactionQueueItem> {
-    const now = new Date().toISOString();
     const id = uuidv4();
-
+    const now = new Date().toISOString();
     const newItem: TransactionQueueItem = {
-      ...item,
       id,
+      ...item,
+      attempts: 0,
       created_at: now,
       updated_at: now,
-      attempts: 0,
     };
-
     this.data.transaction_queue[id] = newItem;
     await this.saveToFile();
-
     return newItem;
   }
 
@@ -368,26 +238,21 @@ export class JsonDatabase implements IDatabase {
     >,
   ): Promise<void> {
     const item = this.data.transaction_queue[id];
-
     if (!item) {
-      throw new Error(`Transaction queue item with id ${id} not found`);
+      throw new Error(`Transaction queue item ${id} not found`);
     }
-
     this.data.transaction_queue[id] = {
       ...item,
       ...update,
       updated_at: new Date().toISOString(),
     };
-
     await this.saveToFile();
   }
 
   async getTransactionQueueItem(
     id: string,
   ): Promise<TransactionQueueItem | null> {
-    return id in this.data.transaction_queue
-      ? this.data.transaction_queue[id]!
-      : null;
+    return this.data.transaction_queue[id] || null;
   }
 
   async getTransactionQueueItemsByStatus(
@@ -404,16 +269,13 @@ export class JsonDatabase implements IDatabase {
     const items = Object.values(this.data.transaction_queue).filter(
       (item) => item.deposit_id === depositId,
     );
-
-    // Return the most recently updated item if multiple exist
-    if (items.length > 0) {
-      return items.sort(
-        (a, b) =>
-          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-      )[0]!;
-    }
-
-    return null;
+    if (items.length === 0) return null;
+    // Sort by updated_at descending to get the most recent item
+    const sortedItems = items.sort(
+      (a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    );
+    return sortedItems[0] ?? null;
   }
 
   async getTransactionQueueItemsByHash(
@@ -425,9 +287,7 @@ export class JsonDatabase implements IDatabase {
   }
 
   async deleteTransactionQueueItem(id: string): Promise<void> {
-    if (this.data.transaction_queue[id]) {
-      delete this.data.transaction_queue[id];
-      await this.saveToFile();
-    }
+    delete this.data.transaction_queue[id];
+    await this.saveToFile();
   }
 }

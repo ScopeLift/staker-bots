@@ -1,7 +1,6 @@
 import {
   Deposit,
   ProcessingCheckpoint,
-  ScoreEvent,
   ProcessingQueueItem,
   TransactionQueueItem,
   ProcessingQueueStatus,
@@ -21,27 +20,6 @@ export interface IDatabase {
   // Checkpoints
   updateCheckpoint(checkpoint: ProcessingCheckpoint): Promise<void>;
   getCheckpoint(componentType: string): Promise<ProcessingCheckpoint | null>;
-  // Score Events
-  createScoreEvent(event: ScoreEvent): Promise<void>;
-  updateScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-    update: Partial<ScoreEvent>,
-  ): Promise<void>;
-  deleteScoreEvent(delegatee: string, blockNumber: number): Promise<void>;
-  getScoreEvent(
-    delegatee: string,
-    blockNumber: number,
-  ): Promise<ScoreEvent | null>;
-  getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null>;
-  getScoreEventsByBlockRange(
-    fromBlock: number,
-    toBlock: number,
-  ): Promise<ScoreEvent[]>;
-  deleteScoreEventsByBlockRange(
-    fromBlock: number,
-    toBlock: number,
-  ): Promise<void>;
   // Processing Queue
   createProcessingQueueItem(
     item: Omit<

@@ -24,11 +24,10 @@ export const CONFIG = {
   },
   monitor: {
     rpcUrl: process.env.RPC_URL!,
-    chainId: parseInt(process.env.CHAIN_ID || '42161'),
+    chainId: parseInt(process.env.CHAIN_ID || '1'),
     stakerAddress: process.env.STAKER_CONTRACT_ADDRESS!,
-    arbTestTokenAddress: process.env.ARB_TEST_TOKEN_ADDRESS || '',
-    arbRealTokenAddress: process.env.ARB_TOKEN_ADDRESS || '',
-    rewardCalculatorAddress: process.env.REWARD_CALCULATOR_ADDRESS || '',
+    obolTokenAddress: process.env.OBOL_TOKEN_ADDRESS || '',
+    lstAddress: process.env.LST_ADDRESS || '',
     rewardNotifierAddress: process.env.REWARD_NOTIFIER_ADDRESS || '',
     startBlock: parseInt(process.env.START_BLOCK || '0'),
     logLevel: (process.env.LOG_LEVEL || 'info') as
