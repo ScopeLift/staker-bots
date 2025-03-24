@@ -16,6 +16,7 @@ async function runMigrations() {
       'schema.sql',
       'score_events.sql',
       'queue_tables.sql',
+      'govlst_tables.sql',
     ];
 
     logger.info('Starting database migrations...');

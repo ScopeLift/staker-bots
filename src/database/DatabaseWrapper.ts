@@ -6,11 +6,14 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
+  GovLstDeposit,
+  GovLstClaimHistory,
 } from './interfaces/types';
 import * as supabaseDb from './supabase/deposits';
 import * as supabaseCheckpoints from './supabase/checkpoints';
 import * as supabaseProcessingQueue from './supabase/processing_queue';
 import * as supabaseTransactionQueue from './supabase/transaction_queue';
+import * as supabaseGovLstRewards from './supabase/govlst_rewards';
 import { JsonDatabase } from './json/JsonDatabase';
 
 export type DatabaseConfig = {
@@ -30,6 +33,7 @@ export class DatabaseWrapper implements IDatabase {
         updateDeposit: supabaseDb.updateDeposit,
         getDeposit: supabaseDb.getDeposit,
         getDepositsByDelegatee: supabaseDb.getDepositsByDelegatee,
+        getDepositsByOwner: supabaseDb.getDepositsByOwner,
         getAllDeposits: supabaseDb.getAllDeposits,
         updateCheckpoint: supabaseCheckpoints.updateCheckpoint,
         getCheckpoint: supabaseCheckpoints.getCheckpoint,
@@ -64,6 +68,19 @@ export class DatabaseWrapper implements IDatabase {
           supabaseTransactionQueue.getTransactionQueueItemsByHash,
         deleteTransactionQueueItem:
           supabaseTransactionQueue.deleteTransactionQueueItem,
+
+        // GovLst Deposit Operations
+        createGovLstDeposit: supabaseGovLstRewards.createGovLstDeposit,
+        updateGovLstDeposit: supabaseGovLstRewards.updateGovLstDeposit,
+        getGovLstDeposit: supabaseGovLstRewards.getGovLstDeposit,
+        getGovLstDepositsByAddress: supabaseGovLstRewards.getGovLstDepositsByAddress,
+        getAllGovLstDeposits: supabaseGovLstRewards.getAllGovLstDeposits,
+
+        // GovLst Claim History Operations
+        createGovLstClaimHistory: supabaseGovLstRewards.createGovLstClaimHistory,
+        getGovLstClaimHistory: supabaseGovLstRewards.getGovLstClaimHistory,
+        getGovLstClaimHistoryByAddress: supabaseGovLstRewards.getGovLstClaimHistoryByAddress,
+        updateGovLstClaimHistory: supabaseGovLstRewards.updateGovLstClaimHistory,
       };
     }
   }
@@ -199,5 +216,54 @@ export class DatabaseWrapper implements IDatabase {
 
   async deleteTransactionQueueItem(id: string): Promise<void> {
     return this.db.deleteTransactionQueueItem(id);
+  }
+
+  // Add missing methods
+  async getDepositsByOwner(ownerAddress: string): Promise<Deposit[]> {
+    return this.db.getDepositsByOwner(ownerAddress);
+  }
+
+  // GovLst Deposit Operations
+  async createGovLstDeposit(deposit: GovLstDeposit): Promise<void> {
+    return this.db.createGovLstDeposit(deposit);
+  }
+
+  async updateGovLstDeposit(
+    depositId: string,
+    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>
+  ): Promise<void> {
+    return this.db.updateGovLstDeposit(depositId, update);
+  }
+
+  async getGovLstDeposit(depositId: string): Promise<GovLstDeposit | null> {
+    return this.db.getGovLstDeposit(depositId);
+  }
+
+  async getGovLstDepositsByAddress(govLstAddress: string): Promise<GovLstDeposit[]> {
+    return this.db.getGovLstDepositsByAddress(govLstAddress);
+  }
+
+  async getAllGovLstDeposits(): Promise<GovLstDeposit[]> {
+    return this.db.getAllGovLstDeposits();
+  }
+
+  // GovLst Claim History Operations
+  async createGovLstClaimHistory(claim: GovLstClaimHistory): Promise<GovLstClaimHistory> {
+    return this.db.createGovLstClaimHistory(claim);
+  }
+
+  async getGovLstClaimHistory(id: string): Promise<GovLstClaimHistory | null> {
+    return this.db.getGovLstClaimHistory(id);
+  }
+
+  async getGovLstClaimHistoryByAddress(govLstAddress: string): Promise<GovLstClaimHistory[]> {
+    return this.db.getGovLstClaimHistoryByAddress(govLstAddress);
+  }
+
+  async updateGovLstClaimHistory(
+    id: string,
+    update: Partial<Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>>
+  ): Promise<void> {
+    return this.db.updateGovLstClaimHistory(id, update);
   }
 }

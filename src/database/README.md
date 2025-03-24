@@ -27,10 +27,31 @@
 - `block_hash` (TEXT): Hash of the last processed block
 - `last_update` (TIMESTAMP): Time of last update
 
+#### govlst_deposits
+
+- `deposit_id` (TEXT, PK): Unique identifier for each deposit
+- `govlst_address` (TEXT): Address of the GovLst contract
+- `last_reward_check` (TIMESTAMP): Time of last reward check
+- `last_unclaimed_reward` (TEXT): Amount of unclaimed rewards
+- `created_at` (TIMESTAMP): Auto-set on creation
+- `updated_at` (TIMESTAMP): Auto-updates on changes
+
+#### govlst_claim_history
+
+- `id` (UUID, PK): Unique identifier for each claim
+- `govlst_address` (TEXT): Address of the GovLst contract
+- `deposit_ids` (TEXT[]): Array of claimed deposit IDs
+- `claimed_reward` (TEXT): Total claimed reward amount
+- `payout_amount` (TEXT): GovLst payout amount at time of claim
+- `profit` (TEXT): Net profit from the claim
+- `created_at` (TIMESTAMP): Time of claim execution
+
 ### Indexes
 
 - `idx_deposits_owner`: Index on owner_address for faster queries
 - `idx_deposits_delegatee`: Index on delegatee_address for faster queries
+- `idx_govlst_deposits_address`: Index on govlst_address for faster queries
+- `idx_govlst_claim_history_address`: Index on govlst_address for faster queries
 
 ## Usage Example
 

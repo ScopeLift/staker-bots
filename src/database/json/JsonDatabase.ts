@@ -8,6 +8,8 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
+  GovLstDeposit,
+  GovLstClaimHistory,
 } from '../interfaces/types';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { v4 as uuidv4 } from 'uuid';
@@ -20,6 +22,8 @@ export class JsonDatabase implements IDatabase {
     checkpoints: Record<string, ProcessingCheckpoint>;
     processing_queue: Record<string, ProcessingQueueItem>;
     transaction_queue: Record<string, TransactionQueueItem>;
+    govlst_deposits: Record<string, GovLstDeposit>;
+    govlst_claim_history: Record<string, GovLstClaimHistory>;
   };
 
   constructor(dbPath = 'staker-monitor-db.json') {
@@ -30,6 +34,8 @@ export class JsonDatabase implements IDatabase {
       checkpoints: {},
       processing_queue: {},
       transaction_queue: {},
+      govlst_deposits: {},
+      govlst_claim_history: {},
     };
     this.logger.info('JsonDatabase initialized at:', { path: this.dbPath });
     this.initializeDb();
@@ -46,6 +52,8 @@ export class JsonDatabase implements IDatabase {
         checkpoints: loadedData.checkpoints || {},
         processing_queue: loadedData.processing_queue || {},
         transaction_queue: loadedData.transaction_queue || {},
+        govlst_deposits: loadedData.govlst_deposits || {},
+        govlst_claim_history: loadedData.govlst_claim_history || {},
       };
 
       this.logger.info('Loaded existing database');
@@ -289,5 +297,98 @@ export class JsonDatabase implements IDatabase {
   async deleteTransactionQueueItem(id: string): Promise<void> {
     delete this.data.transaction_queue[id];
     await this.saveToFile();
+  }
+
+  // GovLst Deposit Operations
+  async createGovLstDeposit(deposit: GovLstDeposit): Promise<void> {
+    this.data.govlst_deposits[deposit.deposit_id] = {
+      ...deposit,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    await this.saveToFile();
+  }
+
+  async updateGovLstDeposit(
+    depositId: string,
+    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>
+  ): Promise<void> {
+    const existing = this.data.govlst_deposits[depositId];
+    if (!existing) {
+      throw new Error(`GovLst deposit not found: ${depositId}`);
+    }
+
+    this.data.govlst_deposits[depositId] = {
+      ...existing,
+      ...update,
+      updated_at: new Date().toISOString(),
+    };
+
+    await this.saveToFile();
+  }
+
+  async getGovLstDeposit(depositId: string): Promise<GovLstDeposit | null> {
+    return this.data.govlst_deposits[depositId] || null;
+  }
+
+  async getGovLstDepositsByAddress(govLstAddress: string): Promise<GovLstDeposit[]> {
+    return Object.values(this.data.govlst_deposits).filter(
+      (deposit) => deposit.govlst_address === govLstAddress
+    );
+  }
+
+  async getAllGovLstDeposits(): Promise<GovLstDeposit[]> {
+    return Object.values(this.data.govlst_deposits);
+  }
+
+  // GovLst Claim History Operations
+  async createGovLstClaimHistory(claim: GovLstClaimHistory): Promise<GovLstClaimHistory> {
+    const id = claim.id || uuidv4();
+    const newClaim = {
+      ...claim,
+      id,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    this.data.govlst_claim_history[id] = newClaim;
+    await this.saveToFile();
+
+    return newClaim;
+  }
+
+  async getGovLstClaimHistory(id: string): Promise<GovLstClaimHistory | null> {
+    return this.data.govlst_claim_history[id] || null;
+  }
+
+  async getGovLstClaimHistoryByAddress(govLstAddress: string): Promise<GovLstClaimHistory[]> {
+    return Object.values(this.data.govlst_claim_history).filter(
+      (claim) => claim.govlst_address === govLstAddress
+    );
+  }
+
+  async updateGovLstClaimHistory(
+    id: string,
+    update: Partial<Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>>
+  ): Promise<void> {
+    const existing = this.data.govlst_claim_history[id];
+    if (!existing) {
+      throw new Error(`GovLst claim history not found: ${id}`);
+    }
+
+    this.data.govlst_claim_history[id] = {
+      ...existing,
+      ...update,
+      updated_at: new Date().toISOString(),
+    };
+
+    await this.saveToFile();
+  }
+
+  // Don't forget to implement getDepositsByOwner if it doesn't exist
+  async getDepositsByOwner(ownerAddress: string): Promise<Deposit[]> {
+    return Object.values(this.data.deposits).filter(
+      (deposit) => deposit.owner_address === ownerAddress
+    );
   }
 }

@@ -67,6 +67,18 @@ export const CONFIG = {
       cacheDuration: 10 * 60 * 1000, // 10 minutes
     },
   },
+  govlst: {
+    addresses: process.env.GOVLST_ADDRESSES?.split(',') || [],
+    payoutAmount: process.env.GOVLST_PAYOUT_AMOUNT
+      ? BigInt(process.env.GOVLST_PAYOUT_AMOUNT)
+      : BigInt(0),
+    minProfitMargin: process.env.GOVLST_MIN_PROFIT_MARGIN
+      ? BigInt(process.env.GOVLST_MIN_PROFIT_MARGIN)
+      : BigInt(0),
+    maxBatchSize: parseInt(process.env.GOVLST_MAX_BATCH_SIZE || '10'),
+    claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600'),
+    gasPriceBuffer: parseInt(process.env.GOVLST_GAS_PRICE_BUFFER || '20'),
+  },
 } as const;
 
 // Helper to create provider

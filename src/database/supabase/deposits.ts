@@ -38,6 +38,17 @@ export async function getDepositsByDelegatee(
   return data || [];
 }
 
+export async function getDepositsByOwner(
+  ownerAddress: string
+): Promise<Deposit[]> {
+  const { data, error } = await supabase
+    .from('deposits')
+    .select('*')
+    .eq('owner_address', ownerAddress);
+  if (error) throw error;
+  return data || [];
+}
+
 export async function getAllDeposits(): Promise<Deposit[]> {
   const { data, error } = await supabase.from('deposits').select('*');
   if (error) throw error;

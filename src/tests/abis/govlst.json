@@ -1,0 +1,5 @@
+[
+  "function STAKER() external view returns (address)",
+  "function payoutAmount() external view returns (uint256)",
+  "function claimAndDistributeReward(address tipReceiver, uint256 minTotalRewards, uint256[] calldata depositIds) external returns (uint256)"
+]

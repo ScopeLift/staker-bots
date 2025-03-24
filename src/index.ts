@@ -5,6 +5,7 @@ import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
 import { ExecutorWrapper, ExecutorType } from './executor';
 import { ProfitabilityEngineWrapper } from './profitability/ProfitabilityEngineWrapper';
+import { GovLstClaimerWrapper } from './govlst-claimer/GovLstClaimerWrapper';
 import { ethers } from 'ethers';
 import fs from 'fs/promises';
 import path from 'path';
@@ -21,6 +22,10 @@ const profitabilityLogger = new ConsoleLogger('info', {
 const executorLogger = new ConsoleLogger('info', {
   color: '\x1b[31m', // Red
   prefix: '[Executor]',
+});
+const govLstLogger = new ConsoleLogger('info', {
+  color: '\x1b[32m', // Green
+  prefix: '[GovLst]',
 });
 const logger = new ConsoleLogger('info');
 
@@ -57,6 +62,7 @@ const runningComponents: {
   monitor?: StakerMonitor;
   profitabilityEngine?: ProfitabilityEngineWrapper;
   transactionExecutor?: ExecutorWrapper;
+  govLstClaimer?: GovLstClaimerWrapper;
 } = {};
 
 async function shutdown(signal: string) {
@@ -70,6 +76,9 @@ async function shutdown(signal: string) {
     }
     if (runningComponents.transactionExecutor) {
       await runningComponents.transactionExecutor.stop();
+    }
+    if (runningComponents.govLstClaimer) {
+      await runningComponents.govLstClaimer.stop();
     }
     logger.info('Shutdown completed successfully');
     process.exit(0);
@@ -191,6 +200,36 @@ async function runExecutor(database: DatabaseWrapper) {
   return executor;
 }
 
+async function runGovLstClaimer(database: DatabaseWrapper, executor: ExecutorWrapper) {
+  const provider = createProvider();
+
+  // Test provider connection
+  try {
+    await provider.getNetwork();
+  } catch (error) {
+    govLstLogger.error('Failed to connect to provider:', { error });
+    throw error;
+  }
+
+  govLstLogger.info('Initializing GovLst Claimer');
+
+  // Check if GovLst addresses are configured
+  if (CONFIG.govlst.addresses.length === 0) {
+    govLstLogger.warn('No GovLst addresses configured, claimer will be inactive');
+  }
+
+  const govLstClaimer = new GovLstClaimerWrapper(
+    database,
+    provider,
+    executor,
+    CONFIG.govlst
+  );
+
+  await govLstClaimer.start();
+
+  return govLstClaimer;
+}
+
 async function main() {
   logger.info('Starting staker-bots...');
 
@@ -210,6 +249,14 @@ async function main() {
     if (componentsToRun.includes('monitor')) {
       logger.info('Starting monitor...');
       runningComponents.monitor = await runMonitor(database);
+    }
+
+    // Start executor if requested (needed for both profitability and GovLst)
+    if (componentsToRun.includes('executor') ||
+        componentsToRun.includes('profitability') ||
+        componentsToRun.includes('govlst')) {
+      logger.info('Starting transaction executor...');
+      runningComponents.transactionExecutor = await runExecutor(database);
     }
 
     // Start profitability engine if requested
@@ -234,10 +281,13 @@ async function main() {
       );
     }
 
-    // Start transaction executor if requested
-    if (componentsToRun.includes('executor')) {
-      logger.info('Starting transaction executor...');
-      runningComponents.transactionExecutor = await runExecutor(database);
+    // Start GovLst claimer if requested
+    if (componentsToRun.includes('govlst') && runningComponents.transactionExecutor) {
+      logger.info('Starting GovLst claimer...');
+      runningComponents.govLstClaimer = await runGovLstClaimer(
+        database,
+        runningComponents.transactionExecutor
+      );
     }
 
     // Connect components
@@ -253,6 +303,7 @@ async function main() {
       monitor: !!runningComponents.monitor,
       profitability: !!runningComponents.profitabilityEngine,
       executor: !!runningComponents.transactionExecutor,
+      govlst: !!runningComponents.govLstClaimer,
     });
   } catch (error) {
     await logError(error, 'Error during startup');
