@@ -1,6 +1,5 @@
 import { ethers } from 'ethers';
 import { IDatabase } from '@/database';
-import { BinaryEligibilityOracleEarningPowerCalculator } from '@/calculator';
 import { IProfitabilityEngine } from './interfaces/IProfitabilityEngine';
 import { BaseProfitabilityEngine } from './strategies/BaseProfitabilityEngine';
 import {
@@ -67,7 +66,6 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
   private delegateeQueue: Map<string, Set<string>> = new Map(); // Track deposits by delegatee (string depositId)
   private processingQueue: Set<string> = new Set(); // Global processing queue (string depositId)
   private queueProcessorInterval: NodeJS.Timeout | null = null;
-  private calculator: BinaryEligibilityOracleEarningPowerCalculator;
   private executor: IExecutor | null = null; // Will be set later via setExecutor method
   private provider: ethers.Provider;
   private stakerAddress: string;
@@ -113,12 +111,6 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
     this.stakerAddress = stakerAddress;
     this.config = config;
 
-    // Initialize calculator
-    this.calculator = new BinaryEligibilityOracleEarningPowerCalculator(
-      db,
-      provider,
-    );
-
     // Initialize staker contract
     const stakerContract = new ethers.Contract(
       stakerAddress,
@@ -149,14 +141,11 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
     this.priceFeed = new CoinMarketCapFeed(
       {
         ...CONFIG.priceFeed.coinmarketcap,
-        arbTestTokenAddress: CONFIG.monitor.arbTestTokenAddress,
-        arbRealTokenAddress: CONFIG.monitor.arbRealTokenAddress,
       },
       logger,
     );
 
     this.engine = new BaseProfitabilityEngine(
-      this.calculator,
       this.stakerContract,
       provider,
       config,
@@ -248,33 +237,34 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
       this.logger.info(`Requeued ${allItems.length} items`);
     } catch (error) {
-      this.logger.error('Error requeuing pending items', { error });
+      this.logger.error('Error requeuing pending items:', { error });
     }
   }
 
   /**
-   * Start the queue processor interval
+   * Start the queue processor
    */
   private startQueueProcessor(): void {
-    if (this.queueProcessorInterval) return;
+    if (this.queueProcessorInterval) {
+      clearInterval(this.queueProcessorInterval);
+    }
 
-    this.queueProcessorInterval = setInterval(() => {
-      this.processQueue().catch((error) => {
-        this.logger.error('Error in queue processor', { error });
-      });
-    }, 30000); // Process queue every 30 seconds
-
-    this.logger.info('Queue processor started');
+    this.queueProcessorInterval = setInterval(async () => {
+      try {
+        await this.processQueue();
+      } catch (error) {
+        this.logger.error('Error processing queue:', { error });
+      }
+    }, 5000); // Process queue every 5 seconds
   }
 
   /**
-   * Stop the queue processor interval
+   * Stop the queue processor
    */
   private stopQueueProcessor(): void {
     if (this.queueProcessorInterval) {
       clearInterval(this.queueProcessorInterval);
       this.queueProcessorInterval = null;
-      this.logger.info('Queue processor stopped');
     }
   }
 
