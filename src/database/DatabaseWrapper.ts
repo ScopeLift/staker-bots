@@ -15,74 +15,144 @@ import * as supabaseProcessingQueue from './supabase/processing_queue';
 import * as supabaseTransactionQueue from './supabase/transaction_queue';
 import * as supabaseGovLstRewards from './supabase/govlst_rewards';
 import { JsonDatabase } from './json/JsonDatabase';
+import { ConsoleLogger, Logger } from '@/monitor/logging';
 
 export type DatabaseConfig = {
   type: 'supabase' | 'json';
   jsonDbPath?: string;
+  fallbackToJson?: boolean;
 };
 
 export class DatabaseWrapper implements IDatabase {
   private db: IDatabase;
+  private fallbackDb: JsonDatabase | null = null;
+  private usingFallback = false;
+  private logger: Logger;
+  private fallbackToJson: boolean;
 
-  constructor(config: DatabaseConfig = { type: 'supabase' }) {
+  constructor(config: DatabaseConfig = { type: 'supabase', fallbackToJson: true }) {
+    this.logger = new ConsoleLogger('info');
+    this.fallbackToJson = config.fallbackToJson ?? true;
+
     if (config.type === 'json') {
       this.db = new JsonDatabase(config.jsonDbPath);
     } else {
+      // Initialize with Supabase
       this.db = {
-        createDeposit: supabaseDb.createDeposit,
-        updateDeposit: supabaseDb.updateDeposit,
-        getDeposit: supabaseDb.getDeposit,
-        getDepositsByDelegatee: supabaseDb.getDepositsByDelegatee,
-        getDepositsByOwner: supabaseDb.getDepositsByOwner,
-        getAllDeposits: supabaseDb.getAllDeposits,
-        updateCheckpoint: supabaseCheckpoints.updateCheckpoint,
-        getCheckpoint: supabaseCheckpoints.getCheckpoint,
+        getDepositsByDepositor: this.wrapWithFallback(supabaseDb.getDepositsByDepositor),
+        createDeposit: this.wrapWithFallback(supabaseDb.createDeposit),
+        updateDeposit: this.wrapWithFallback(supabaseDb.updateDeposit),
+        getDeposit: this.wrapWithFallback(supabaseDb.getDeposit),
+        getDepositsByDelegatee: this.wrapWithFallback(supabaseDb.getDepositsByDelegatee),
+        getDepositsByOwner: this.wrapWithFallback(supabaseDb.getDepositsByOwner),
+        getAllDeposits: this.wrapWithFallback(supabaseDb.getAllDeposits),
+        updateCheckpoint: this.wrapWithFallback(supabaseCheckpoints.updateCheckpoint),
+        getCheckpoint: this.wrapWithFallback(supabaseCheckpoints.getCheckpoint),
 
         // Processing Queue Operations
-        createProcessingQueueItem:
-          supabaseProcessingQueue.createProcessingQueueItem,
-        updateProcessingQueueItem:
-          supabaseProcessingQueue.updateProcessingQueueItem,
-        getProcessingQueueItem: supabaseProcessingQueue.getProcessingQueueItem,
-        getProcessingQueueItemsByStatus:
-          supabaseProcessingQueue.getProcessingQueueItemsByStatus,
-        getProcessingQueueItemByDepositId:
-          supabaseProcessingQueue.getProcessingQueueItemByDepositId,
-        getProcessingQueueItemsByDelegatee:
-          supabaseProcessingQueue.getProcessingQueueItemsByDelegatee,
-        deleteProcessingQueueItem:
-          supabaseProcessingQueue.deleteProcessingQueueItem,
+        createProcessingQueueItem: this.wrapWithFallback(
+          supabaseProcessingQueue.createProcessingQueueItem
+        ),
+        updateProcessingQueueItem: this.wrapWithFallback(
+          supabaseProcessingQueue.updateProcessingQueueItem
+        ),
+        getProcessingQueueItem: this.wrapWithFallback(
+          supabaseProcessingQueue.getProcessingQueueItem
+        ),
+        getProcessingQueueItemsByStatus: this.wrapWithFallback(
+          supabaseProcessingQueue.getProcessingQueueItemsByStatus
+        ),
+        getProcessingQueueItemByDepositId: this.wrapWithFallback(
+          supabaseProcessingQueue.getProcessingQueueItemByDepositId
+        ),
+        getProcessingQueueItemsByDelegatee: this.wrapWithFallback(
+          supabaseProcessingQueue.getProcessingQueueItemsByDelegatee
+        ),
+        deleteProcessingQueueItem: this.wrapWithFallback(
+          supabaseProcessingQueue.deleteProcessingQueueItem
+        ),
 
         // Transaction Queue Operations
-        createTransactionQueueItem:
-          supabaseTransactionQueue.createTransactionQueueItem,
-        updateTransactionQueueItem:
-          supabaseTransactionQueue.updateTransactionQueueItem,
-        getTransactionQueueItem:
-          supabaseTransactionQueue.getTransactionQueueItem,
-        getTransactionQueueItemsByStatus:
-          supabaseTransactionQueue.getTransactionQueueItemsByStatus,
-        getTransactionQueueItemByDepositId:
-          supabaseTransactionQueue.getTransactionQueueItemByDepositId,
-        getTransactionQueueItemsByHash:
-          supabaseTransactionQueue.getTransactionQueueItemsByHash,
-        deleteTransactionQueueItem:
-          supabaseTransactionQueue.deleteTransactionQueueItem,
+        createTransactionQueueItem: this.wrapWithFallback(
+          supabaseTransactionQueue.createTransactionQueueItem
+        ),
+        updateTransactionQueueItem: this.wrapWithFallback(
+          supabaseTransactionQueue.updateTransactionQueueItem
+        ),
+        getTransactionQueueItem: this.wrapWithFallback(
+          supabaseTransactionQueue.getTransactionQueueItem
+        ),
+        getTransactionQueueItemsByStatus: this.wrapWithFallback(
+          supabaseTransactionQueue.getTransactionQueueItemsByStatus
+        ),
+        getTransactionQueueItemByDepositId: this.wrapWithFallback(
+          supabaseTransactionQueue.getTransactionQueueItemByDepositId
+        ),
+        getTransactionQueueItemsByHash: this.wrapWithFallback(
+          supabaseTransactionQueue.getTransactionQueueItemsByHash
+        ),
+        deleteTransactionQueueItem: this.wrapWithFallback(
+          supabaseTransactionQueue.deleteTransactionQueueItem
+        ),
 
         // GovLst Deposit Operations
-        createGovLstDeposit: supabaseGovLstRewards.createGovLstDeposit,
-        updateGovLstDeposit: supabaseGovLstRewards.updateGovLstDeposit,
-        getGovLstDeposit: supabaseGovLstRewards.getGovLstDeposit,
-        getGovLstDepositsByAddress: supabaseGovLstRewards.getGovLstDepositsByAddress,
-        getAllGovLstDeposits: supabaseGovLstRewards.getAllGovLstDeposits,
+        createGovLstDeposit: this.wrapWithFallback(supabaseGovLstRewards.createGovLstDeposit),
+        updateGovLstDeposit: this.wrapWithFallback(supabaseGovLstRewards.updateGovLstDeposit),
+        getGovLstDeposit: this.wrapWithFallback(supabaseGovLstRewards.getGovLstDeposit),
+        getGovLstDepositsByAddress: this.wrapWithFallback(supabaseGovLstRewards.getGovLstDepositsByAddress),
+        getAllGovLstDeposits: this.wrapWithFallback(supabaseGovLstRewards.getAllGovLstDeposits),
 
         // GovLst Claim History Operations
-        createGovLstClaimHistory: supabaseGovLstRewards.createGovLstClaimHistory,
-        getGovLstClaimHistory: supabaseGovLstRewards.getGovLstClaimHistory,
-        getGovLstClaimHistoryByAddress: supabaseGovLstRewards.getGovLstClaimHistoryByAddress,
-        updateGovLstClaimHistory: supabaseGovLstRewards.updateGovLstClaimHistory,
+        createGovLstClaimHistory: this.wrapWithFallback(supabaseGovLstRewards.createGovLstClaimHistory),
+        getGovLstClaimHistory: this.wrapWithFallback(supabaseGovLstRewards.getGovLstClaimHistory),
+        getGovLstClaimHistoryByAddress: this.wrapWithFallback(supabaseGovLstRewards.getGovLstClaimHistoryByAddress),
+        updateGovLstClaimHistory: this.wrapWithFallback(supabaseGovLstRewards.updateGovLstClaimHistory),
       };
     }
+  }
+
+  private getFallbackDb(): JsonDatabase {
+    if (!this.fallbackDb) {
+      this.logger.warn('Initializing fallback JsonDatabase');
+      this.fallbackDb = new JsonDatabase();
+    }
+    return this.fallbackDb;
+  }
+
+  private wrapWithFallback<T extends (...args: any[]) => Promise<any>>(
+    fn: T
+  ): T {
+    return (async (...args: Parameters<T>): Promise<ReturnType<T>> => {
+      if (this.usingFallback) {
+        // Already using fallback, call the equivalent method on fallbackDb
+        const fallbackDb = this.getFallbackDb();
+        const methodName = fn.name;
+        // @ts-ignore - Dynamic method call
+        return fallbackDb[methodName](...args);
+      }
+
+      try {
+        return await fn(...args);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes('Supabase client is not available') &&
+          this.fallbackToJson
+        ) {
+          // Supabase is not available, switch to fallback
+          if (!this.usingFallback) {
+            this.logger.warn('Supabase not available, switching to JsonDatabase fallback', { error });
+            this.usingFallback = true;
+          }
+
+          const fallbackDb = this.getFallbackDb();
+          const methodName = fn.name;
+          // @ts-ignore - Dynamic method call
+          return fallbackDb[methodName](...args);
+        }
+        throw error;
+      }
+    }) as T;
   }
 
   // Deposits
@@ -106,11 +176,11 @@ export class DatabaseWrapper implements IDatabase {
   }
 
   async getAllDeposits(): Promise<Deposit[]> {
-    if (this.db instanceof JsonDatabase) {
-      return Object.values(this.db.data.deposits);
-    } else {
-      return await supabaseDb.getAllDeposits();
-    }
+    return this.db.getAllDeposits();
+  }
+
+  async getDepositsByDepositor(depositorAddress: string): Promise<Deposit[]> {
+    return this.db.getDepositsByDepositor(depositorAddress);
   }
 
   // Checkpoints

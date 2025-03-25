@@ -16,6 +16,7 @@ export class StakerMonitor extends EventEmitter {
   private readonly db: IDatabase;
   private readonly provider: ethers.Provider;
   private readonly contract: ethers.Contract;
+  private readonly lstContract: ethers.Contract;
   private readonly logger: Logger;
   private readonly eventProcessor: EventProcessor;
   private readonly config: MonitorConfig;
@@ -30,6 +31,11 @@ export class StakerMonitor extends EventEmitter {
     this.provider = config.provider;
     this.contract = new ethers.Contract(
       config.stakerAddress,
+      STAKER_ABI,
+      config.provider,
+    );
+    this.lstContract = new ethers.Contract(
+      config.lstAddress,
       STAKER_ABI,
       config.provider,
     );
@@ -146,8 +152,13 @@ export class StakerMonitor extends EventEmitter {
     fromBlock: number,
     toBlock: number,
   ): Promise<void> {
-    const [depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all(
+    const [lstDepositEvents, depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all(
       [
+        this.lstContract.queryFilter(
+          this.lstContract.filters.Staked!(),
+          fromBlock,
+          toBlock,
+        ),
         this.contract.queryFilter(
           this.contract.filters.StakeDeposited!(),
           fromBlock,
@@ -166,23 +177,51 @@ export class StakerMonitor extends EventEmitter {
       ],
     );
 
+    // Sort all events by block number and log index to ensure chronological processing
+    const sortEvents = (events: ethers.Log[]) => {
+      return [...events].sort((a, b) => {
+        if (a.blockNumber !== b.blockNumber) {
+          return a.blockNumber - b.blockNumber;
+        }
+        // Use nullish coalescing to handle cases where logIndex might be undefined
+        const aLogIndex = (a as any).logIndex ?? 0;
+        const bLogIndex = (b as any).logIndex ?? 0;
+        return aLogIndex - bLogIndex;
+      });
+    };
+
+    const sortedLstDepositEvents = sortEvents(lstDepositEvents);
+    const sortedDepositedEvents = sortEvents(depositedEvents);
+    const sortedWithdrawnEvents = sortEvents(withdrawnEvents);
+    const sortedAlteredEvents = sortEvents(alteredEvents);
+
+    // Log the sorted events for debugging
+    this.logger.debug('Events sorted by block number and log index', {
+      lstDepositCount: sortedLstDepositEvents.length,
+      depositedCount: sortedDepositedEvents.length,
+      withdrawnCount: sortedWithdrawnEvents.length,
+      alteredCount: sortedAlteredEvents.length,
+    });
+
     // Group events by transaction hash for correlation
     const eventsByTx = new Map<
       string,
       {
         deposited?: ethers.EventLog;
+        lstDeposited?: ethers.EventLog;
         altered?: ethers.EventLog;
       }
     >();
 
     // Group StakeDeposited events
-    for (const event of depositedEvents) {
+    for (const event of sortedDepositedEvents) {
       const typedEvent = event as ethers.EventLog;
       const existing = eventsByTx.get(typedEvent.transactionHash) || {};
       this.logger.debug('Adding StakeDeposited event to transaction group', {
         txHash: typedEvent.transactionHash,
         depositId: typedEvent.args.depositId.toString(),
         blockNumber: typedEvent.blockNumber,
+        logIndex: (typedEvent as any).logIndex ?? 0,
         hasExistingAltered: !!existing.altered,
       });
       eventsByTx.set(typedEvent.transactionHash, {
@@ -191,8 +230,42 @@ export class StakerMonitor extends EventEmitter {
       });
     }
 
+    // Group LstDeposited events - take the first one or keep the existing one
+    for (const event of sortedLstDepositEvents) {
+      const typedEvent = event as ethers.EventLog;
+
+      // Debug full event data to understand the structure
+      this.logger.debug('LST Deposit Event Raw Data:', {
+        txHash: typedEvent.transactionHash,
+        eventName: typedEvent.eventName,
+        args: JSON.stringify(typedEvent.args, (key, value) =>
+          typeof value === 'bigint' ? value.toString() : value
+        ),
+        eventSignature: typedEvent.eventSignature,
+      });
+
+      const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+
+      // Make sure we get the amount from the right parameter
+      // According to ABI: 'event Staked(address indexed account, uint256 amount)'
+      const amount = typedEvent.args[1] || typedEvent.args.amount || '0';
+
+      this.logger.debug('Adding LstDeposited event to transaction group', {
+        txHash: typedEvent.transactionHash,
+        blockNumber: typedEvent.blockNumber,
+        hasExistingAltered: !!existing.altered,
+        account: typedEvent.args[0] || typedEvent.args.account,
+        amount: amount.toString(),
+      });
+
+      eventsByTx.set(typedEvent.transactionHash, {
+        ...existing,
+        lstDeposited: existing.lstDeposited || typedEvent,
+      });
+    }
+
     // Group DelegateeAltered events
-    for (const event of alteredEvents) {
+    for (const event of sortedAlteredEvents) {
       const typedEvent = event as ethers.EventLog;
       const existing = eventsByTx.get(typedEvent.transactionHash) || {};
       this.logger.debug('Adding DelegateeAltered event to transaction group', {
@@ -211,9 +284,9 @@ export class StakerMonitor extends EventEmitter {
 
     // If we found any events, fetch and log the full blocks
     const eventBlocks = new Set([
-      ...depositedEvents.map((e) => e.blockNumber),
-      ...withdrawnEvents.map((e) => e.blockNumber),
-      ...alteredEvents.map((e) => e.blockNumber),
+      ...sortedDepositedEvents.map((e) => e.blockNumber),
+      ...sortedWithdrawnEvents.map((e) => e.blockNumber),
+      ...sortedAlteredEvents.map((e) => e.blockNumber),
     ]);
 
     for (const blockNumber of eventBlocks) {
@@ -233,20 +306,56 @@ export class StakerMonitor extends EventEmitter {
             : null;
         }),
       );
-
-      this.logger.info('Full block details for block with events:', {
-        blockNumber,
-        blockHash: block.hash,
-        timestamp: block.timestamp,
-        transactions: txs.filter((tx) => tx !== null),
-      });
     }
 
     // Process events by transaction
-    for (const [txHash, events] of eventsByTx) {
+    // First, convert the map to an array and sort by block number and transaction index
+    const txEntries = [...eventsByTx.entries()].map(([txHash, events]) => {
+      // Get block number from any of the events (they're from the same tx so same block)
+      const blockNumber = events.deposited?.blockNumber ||
+                         events.lstDeposited?.blockNumber ||
+                         events.altered?.blockNumber || 0;
+
+      return {
+        txHash,
+        events,
+        blockNumber
+      };
+    });
+
+    // Sort transactions by block number
+    txEntries.sort((a, b) => a.blockNumber - b.blockNumber);
+
+    this.logger.info('Processing transactions in chronological order', {
+      transactionCount: txEntries.length
+    });
+
+    // Process sorted transactions
+    for (const { txHash, events } of txEntries) {
       if (events.deposited) {
         const depositEvent = events.deposited;
-        const { depositId, owner: ownerAddress, amount } = depositEvent.args;
+        let lstDepositEvent = events.lstDeposited;
+        const { depositId, owner: ownerAddress } = depositEvent.args;
+
+        // Extract amount from deposited event or LST deposit event if available
+        let amount = depositEvent.args.amount;
+
+        // Extract depositor account from lst deposit event if available
+        const depositorAddress = lstDepositEvent?.args?.[0] || lstDepositEvent?.args?.account || ownerAddress;
+
+        // If we have an LST deposit event with an amount, use that
+        if (lstDepositEvent?.args) {
+          // Try different ways to access the amount from LST event
+          const lstAmount = lstDepositEvent.args[1] || lstDepositEvent.args.amount;
+
+          if (lstAmount) {
+            amount = lstAmount;
+            this.logger.info('Using amount from LST deposit event', {
+              lstAmount: amount.toString(),
+              depositEventAmount: depositEvent.args.amount.toString()
+            });
+          }
+        }
 
         // Get the delegatee from the DelegateeAltered event if it exists, otherwise use owner
         const delegateeAddress = events.altered
@@ -257,6 +366,7 @@ export class StakerMonitor extends EventEmitter {
           txHash,
           depositId: depositId.toString(),
           ownerAddress,
+          depositorAddress,
           delegateeAddress,
           amount: amount.toString(),
           blockNumber: depositEvent.blockNumber,
@@ -270,15 +380,24 @@ export class StakerMonitor extends EventEmitter {
           depositId: depositId.toString(),
           ownerAddress,
           delegateeAddress,
+          depositorAddress,
           amount,
           blockNumber: depositEvent.blockNumber!,
           transactionHash: depositEvent.transactionHash!,
+        });
+
+        // Debug log to confirm the final amount being used
+        this.logger.info('Final deposit amount being processed:', {
+          depositId: depositId.toString(),
+          amount: amount.toString(),
+          hasLstEvent: !!lstDepositEvent,
+          transactionHash: depositEvent.transactionHash,
         });
       }
     }
 
     // Process remaining events (StakeWithdrawn and standalone DelegateeAltered)
-    for (const event of withdrawnEvents) {
+    for (const event of sortedWithdrawnEvents) {
       const typedEvent = event as ethers.EventLog;
       const { depositId, amount } = typedEvent.args;
       this.logger.debug('Processing StakeWithdrawn event', {
@@ -296,7 +415,7 @@ export class StakerMonitor extends EventEmitter {
     }
 
     // Only process DelegateeAltered events that weren't part of a deposit
-    for (const event of alteredEvents) {
+    for (const event of sortedAlteredEvents) {
       const typedEvent = event as ethers.EventLog;
       const txEvents = eventsByTx.get(typedEvent.transactionHash);
       // Skip if this was part of a deposit transaction

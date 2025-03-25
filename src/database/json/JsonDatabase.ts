@@ -114,6 +114,12 @@ export class JsonDatabase implements IDatabase {
     );
   }
 
+  async getDepositsByDepositor(depositorAddress: string): Promise<Deposit[]> {
+    return Object.values(this.data.deposits).filter(
+      (deposit) => deposit.depositor_address === depositorAddress,
+    );
+  }
+
   async getAllDeposits(): Promise<Deposit[]> {
     return Object.values(this.data.deposits);
   }

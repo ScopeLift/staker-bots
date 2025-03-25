@@ -192,7 +192,7 @@ async function testFullIntegration() {
       await writeToLog(`GovLst Claimer Status: ${JSON.stringify(govLstStatus, null, 2)}`);
 
       // Test GovLst analysis
-      for (const govLstAddress of CONFIG.govlst.addresses) {
+      for (const govLstAddress of CONFIG.govlst.addresses!) {
         try {
           await writeToLog(`Analyzing rewards for GovLst address: ${govLstAddress}`);
           const analysis = await govLstClaimer.analyzeRewards(govLstAddress);

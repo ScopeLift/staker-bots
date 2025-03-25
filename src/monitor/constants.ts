@@ -8,6 +8,7 @@ export const STAKER_ABI = [
   'event StakeDeposited(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
   'event StakeWithdrawn(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
   'event DelegateeAltered(uint256 indexed depositId, address oldDelegatee, address newDelegatee, uint256 earningPower)',
+  'event Staked(address indexed account, uint256 amount)'
 ];
 
 export const createMonitorConfig = (
@@ -16,7 +17,6 @@ export const createMonitorConfig = (
 ): MonitorConfig => ({
   provider,
   database,
-  networkName: 'arbitrum',
-  arbTokenAddress: CONFIG.monitor.arbTestTokenAddress,
+  tokenAddress: CONFIG.monitor.obolTokenAddress,
   ...CONFIG.monitor,
 });

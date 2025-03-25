@@ -214,7 +214,7 @@ async function runGovLstClaimer(database: DatabaseWrapper, executor: ExecutorWra
   govLstLogger.info('Initializing GovLst Claimer');
 
   // Check if GovLst addresses are configured
-  if (CONFIG.govlst.addresses.length === 0) {
+  if (CONFIG.govlst.addresses?.length === 0) {
     govLstLogger.warn('No GovLst addresses configured, claimer will be inactive');
   }
 

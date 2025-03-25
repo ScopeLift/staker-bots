@@ -4,8 +4,8 @@ import { IDatabase, ProcessingCheckpoint } from '@/database';
 export interface MonitorConfig {
   provider: ethers.Provider;
   stakerAddress: string;
-  arbTokenAddress: string;
-  rewardCalculatorAddress: string;
+  tokenAddress: string;
+  rewardCalculatorAddress?: string;
   rewardNotifierAddress: string;
   networkName: string;
   chainId: number;
@@ -14,6 +14,7 @@ export interface MonitorConfig {
   database: IDatabase;
   maxBlockRange: number;
   maxRetries: number;
+  lstAddress: string;
   reorgDepth: number;
   confirmations: number;
   healthCheckInterval: number;
@@ -25,6 +26,7 @@ export interface StakeDepositedEvent {
   depositId: string;
   ownerAddress: string;
   delegateeAddress: string;
+  depositorAddress: string;
   amount: BigNumberish;
   blockNumber: number;
   transactionHash: string;

@@ -84,7 +84,7 @@ async function testGovLstClaimer() {
     await writeToLog(`GovLst Claimer Status: ${JSON.stringify(status, null, 2)}`);
 
     // Analyze rewards for each GovLst address
-    for (const govLstAddress of CONFIG.govlst.addresses) {
+    for (const govLstAddress of CONFIG.govlst.addresses!) {
       try {
         await writeToLog(`Analyzing rewards for GovLst address: ${govLstAddress}`);
         const analysis = await govLstClaimer.analyzeRewards(govLstAddress);
@@ -111,7 +111,7 @@ async function testGovLstClaimer() {
 
     // Get GovLst deposit data from database
     const govLstDeposits = await Promise.all(
-      CONFIG.govlst.addresses.map(async (address) => {
+      CONFIG.govlst.addresses?.map(async (address) => {
         try {
           return await database.getDepositsByOwner(address);
         } catch (error) {

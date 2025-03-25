@@ -1,7 +1,5 @@
-import { ethers } from 'ethers';
 import {
   ClaimBatch,
-  GovLstClaimerConfig,
   ProfitabilityCalculation
 } from '../interfaces/types';
 import { calculateTotalRewards } from './rewardCalculator';

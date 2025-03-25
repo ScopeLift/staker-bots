@@ -19,6 +19,7 @@ export interface IDatabase {
   getDeposit(depositId: string): Promise<Deposit | null>;
   getDepositsByDelegatee(delegateeAddress: string): Promise<Deposit[]>;
   getDepositsByOwner(ownerAddress: string): Promise<Deposit[]>;
+  getDepositsByDepositor(depositorAddress: string): Promise<Deposit[]>;
   getAllDeposits(): Promise<Deposit[]>;
   // Checkpoints
   updateCheckpoint(checkpoint: ProcessingCheckpoint): Promise<void>;

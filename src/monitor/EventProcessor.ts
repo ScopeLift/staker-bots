@@ -17,19 +17,47 @@ export class EventProcessor {
     event: StakeDepositedEvent,
   ): Promise<ProcessingResult> {
     try {
-      // Create new deposit directly, no need to check if it exists
-      await this.db.createDeposit({
-        deposit_id: event.depositId,
-        owner_address: event.ownerAddress,
-        delegatee_address: event.delegateeAddress,
-        amount: event.amount.toString(),
-      });
+      // Check if deposit already exists
+      const existingDeposit = await this.db.getDeposit(event.depositId);
 
-      this.logger.info('Created new deposit', {
-        depositId: event.depositId,
-        owner: event.ownerAddress,
-        amount: event.amount.toString(),
-      });
+      if (existingDeposit) {
+        // Calculate the new total amount (accumulate instead of overwrite)
+        const currentAmount = BigInt(existingDeposit.amount);
+        const newAmount = currentAmount + BigInt(event.amount.toString());
+
+        this.logger.info('Updating existing deposit (accumulating amount)', {
+          depositId: event.depositId,
+          owner: event.ownerAddress,
+          depositor: event.depositorAddress,
+          originalAmount: existingDeposit.amount,
+          depositAmount: event.amount.toString(),
+          newTotalAmount: newAmount.toString(),
+          blockNumber: event.blockNumber,
+        });
+
+        await this.db.updateDeposit(event.depositId, {
+          owner_address: event.ownerAddress,
+          depositor_address: event.depositorAddress,
+          delegatee_address: event.delegateeAddress,
+          amount: newAmount.toString(),
+        });
+      } else {
+        // Create new deposit
+        await this.db.createDeposit({
+          deposit_id: event.depositId,
+          owner_address: event.ownerAddress,
+          depositor_address: event.depositorAddress,
+          delegatee_address: event.delegateeAddress,
+          amount: event.amount.toString(),
+        });
+
+        this.logger.info('Created new deposit', {
+          depositId: event.depositId,
+          owner: event.ownerAddress,
+          depositor: event.depositorAddress,
+          amount: event.amount.toString(),
+        });
+      }
 
       return {
         success: true,

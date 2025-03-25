@@ -170,7 +170,7 @@ export class BaseGovLstClaimer implements IGovLstClaimer {
 
       // Verify ownership
       const verifiedDepositIds = await verifyDepositOwnership(
-        stakerContract as any, // Type cast to satisfy TypeScript
+        stakerContract as StakerContract,
         depositIds,
         govLstAddress,
         this.logger
@@ -180,7 +180,7 @@ export class BaseGovLstClaimer implements IGovLstClaimer {
 
       // Calculate unclaimed rewards
       const depositRewards = await calculateUnclaimedRewards(
-        stakerContract as any, // Type cast to satisfy TypeScript
+        stakerContract as StakerContract, // Type cast to satisfy TypeScript
         verifiedDepositIds,
         this.logger
       );
@@ -209,7 +209,7 @@ export class BaseGovLstClaimer implements IGovLstClaimer {
 
       // Calculate total rewards
       let totalClaimableRewards = BigInt(0);
-      for (const [depositId, reward] of depositRewards.entries()) {
+      for (const [_, reward] of depositRewards.entries()) {
         totalClaimableRewards += reward;
       }
 

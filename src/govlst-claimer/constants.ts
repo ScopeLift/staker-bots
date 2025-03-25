@@ -8,6 +8,8 @@ export const GOVLST_ABI = [
   'function payoutAmount() external view returns (uint256)',
   // Claim and distribute rewards
   'function claimAndDistributeReward(address tipReceiver, uint256 minTotalRewards, uint256[] calldata depositIds) external returns (uint256)',
+  // Staked
+  'event Staked(address indexed account, uint256 amount)'
 ];
 
 /**
