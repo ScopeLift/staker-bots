@@ -11,7 +11,7 @@
     "start:all": "COMPONENTS=monitor,calculator tsx src/index.ts",
     "dev:monitor": "COMPONENTS=monitor tsx watch src/index.ts",
     "dev:calculator": "COMPONENTS=calculator tsx watch src/index.ts",
-    "dev:all": "COMPONENTS=monitor,calculator tsx watch src/index.ts",
+    "dev:all": "COMPONENTS=monitor,calculator,profitability, tsx watch src/index.ts",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
@@ -20,11 +20,14 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@openzeppelin/defender-relay-client": "^1.54.6",
+    "@openzeppelin/defender-sdk": "^2.3.0",
     "@supabase/supabase-js": "^2.48.1",
     "axios": "^1.7.9",
     "dotenv": "^16.4.5",
     "ethers": "^6.11.1",
-    "uuid": "^11.0.5"
+    "uuid": "^11.0.5",
+    "web3": "4.7.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.17",

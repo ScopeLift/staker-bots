@@ -131,3 +131,85 @@ A comprehensive test suite is included in `test-executor.ts` that verifies:
    TIP_RECEIVER=your_tip_receiver_address
    ```
 3. Run the test: `npx tsx src/tests/test-executor.ts`
+
+## Using RelayerExecutor with OpenZeppelin Defender
+
+The RelayerExecutor allows you to send transactions via an OpenZeppelin Defender Relayer instead of using a local wallet. This provides better security, reliability, and gas management features.
+
+### Setup
+
+First, install the required dependencies:
+
+```bash
+pnpm add @openzeppelin/defender-sdk web3
+```
+
+### Configuration
+
+To use the RelayerExecutor, you need an OpenZeppelin Defender account and a Relayer setup. Configure the executor with your Relayer credentials:
+
+```typescript
+import { ethers } from 'ethers';
+import { ExecutorWrapper, ExecutorType } from './src/executor';
+
+// Create provider
+const provider = new ethers.JsonRpcProvider('https://mainnet.infura.io/v3/YOUR_INFURA_KEY');
+
+// Load contract
+const stakerAbi = [...]; // Contract ABI
+const stakerAddress = '0x...'; // Contract address
+const stakerContract = new ethers.Contract(stakerAddress, stakerAbi, provider);
+
+// Configure executor with Relayer
+const executor = new ExecutorWrapper(
+  stakerContract,
+  provider,
+  ExecutorType.RELAYER, // Specify RelayerExecutor strategy
+  {
+    relayer: {
+      apiKey: 'YOUR_DEFENDER_API_KEY',
+      apiSecret: 'YOUR_DEFENDER_API_SECRET',
+      minBalance: ethers.parseEther('0.1'),
+      maxPendingTransactions: 5,
+      gasPolicy: {
+        maxFeePerGas: ethers.parseGwei('100'),
+        maxPriorityFeePerGas: ethers.parseGwei('2')
+      }
+    },
+    // Other options
+    maxQueueSize: 100,
+    minConfirmations: 2,
+    concurrentTransactions: 5
+  }
+);
+
+// Start executor
+await executor.start();
+
+// Queue a transaction
+const depositId = BigInt(123);
+const profitabilityCheck = {
+  isEligible: true,
+  estimates: {
+    optimalTip: ethers.parseEther('0.01'),
+    expectedProfit: ethers.parseEther('0.05')
+  }
+};
+
+await executor.queueTransaction(depositId, profitabilityCheck);
+```
+
+### Benefits of Using RelayerExecutor
+
+1. **Improved Security**: No private keys stored in your application
+2. **Transaction Management**: Automatic gas price adjustments and transaction resubmission
+3. **Monitoring**: Built-in monitoring and notification capabilities through Defender
+4. **Reliability**: Higher transaction success rate with optimized gas pricing
+5. **Scalability**: Easily create and manage multiple relayers for different chains
+
+### Differences from BaseExecutor
+
+- The RelayerExecutor doesn't require you to manage private keys in your application
+- Gas settings can be managed through the OpenZeppelin Defender dashboard
+- The RelayerExecutor doesn't implement transferOutTips() as relayers manage their own funds
+- Transaction retry logic is handled by the Defender service

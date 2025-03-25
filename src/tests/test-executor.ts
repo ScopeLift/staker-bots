@@ -1,9 +1,9 @@
 import { ethers } from 'ethers';
-import { ExecutorWrapper } from '../executor';
+import { ExecutorWrapper, ExecutorType } from '../executor';
 import { ConsoleLogger, Logger } from '../monitor/logging';
 import { TransactionStatus } from '../executor/interfaces/types';
 import fs from 'fs';
-import 'dotenv/config';
+import { CONFIG } from '../config';
 
 const logger: Logger = new ConsoleLogger('info');
 
@@ -21,7 +21,7 @@ async function main() {
 
   // Initialize staker contract
   logger.info('Initializing staker contract...');
-  const stakerAddress = process.env.STAKER_CONTRACT_ADDRESS;
+  const stakerAddress = CONFIG.monitor.stakerAddress;
   const stakerAbi = JSON.parse(
     fs.readFileSync('./src/tests/abis/staker.json', 'utf-8'),
   );
@@ -32,26 +32,25 @@ async function main() {
   );
   logger.info('Staker contract initialized at:', { address: stakerAddress });
 
-  // Initialize executor with test wallet
-  logger.info('Initializing executor...');
-  if (!process.env.TEST_PRIVATE_KEY) {
-    throw new Error('TEST_PRIVATE_KEY not set in environment');
-  }
-
-  const executor = new ExecutorWrapper(stakerContract, provider, {
-    wallet: {
-      privateKey: process.env.TEST_PRIVATE_KEY,
-      minBalance: ethers.parseEther('0.1'), // 0.1 ETH
-      maxPendingTransactions: 2,
+  const executor = new ExecutorWrapper(
+    stakerContract,
+    provider,
+    ExecutorType.WALLET,
+    {
+      wallet: {
+        privateKey: CONFIG.executor.privateKey,
+        minBalance: ethers.parseEther('0.0000001'), // 0.1 ETH
+        maxPendingTransactions: 2,
+      },
+      maxQueueSize: 5,
+      minConfirmations: 1,
+      maxRetries: 2,
+      retryDelayMs: 2000,
+      transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
+      gasBoostPercentage: 5,
+      concurrentTransactions: 2,
     },
-    maxQueueSize: 5,
-    minConfirmations: 1,
-    maxRetries: 2,
-    retryDelayMs: 2000,
-    transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
-    gasBoostPercentage: 5,
-    concurrentTransactions: 2,
-  });
+  );
 
   // Start executor
   await executor.start();

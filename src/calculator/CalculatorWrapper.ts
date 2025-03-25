@@ -69,4 +69,14 @@ export class CalculatorWrapper implements ICalculatorStrategy {
     await this.strategy.processScoreEvents(fromBlock, toBlock);
     this.lastProcessedBlock = toBlock;
   }
+
+  /**
+   * Get the earning power calculator instance
+   */
+  getEarningPowerCalculator(): BinaryEligibilityOracleEarningPowerCalculator | null {
+    return this.strategy instanceof
+      BinaryEligibilityOracleEarningPowerCalculator
+      ? this.strategy
+      : null;
+  }
 }

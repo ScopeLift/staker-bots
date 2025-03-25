@@ -92,63 +92,42 @@ export class Calculator {
   }
 
   private async processLoop(): Promise<void> {
+    const CALCULATOR_BLOCK_RANGE = this.config.maxBlockRange; // Process 10k blocks at a time
+
     while (this.isRunning) {
       try {
         const currentBlock = await this.getCurrentBlock();
         const targetBlock = currentBlock - this.config.confirmations;
 
+        // If no new blocks, just continue immediately instead of waiting
         if (targetBlock <= this.lastProcessedBlock) {
-          this.logger.debug('Waiting for new blocks', {
-            currentBlock,
-            targetBlock,
-            lastProcessedBlock: this.lastProcessedBlock,
-          });
-          await new Promise((resolve) =>
-            setTimeout(resolve, this.config.pollInterval * 1000),
-          );
           continue;
         }
 
         const fromBlock = this.lastProcessedBlock + 1;
         const toBlock = Math.min(
           targetBlock,
-          fromBlock + this.config.maxBlockRange - 1,
+          fromBlock + CALCULATOR_BLOCK_RANGE - 1, // Use larger block range
         );
 
-        this.logger.info('Processing new blocks', {
-          fromBlock,
-          toBlock,
-          currentBlock,
-          blockRange: toBlock - fromBlock + 1,
-        });
-
+        // Process blocks and update checkpoint in one go
         await this.calculator.processScoreEvents(fromBlock, toBlock);
-
-        const block = await this.provider.getBlock(toBlock);
-        if (!block) throw new Error(`Block ${toBlock} not found`);
-
-        // Update checkpoint
-        await this.db.updateCheckpoint({
-          component_type: 'calculator',
-          last_block_number: toBlock,
-          block_hash: block.hash!,
-          last_update: new Date().toISOString(),
-        });
-
         this.lastProcessedBlock = toBlock;
-        this.logger.info('Blocks processed successfully', {
+
+        // Always log progress since we're processing large ranges
+        this.logger.info('Processed block range', {
           fromBlock,
           toBlock,
-          blockHash: block.hash,
+          blockRange: toBlock - fromBlock + 1,
+          remainingBlocks: targetBlock - toBlock,
         });
+
+        // No delays, continue immediately
+        continue;
       } catch (error) {
-        this.logger.error('Error in processing loop', {
-          error,
-          lastProcessedBlock: this.lastProcessedBlock,
-        });
-        await new Promise((resolve) =>
-          setTimeout(resolve, this.config.pollInterval * 1000),
-        );
+        this.logger.error('Error in processing loop', { error });
+        // Minimal error delay
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
   }

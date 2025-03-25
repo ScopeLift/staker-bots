@@ -6,6 +6,18 @@ export interface WalletConfig {
   maxPendingTransactions: number;
 }
 
+// OpenZeppelin Defender Relayer configuration
+export interface RelayerConfig {
+  apiKey: string;
+  apiSecret: string;
+  minBalance: bigint;
+  maxPendingTransactions: number;
+  gasPolicy?: {
+    maxPriorityFeePerGas?: bigint;
+    maxFeePerGas?: bigint;
+  };
+}
+
 export interface QueuedTransaction {
   id: string;
   depositId: bigint;
@@ -17,6 +29,8 @@ export interface QueuedTransaction {
   executedAt?: Date;
   gasPrice?: bigint;
   gasLimit?: bigint;
+  tx_data?: string;
+  retryCount?: number;
 }
 
 export enum TransactionStatus {
@@ -35,6 +49,11 @@ export interface ExecutorConfig {
   transferOutThreshold: bigint;
   gasBoostPercentage: number;
   concurrentTransactions: number;
+  defaultTipReceiver?: string;
+}
+
+export interface RelayerExecutorConfig extends Omit<ExecutorConfig, 'wallet'> {
+  relayer: RelayerConfig;
 }
 
 export interface TransactionReceipt {

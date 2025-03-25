@@ -10,6 +10,9 @@ import {
 } from '../interfaces/types';
 import { ProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
+import { DatabaseWrapper } from '@/database';
+import { Interface } from 'ethers';
+import { TransactionQueueStatus } from '@/database/interfaces/types';
 
 export class BaseExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -17,9 +20,12 @@ export class BaseExecutor implements IExecutor {
   protected readonly queue: Map<string, QueuedTransaction>;
   protected isRunning: boolean;
   protected processingInterval: NodeJS.Timeout | null;
+  protected db?: DatabaseWrapper; // Database access for transaction queue
+  protected stakerContract: ethers.Contract;
 
   constructor(
-    protected readonly stakerContract: ethers.Contract,
+    protected readonly contractAddress: string,
+    protected readonly contractAbi: Interface,
     protected readonly provider: ethers.Provider,
     protected readonly config: ExecutorConfig,
   ) {
@@ -33,12 +39,27 @@ export class BaseExecutor implements IExecutor {
       throw new Error('Provider is required');
     }
 
+    // Create contract with wallet directly
+    this.stakerContract = new ethers.Contract(
+      contractAddress,
+      contractAbi,
+      this.wallet,
+    );
+
     // Validate staker contract
     if (!this.stakerContract.interface.hasFunction('bumpEarningPower')) {
       throw new Error(
         'Invalid staker contract: missing bumpEarningPower function',
       );
     }
+  }
+
+  /**
+   * Set the database instance for transaction queue management
+   */
+  setDatabase(db: DatabaseWrapper): void {
+    this.db = db;
+    this.logger.info('Database set for executor');
   }
 
   protected async getWalletBalance(): Promise<bigint> {
@@ -58,6 +79,17 @@ export class BaseExecutor implements IExecutor {
       () => this.processQueue(true),
       5000, // Process queue every 5 seconds as a backup
     );
+
+    // Also check for transactions in the DB transaction queue that need to be executed
+    setInterval(() => {
+      this.checkDatabaseTransactionQueue().catch((error) => {
+        this.logger.error('Error checking database transaction queue:', {
+          error,
+        });
+      });
+    }, 15000); // Check database queue every 15 seconds
+
+    this.logger.info('Queue processing intervals started');
   }
 
   async stop(): Promise<void> {
@@ -96,6 +128,7 @@ export class BaseExecutor implements IExecutor {
   async queueTransaction(
     depositId: bigint,
     profitability: ProfitabilityCheck,
+    txData?: string,
   ): Promise<QueuedTransaction> {
     // Check queue size
     if (this.queue.size >= this.config.maxQueueSize) {
@@ -109,6 +142,7 @@ export class BaseExecutor implements IExecutor {
       profitability,
       status: TransactionStatus.QUEUED,
       createdAt: new Date(),
+      tx_data: txData,
     };
 
     // Add to queue
@@ -116,6 +150,7 @@ export class BaseExecutor implements IExecutor {
     this.logger.info('Transaction queued:', {
       id: tx.id,
       depositId: tx.depositId.toString(),
+      hasTxData: !!txData,
     });
 
     // Process queue immediately if running
@@ -200,16 +235,45 @@ export class BaseExecutor implements IExecutor {
     try {
       // Calculate transfer amount (leave some ETH for gas)
       const feeData = await this.provider.getFeeData();
-      const gasPrice = feeData.gasPrice || BigInt(0);
+      const baseGasPrice = feeData.gasPrice || BigInt(0);
+      const boostMultiplier =
+        BigInt(100 + this.config.gasBoostPercentage) / BigInt(100);
+      const gasPrice = baseGasPrice * boostMultiplier;
+
+      // Make sure our gas price is at least equal to the base fee
+      const baseFeePerGas = feeData.maxFeePerGas || baseGasPrice;
+      const finalGasPrice =
+        gasPrice > baseFeePerGas ? gasPrice : baseFeePerGas + BigInt(1_000_000);
+
       const gasLimit = BigInt(21000); // Standard ETH transfer
-      const gasCost = gasLimit * gasPrice;
+      const gasCost = gasLimit * finalGasPrice;
       const transferAmount = balance - gasCost;
 
-      // Send transaction
-      const tx = await this.wallet.sendTransaction({
-        to: this.config.wallet.privateKey,
+      // Get the tip receiver address - use the default tip receiver from config or fallback to zero address
+      const tipReceiver = this.config.defaultTipReceiver || ethers.ZeroAddress;
+
+      this.logger.info('Transferring tips to receiver:', {
+        receiver: tipReceiver,
+        amount: ethers.formatEther(transferAmount),
+        gasPrice: finalGasPrice.toString(),
+        gasLimit: gasLimit.toString(),
+      });
+
+      // Create simple transaction object for ETH transfer
+      const txRequest = {
+        to: tipReceiver,
         value: transferAmount,
         gasLimit,
+        gasPrice: finalGasPrice,
+      };
+
+      // Send transaction directly
+      const tx = await this.wallet.sendTransaction(txRequest);
+
+      this.logger.info('Tip transfer transaction sent:', {
+        hash: tx.hash,
+        to: tipReceiver,
+        value: ethers.formatEther(transferAmount),
       });
 
       // Wait for confirmation
@@ -287,59 +351,318 @@ export class BaseExecutor implements IExecutor {
       tx.status = TransactionStatus.PENDING;
       this.queue.set(tx.id, tx);
 
-      // Get current gas price and apply boost
-      const feeData = await this.provider.getFeeData();
-      const baseGasPrice = feeData.gasPrice || BigInt(0);
-      const boostMultiplier =
-        BigInt(100 + this.config.gasBoostPercentage) / BigInt(100);
-      const gasPrice = baseGasPrice * boostMultiplier;
-
-      // Prepare transaction
-      const bumpTx =
-        await this.stakerContract.bumpEarningPower?.populateTransaction(
-          tx.depositId,
-          tx.profitability.estimates.optimalTip,
-        );
-
-      // Send transaction
-      const response = await this.wallet.sendTransaction({
-        ...bumpTx,
-        gasPrice,
-        value: tx.profitability.estimates.optimalTip,
+      this.logger.info('Starting transaction execution:', {
+        id: tx.id,
+        depositId: tx.depositId.toString(),
+        tipReceiver: tx.profitability.estimates.tipReceiver,
+        optimalTip: tx.profitability.estimates.optimalTip.toString(),
       });
 
-      // Update transaction
-      tx.hash = response.hash;
-      tx.gasPrice = gasPrice;
+      // Get transaction parameters from the tx or tx_data
+      let depositId: bigint;
+      let tipReceiver: string;
+      let tipAmount: bigint;
+
+      if (tx.tx_data) {
+        try {
+          const txData = JSON.parse(tx.tx_data);
+          if (
+            txData &&
+            txData._depositId &&
+            txData._tipReceiver &&
+            txData._requestedTip
+          ) {
+            depositId = BigInt(txData._depositId);
+            tipReceiver = txData._tipReceiver;
+            tipAmount = BigInt(txData._requestedTip);
+          } else {
+            throw new Error('Invalid tx_data format');
+          }
+        } catch (error) {
+          this.logger.warn(
+            'Failed to parse tx_data, using transaction values',
+            { error },
+          );
+          depositId = tx.depositId;
+          tipReceiver = tx.profitability.estimates.tipReceiver;
+          tipAmount = tx.profitability.estimates.optimalTip;
+        }
+      } else {
+        depositId = tx.depositId;
+        tipReceiver = tx.profitability.estimates.tipReceiver;
+        tipAmount = tx.profitability.estimates.optimalTip;
+      }
+
+      // First estimate gas for the transaction, but if it fails, use a fixed value
+      let estimate: bigint;
+      try {
+        estimate = await this.stakerContract.bumpEarningPower!.estimateGas(
+          depositId,
+          tipReceiver,
+          tipAmount,
+        );
+
+        this.logger.info('Gas estimation successful:', {
+          estimate: estimate.toString(),
+        });
+      } catch (error) {
+        // Use a fallback gas estimate if estimation fails
+        estimate = BigInt(300000); // Safe default
+        this.logger.warn('Gas estimation failed, using fallback value:', {
+          fallback: estimate.toString(),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const balance = await this.provider.getBalance(this.wallet.address);
+      this.logger.info('Checking wallet balance:', {
+        balance: balance.toString(),
+        estimate: estimate.toString(),
+      });
+
+      if (balance < estimate) {
+        throw new Error('Not enough gas in wallet, please top up.');
+      }
+
+      // Make the call directly with a set gas limit (don't rely on estimation since it failed)
+      const txOptions = {
+        gasLimit: BigInt(300000), // Use fixed gas limit
+      };
+
+      // Make the call directly, just like the example
+      this.logger.info('Sending bumpEarningPower transaction:', {
+        depositId: depositId.toString(),
+        tipReceiver,
+        tipAmount: tipAmount.toString(),
+      });
+
+      const txResponse = await this.stakerContract.bumpEarningPower!(
+        depositId,
+        tipReceiver,
+        tipAmount,
+        txOptions,
+      );
+
+      // Update transaction info
+      tx.hash = txResponse.hash;
       tx.executedAt = new Date();
       this.queue.set(tx.id, tx);
 
+      this.logger.info('Transaction sent:', { hash: txResponse.hash });
+
       // Wait for confirmation
-      const receipt = await response.wait(this.config.minConfirmations);
+      const receipt = await txResponse.wait(this.config.minConfirmations);
       if (!receipt) {
         throw new Error('Failed to get transaction receipt');
       }
 
-      // Update final status
+      // Update status based on receipt
       tx.status =
         receipt.status === 1
           ? TransactionStatus.CONFIRMED
           : TransactionStatus.FAILED;
-      this.queue.set(tx.id, tx);
 
-      this.logger.info('Transaction executed:', {
-        id: tx.id,
-        hash: tx.hash,
-        status: tx.status,
-      });
+      if (receipt.status !== 1) {
+        this.logger.error('Transaction failed:', { hash: txResponse.hash });
+      } else {
+        this.logger.info('Transaction confirmed:', {
+          hash: txResponse.hash,
+          blockNumber: receipt.blockNumber,
+        });
+
+        // Update database status to mark this transaction as processed
+        if (this.db && tx.tx_data) {
+          try {
+            const txData = JSON.parse(tx.tx_data);
+            if (txData && txData._depositId) {
+              const depositId = txData._depositId;
+              this.logger.info(
+                `Updating database status for deposit ${depositId}`,
+              );
+
+              await this.db.updateTransactionQueueItem(depositId.toString(), {
+                status: TransactionQueueStatus.CONFIRMED,
+                hash: txResponse.hash,
+                error: undefined,
+              });
+
+              this.logger.info(
+                `Database updated for deposit ${depositId} - marked as completed`,
+              );
+            }
+          } catch (dbError) {
+            this.logger.error('Failed to update database status:', {
+              error: dbError,
+            });
+          }
+        }
+      }
+
+      this.queue.set(tx.id, tx);
     } catch (error) {
       tx.status = TransactionStatus.FAILED;
       tx.error = error as Error;
       this.queue.set(tx.id, tx);
-      this.logger.error('Error executing transaction:', {
+      this.logger.error('Transaction execution failed:', { error });
+
+      // Retry logic for gas-related errors
+      if (
+        error instanceof Error &&
+        (error.message.includes('max fee per gas less than block base fee') ||
+          error.message.includes('replacement transaction underpriced') ||
+          error.message.includes('transaction underpriced'))
+      ) {
+        this.logger.warn(
+          'Gas error detected, will retry with higher gas price',
+        );
+
+        // Set up for retry
+        tx.status = TransactionStatus.QUEUED;
+        tx.retryCount = (tx.retryCount || 0) + 1;
+
+        if (tx.retryCount <= this.config.maxRetries) {
+          this.queue.set(tx.id, tx);
+          setTimeout(() => this.processQueue(false), this.config.retryDelayMs);
+        } else {
+          this.logger.error('Max retry attempts exceeded:', {
+            retries: tx.retryCount,
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Calculate the function selector for a given function signature
+   */
+  protected calculateFunctionSelector(
+    functionName: string,
+    paramTypes: string[],
+  ): string {
+    // Create the canonical signature: name(type1,type2,...)
+    const signature = `${functionName}(${paramTypes.join(',')})`;
+
+    // Hash it using keccak256 and take first 4 bytes (8 characters after 0x)
+    const hash = ethers.keccak256(ethers.toUtf8Bytes(signature));
+    const selector = hash.substring(0, 10); // 0x + 8 characters (4 bytes)
+
+    return selector;
+  }
+
+  /**
+   * Check if there are transactions in the database that need to be executed
+   */
+  protected async checkDatabaseTransactionQueue(): Promise<void> {
+    if (!this.db) {
+      this.logger.warn(
+        'No database instance available, cannot check transaction queue',
+      );
+      return;
+    }
+
+    try {
+      // Query the database for pending transactions
+      const pendingTransactions =
+        await this.db.getTransactionQueueItemsByStatus(
+          TransactionQueueStatus.PENDING,
+        );
+
+      if (!pendingTransactions || pendingTransactions.length === 0) {
+        this.logger.debug('No pending transactions found in database');
+        return;
+      }
+
+      this.logger.info(
+        `Found ${pendingTransactions.length} pending transactions in database`,
+      );
+
+      // Process each transaction not already in the queue
+      for (const txItem of pendingTransactions) {
+        try {
+          // Check if already in our in-memory queue
+          const existingTx = Array.from(this.queue.values()).find(
+            (queuedTx) => queuedTx.depositId.toString() === txItem.deposit_id,
+          );
+
+          if (existingTx) {
+            this.logger.debug(
+              `Transaction for deposit ${txItem.deposit_id} already in memory queue, skipping`,
+            );
+            continue;
+          }
+
+          // Parse tx_data
+          const txData = txItem.tx_data;
+          // Create a new transaction object
+          const depositId = BigInt(txItem.deposit_id);
+
+          // Create a minimal profitability check object
+          const profitability: ProfitabilityCheck = {
+            canBump: true,
+            constraints: {
+              calculatorEligible: true,
+              hasEnoughRewards: true,
+              isProfitable: true,
+            },
+            estimates: {
+              optimalTip: BigInt(txItem.tip_amount || '0'),
+              gasEstimate: BigInt('150000'), // Default estimate
+              expectedProfit: BigInt('0'),
+              tipReceiver: txItem.tip_receiver || ethers.ZeroAddress,
+            },
+          };
+
+          // Add to in-memory queue
+          await this.queueTransaction(depositId, profitability, txData);
+
+          this.logger.info(
+            `Added transaction from database to memory queue: deposit ${txItem.deposit_id}`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `Error processing transaction ${txItem.id} from database:`,
+            { error },
+          );
+        }
+      }
+
+      // Process the queue immediately
+      await this.processQueue(false);
+    } catch (error) {
+      this.logger.error('Error retrieving transactions from database:', {
         error,
-        id: tx.id,
       });
     }
+  }
+
+  // Keep the validateTransactionData method as it's still useful
+  protected validateTransactionData(
+    data: string | null | undefined,
+    context: string,
+  ): boolean {
+    if (!data) {
+      this.logger.error(`Empty transaction data in ${context}`);
+      return false;
+    }
+
+    if (data === '0x' || data === '') {
+      this.logger.error(`Invalid empty transaction data in ${context}`);
+      return false;
+    }
+
+    if (!data.startsWith('0x')) {
+      this.logger.error(
+        `Transaction data doesn't start with 0x in ${context}: ${data}`,
+      );
+      return false;
+    }
+
+    if (data.length < 10) {
+      this.logger.error(`Transaction data too short in ${context}: ${data}`);
+      return false;
+    }
+
+    // Valid transaction data
+    return true;
   }
 }

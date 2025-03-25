@@ -65,7 +65,11 @@ export class EventProcessor {
       const remainingAmount = BigInt(deposit.amount) - event.withdrawnAmount;
 
       if (remainingAmount <= 0) {
-        await this.db.deleteDeposit(event.depositId);
+        // Instead of deleting, reset values and set delegatee to owner
+        await this.db.updateDeposit(event.depositId, {
+          amount: '0',
+          delegatee_address: deposit.owner_address,
+        });
       } else {
         await this.db.updateDeposit(event.depositId, {
           amount: remainingAmount.toString(),
@@ -98,6 +102,27 @@ export class EventProcessor {
     event: DelegateeAlteredEvent,
   ): Promise<ProcessingResult> {
     try {
+      // Check if deposit exists first
+      const deposit = await this.db.getDeposit(event.depositId);
+      if (!deposit) {
+        this.logger.warn(
+          'Received DelegateeAltered event for non-existent deposit',
+          {
+            depositId: event.depositId,
+            oldDelegatee: event.oldDelegatee,
+            newDelegatee: event.newDelegatee,
+            blockNumber: event.blockNumber,
+          },
+        );
+        return {
+          success: false,
+          error: new Error(`Deposit ${event.depositId} not found`),
+          blockNumber: event.blockNumber,
+          eventHash: event.transactionHash,
+          retryable: false, // Don't retry since deposit doesn't exist
+        };
+      }
+
       await this.db.updateDeposit(event.depositId, {
         delegatee_address: event.newDelegatee,
       });

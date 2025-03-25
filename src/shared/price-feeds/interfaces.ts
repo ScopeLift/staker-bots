@@ -18,4 +18,6 @@ export interface PriceFeedConfig {
   baseUrl?: string;
   timeout?: number;
   retries?: number;
+  arbTestTokenAddress?: string;
+  arbRealTokenAddress?: string;
 }

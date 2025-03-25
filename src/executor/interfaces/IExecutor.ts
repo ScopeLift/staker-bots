@@ -1,5 +1,6 @@
 import { ProfitabilityCheck } from '@/profitability/interfaces/types';
 import { QueuedTransaction, QueueStats, TransactionReceipt } from './types';
+import { DatabaseWrapper } from '@/database';
 
 export interface IExecutor {
   /**
@@ -11,6 +12,11 @@ export interface IExecutor {
    * Stop the executor service
    */
   stop(): Promise<void>;
+
+  /**
+   * Set the database for accessing transaction queue
+   */
+  setDatabase?(db: DatabaseWrapper): void;
 
   /**
    * Get the current status of the executor
@@ -28,6 +34,7 @@ export interface IExecutor {
   queueTransaction(
     depositId: bigint,
     profitability: ProfitabilityCheck,
+    txData?: string,
   ): Promise<QueuedTransaction>;
 
   /**

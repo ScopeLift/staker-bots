@@ -2,7 +2,7 @@ import { supabase } from './client';
 import { Deposit } from '../interfaces/types';
 
 export async function createDeposit(deposit: Deposit): Promise<void> {
-  const { error } = await supabase.from('deposits').insert(deposit);
+  const { error } = await supabase.from('deposits').insert([deposit]);
   if (error) throw error;
 }
 
@@ -14,23 +14,13 @@ export async function updateDeposit(
     .from('deposits')
     .update(update)
     .eq('deposit_id', depositId);
-
-  if (error) throw error;
-}
-
-export async function deleteDeposit(depositId: string): Promise<void> {
-  const { error } = await supabase
-    .from('deposits')
-    .delete()
-    .eq('deposit_id', depositId);
-
   if (error) throw error;
 }
 
 export async function getDeposit(depositId: string): Promise<Deposit | null> {
   const { data, error } = await supabase
     .from('deposits')
-    .select()
+    .select('*')
     .eq('deposit_id', depositId)
     .single();
   if (error) throw error;
@@ -42,14 +32,14 @@ export async function getDepositsByDelegatee(
 ): Promise<Deposit[]> {
   const { data, error } = await supabase
     .from('deposits')
-    .select()
+    .select('*')
     .eq('delegatee_address', delegateeAddress);
   if (error) throw error;
-  return data;
+  return data || [];
 }
 
 export async function getAllDeposits(): Promise<Deposit[]> {
-  const { data, error } = await supabase.from('deposits').select();
+  const { data, error } = await supabase.from('deposits').select('*');
   if (error) throw error;
   return data || [];
 }

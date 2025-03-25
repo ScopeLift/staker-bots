@@ -7,7 +7,7 @@ import { CONFIG } from '@/config';
 export const STAKER_ABI = [
   'event StakeDeposited(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
   'event StakeWithdrawn(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
-  'event DelegateeAltered(uint256 indexed depositId, address indexed oldDelegatee, address indexed newDelegatee)',
+  'event DelegateeAltered(uint256 indexed depositId, address oldDelegatee, address newDelegatee, uint256 earningPower)',
 ];
 
 export const createMonitorConfig = (
@@ -17,5 +17,6 @@ export const createMonitorConfig = (
   provider,
   database,
   networkName: 'arbitrum',
+  arbTokenAddress: CONFIG.monitor.arbTestTokenAddress,
   ...CONFIG.monitor,
 });

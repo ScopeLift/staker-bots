@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import { EventEmitter } from 'events';
 import { IDatabase } from '@/database';
 import { EventProcessor } from './EventProcessor';
 import { ConsoleLogger, Logger } from './logging';
@@ -11,7 +12,7 @@ import {
 } from './types';
 import { STAKER_ABI } from './constants';
 
-export class StakerMonitor {
+export class StakerMonitor extends EventEmitter {
   private readonly db: IDatabase;
   private readonly provider: ethers.Provider;
   private readonly contract: ethers.Contract;
@@ -23,6 +24,7 @@ export class StakerMonitor {
   private lastProcessedBlock: number;
 
   constructor(config: MonitorConfig) {
+    super();
     this.config = config;
     this.db = config.database;
     this.provider = config.provider;
@@ -114,13 +116,6 @@ export class StakerMonitor {
           fromBlock + this.config.maxBlockRange - 1,
         );
 
-        this.logger.info('Processing new blocks', {
-          fromBlock,
-          toBlock,
-          currentBlock,
-          blockRange: toBlock - fromBlock + 1,
-        });
-
         await this.processBlockRange(fromBlock, toBlock);
 
         const block = await this.provider.getBlock(toBlock);
@@ -135,11 +130,6 @@ export class StakerMonitor {
         });
 
         this.lastProcessedBlock = toBlock;
-        this.logger.info('Blocks processed successfully', {
-          fromBlock,
-          toBlock,
-          blockHash: block.hash,
-        });
       } catch (error) {
         this.logger.error('Error in processing loop', {
           error,
@@ -156,8 +146,6 @@ export class StakerMonitor {
     fromBlock: number,
     toBlock: number,
   ): Promise<void> {
-    this.logger.info('Querying events for block range', { fromBlock, toBlock });
-
     const [depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all(
       [
         this.contract.queryFilter(
@@ -177,6 +165,49 @@ export class StakerMonitor {
         ),
       ],
     );
+
+    // Group events by transaction hash for correlation
+    const eventsByTx = new Map<
+      string,
+      {
+        deposited?: ethers.EventLog;
+        altered?: ethers.EventLog;
+      }
+    >();
+
+    // Group StakeDeposited events
+    for (const event of depositedEvents) {
+      const typedEvent = event as ethers.EventLog;
+      const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+      this.logger.debug('Adding StakeDeposited event to transaction group', {
+        txHash: typedEvent.transactionHash,
+        depositId: typedEvent.args.depositId.toString(),
+        blockNumber: typedEvent.blockNumber,
+        hasExistingAltered: !!existing.altered,
+      });
+      eventsByTx.set(typedEvent.transactionHash, {
+        ...existing,
+        deposited: typedEvent,
+      });
+    }
+
+    // Group DelegateeAltered events
+    for (const event of alteredEvents) {
+      const typedEvent = event as ethers.EventLog;
+      const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+      this.logger.debug('Adding DelegateeAltered event to transaction group', {
+        txHash: typedEvent.transactionHash,
+        depositId: typedEvent.args.depositId.toString(),
+        blockNumber: typedEvent.blockNumber,
+        hasExistingDeposit: !!existing.deposited,
+        oldDelegatee: typedEvent.args.oldDelegatee,
+        newDelegatee: typedEvent.args.newDelegatee,
+      });
+      eventsByTx.set(typedEvent.transactionHash, {
+        ...existing,
+        altered: typedEvent,
+      });
+    }
 
     // If we found any events, fetch and log the full blocks
     const eventBlocks = new Set([
@@ -211,49 +242,42 @@ export class StakerMonitor {
       });
     }
 
-    // Log raw events with transaction details
-    this.logger.info('Raw events found:', {
-      deposited: depositedEvents.map((e) => {
-        const event = e as ethers.EventLog;
-        return {
-          blockNumber: event.blockNumber,
-          txHash: event.transactionHash,
-          txIndex: event.transactionIndex,
-          args: event.args,
-        };
-      }),
-      altered: alteredEvents.map((e) => {
-        const event = e as ethers.EventLog;
-        return {
-          blockNumber: event.blockNumber,
-          txHash: event.transactionHash,
-          txIndex: event.transactionIndex,
-          args: event.args,
-        };
-      }),
-    });
+    // Process events by transaction
+    for (const [txHash, events] of eventsByTx) {
+      if (events.deposited) {
+        const depositEvent = events.deposited;
+        const { depositId, owner: ownerAddress, amount } = depositEvent.args;
 
-    // Process events in order
-    for (const event of depositedEvents) {
-      const typedEvent = event as ethers.EventLog;
-      const { depositId, owner: ownerAddress, amount } = typedEvent.args;
-      this.logger.debug('Processing StakeDeposited event', {
-        depositId: depositId.toString(),
-        ownerAddress,
-        amount: amount.toString(),
-        blockNumber: typedEvent.blockNumber,
-        txHash: typedEvent.transactionHash,
-      });
-      await this.handleStakeDeposited({
-        depositId: depositId.toString(),
-        ownerAddress,
-        delegateeAddress: ownerAddress,
-        amount,
-        blockNumber: typedEvent.blockNumber!,
-        transactionHash: typedEvent.transactionHash!,
-      });
+        // Get the delegatee from the DelegateeAltered event if it exists, otherwise use owner
+        const delegateeAddress = events.altered
+          ? events.altered.args.newDelegatee
+          : ownerAddress;
+
+        this.logger.info('Processing deposit transaction group', {
+          txHash,
+          depositId: depositId.toString(),
+          ownerAddress,
+          delegateeAddress,
+          amount: amount.toString(),
+          blockNumber: depositEvent.blockNumber,
+          hasAlteredEvent: !!events.altered,
+          originalDelegatee: events.altered
+            ? events.altered.args.oldDelegatee
+            : null,
+        });
+
+        await this.handleStakeDeposited({
+          depositId: depositId.toString(),
+          ownerAddress,
+          delegateeAddress,
+          amount,
+          blockNumber: depositEvent.blockNumber!,
+          transactionHash: depositEvent.transactionHash!,
+        });
+      }
     }
 
+    // Process remaining events (StakeWithdrawn and standalone DelegateeAltered)
     for (const event of withdrawnEvents) {
       const typedEvent = event as ethers.EventLog;
       const { depositId, amount } = typedEvent.args;
@@ -271,8 +295,13 @@ export class StakerMonitor {
       });
     }
 
+    // Only process DelegateeAltered events that weren't part of a deposit
     for (const event of alteredEvents) {
       const typedEvent = event as ethers.EventLog;
+      const txEvents = eventsByTx.get(typedEvent.transactionHash);
+      // Skip if this was part of a deposit transaction
+      if (txEvents?.deposited) continue;
+
       const { depositId, oldDelegatee, newDelegatee } = typedEvent.args;
       this.logger.debug('Processing DelegateeAltered event', {
         depositId,
@@ -340,6 +369,7 @@ export class StakerMonitor {
     while (attempts < this.config.maxRetries) {
       const result = await this.eventProcessor.processDelegateeAltered(event);
       if (result.success || !result.retryable) {
+        this.emit('delegateEvent', event);
         return;
       }
       attempts++;
@@ -354,6 +384,10 @@ export class StakerMonitor {
     this.logger.error(
       'Failed to process DelegateeAltered event after max retries',
       { event },
+    );
+    this.emit(
+      'error',
+      new Error('Failed to process DelegateeAltered event after max retries'),
     );
   }
 

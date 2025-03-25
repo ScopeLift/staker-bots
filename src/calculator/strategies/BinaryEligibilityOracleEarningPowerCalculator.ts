@@ -5,7 +5,7 @@ import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { ethers } from 'ethers';
 import { CONFIG } from '@/config';
 import { REWARD_CALCULATOR_ABI } from '../constants';
-// import { ScoreEvent as DbScoreEvent } from '@/database/interfaces/types';
+import { ProfitabilityEngineWrapper } from '@/profitability/ProfitabilityEngineWrapper';
 
 export class BinaryEligibilityOracleEarningPowerCalculator
   implements ICalculatorStrategy
@@ -16,6 +16,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   private readonly contract: IRewardCalculator;
   private readonly provider: ethers.Provider;
   private lastProcessedBlock: number;
+  private profitabilityEngine: ProfitabilityEngineWrapper | null = null;
 
   constructor(db: IDatabase, provider: ethers.Provider) {
     this.db = db;
@@ -33,6 +34,16 @@ export class BinaryEligibilityOracleEarningPowerCalculator
       REWARD_CALCULATOR_ABI,
       provider,
     ) as unknown as IRewardCalculator;
+  }
+
+  /**
+   * Set the profitability engine for score event notifications
+   */
+  setProfitabilityEngine(engine: ProfitabilityEngineWrapper): void {
+    this.profitabilityEngine = engine;
+    this.logger.info(
+      'Profitability engine registered for score event notifications',
+    );
   }
 
   async getEarningPower(
@@ -103,11 +114,11 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         toBlock,
       });
 
-      // Try getting events with a wider block range for testing
+      // Query events for the exact block range
       const events = await this.contract.queryFilter(
         filter,
-        fromBlock - 100, // Look back 100 blocks
-        toBlock + 100, // Look forward 100 blocks
+        fromBlock,
+        toBlock,
       );
 
       this.logger.info('Raw events from contract:', {
@@ -125,6 +136,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         fromBlock,
         toBlock,
         contractAddress: CONFIG.monitor.rewardCalculatorAddress,
+        hasProfitabilityEngine: this.profitabilityEngine !== null,
       });
 
       // Process events in batch
@@ -174,11 +186,55 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
   private async processScoreEvent(event: ScoreEvent): Promise<void> {
     try {
+      // Update score cache first
       this.scoreCache.set(event.delegatee, event.score);
+
+      // Store in database
       await this.db.createScoreEvent({
         ...event,
         score: event.score.toString(), // Convert bigint to string for database
       });
+
+      // Notify profitability engine about the score event if it's set
+      if (this.profitabilityEngine) {
+        try {
+          this.logger.info('Forwarding score event to profitability engine', {
+            delegatee: event.delegatee,
+            score: event.score.toString(),
+            blockNumber: event.block_number,
+          });
+
+          await this.profitabilityEngine.onScoreEvent(
+            event.delegatee,
+            event.score,
+          );
+
+          this.logger.info(
+            'Successfully forwarded score event to profitability engine',
+            {
+              delegatee: event.delegatee,
+            },
+          );
+        } catch (error) {
+          this.logger.error(
+            'Error notifying profitability engine of score event:',
+            {
+              error,
+              event,
+            },
+          );
+          // Continue processing even if notification fails
+        }
+      } else {
+        this.logger.warn(
+          'No profitability engine set, score event not forwarded',
+          {
+            delegatee: event.delegatee,
+            score: event.score.toString(),
+          },
+        );
+      }
+
       this.logger.debug('Score event processed', {
         delegatee: event.delegatee,
         score: event.score.toString(),

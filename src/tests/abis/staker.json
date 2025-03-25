@@ -2,5 +2,6 @@
   "function deposits(uint256) view returns (tuple(address owner, uint256 balance, uint256 earningPower, address delegatee, address claimer))",
   "function unclaimedReward(uint256) view returns (uint256)",
   "function maxBumpTip() view returns (uint256)",
-  "function bumpEarningPower(uint256, uint256) payable returns (uint256)"
+  "function bumpEarningPower(uint256, address, uint256) returns (uint256)",
+  "function REWARD_TOKEN() view returns (address)"
 ]

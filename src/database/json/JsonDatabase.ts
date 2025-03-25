@@ -1,8 +1,17 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { IDatabase } from '../interfaces/IDatabase';
-import { Deposit, ProcessingCheckpoint, ScoreEvent } from '../interfaces/types';
+import {
+  Deposit,
+  ProcessingCheckpoint,
+  ScoreEvent,
+  ProcessingQueueItem,
+  TransactionQueueItem,
+  ProcessingQueueStatus,
+  TransactionQueueStatus,
+} from '../interfaces/types';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
+import { v4 as uuidv4 } from 'uuid';
 
 export class JsonDatabase implements IDatabase {
   private dbPath: string;
@@ -11,6 +20,8 @@ export class JsonDatabase implements IDatabase {
     deposits: Record<string, Deposit>;
     checkpoints: Record<string, ProcessingCheckpoint>;
     score_events: Record<string, Record<number, ScoreEvent>>;
+    processing_queue: Record<string, ProcessingQueueItem>;
+    transaction_queue: Record<string, TransactionQueueItem>;
   };
 
   constructor(dbPath = 'staker-monitor-db.json') {
@@ -20,6 +31,8 @@ export class JsonDatabase implements IDatabase {
       deposits: {},
       checkpoints: {},
       score_events: {},
+      processing_queue: {},
+      transaction_queue: {},
     };
     this.logger.info('JsonDatabase initialized at:', { path: this.dbPath });
     this.initializeDb();
@@ -28,7 +41,17 @@ export class JsonDatabase implements IDatabase {
   private async initializeDb() {
     try {
       const fileContent = await fs.readFile(this.dbPath, 'utf-8');
-      this.data = JSON.parse(fileContent);
+      const loadedData = JSON.parse(fileContent);
+
+      // Ensure all required sections exist
+      this.data = {
+        deposits: loadedData.deposits || {},
+        checkpoints: loadedData.checkpoints || {},
+        score_events: loadedData.score_events || {},
+        processing_queue: loadedData.processing_queue || {},
+        transaction_queue: loadedData.transaction_queue || {},
+      };
+
       this.logger.info('Loaded existing database');
     } catch (error) {
       // If file doesn't exist, create it with empty data
@@ -67,21 +90,14 @@ export class JsonDatabase implements IDatabase {
     update: Partial<Omit<Deposit, 'deposit_id'>>,
   ): Promise<void> {
     const deposit = this.data.deposits[depositId];
-    if (!deposit) throw new Error(`Deposit ${depositId} not found`);
-
-    // Only update if there are actual changes
-    const hasChanges = Object.entries(update).some(
-      ([key, value]) => deposit[key as keyof typeof deposit] !== value,
-    );
-
-    if (hasChanges) {
-      this.data.deposits[depositId] = {
-        ...deposit,
-        ...update,
-        updated_at: new Date().toISOString(),
-      };
-      await this.saveToFile();
+    if (!deposit) {
+      throw new Error(`Deposit ${depositId} not found`);
     }
+    this.data.deposits[depositId] = {
+      ...deposit,
+      ...update,
+    };
+    await this.saveToFile();
   }
 
   async getDeposit(depositId: string): Promise<Deposit | null> {
@@ -225,5 +241,193 @@ export class JsonDatabase implements IDatabase {
       }
     });
     await this.saveToFile();
+  }
+
+  // Processing Queue methods
+  async createProcessingQueueItem(
+    item: Omit<
+      ProcessingQueueItem,
+      'id' | 'created_at' | 'updated_at' | 'attempts'
+    >,
+  ): Promise<ProcessingQueueItem> {
+    const now = new Date().toISOString();
+    const id = uuidv4();
+
+    const newItem: ProcessingQueueItem = {
+      ...item,
+      id,
+      created_at: now,
+      updated_at: now,
+      attempts: 0,
+    };
+
+    this.data.processing_queue[id] = newItem;
+    await this.saveToFile();
+
+    return newItem;
+  }
+
+  async updateProcessingQueueItem(
+    id: string,
+    update: Partial<
+      Omit<ProcessingQueueItem, 'id' | 'created_at' | 'updated_at'>
+    >,
+  ): Promise<void> {
+    const item = this.data.processing_queue[id];
+
+    if (!item) {
+      throw new Error(`Processing queue item with id ${id} not found`);
+    }
+
+    this.data.processing_queue[id] = {
+      ...item,
+      ...update,
+      updated_at: new Date().toISOString(),
+    };
+
+    await this.saveToFile();
+  }
+
+  async getProcessingQueueItem(
+    id: string,
+  ): Promise<ProcessingQueueItem | null> {
+    return id in this.data.processing_queue
+      ? this.data.processing_queue[id]!
+      : null;
+  }
+
+  async getProcessingQueueItemsByStatus(
+    status: ProcessingQueueStatus,
+  ): Promise<ProcessingQueueItem[]> {
+    return Object.values(this.data.processing_queue).filter(
+      (item) => item.status === status,
+    );
+  }
+
+  async getProcessingQueueItemByDepositId(
+    depositId: string,
+  ): Promise<ProcessingQueueItem | null> {
+    const items = Object.values(this.data.processing_queue).filter(
+      (item) => item.deposit_id === depositId,
+    );
+
+    // Return the most recently updated item if multiple exist
+    if (items.length > 0) {
+      return items.sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      )[0]!;
+    }
+
+    return null;
+  }
+
+  async getProcessingQueueItemsByDelegatee(
+    delegatee: string,
+  ): Promise<ProcessingQueueItem[]> {
+    return Object.values(this.data.processing_queue).filter(
+      (item) => item.delegatee === delegatee,
+    );
+  }
+
+  async deleteProcessingQueueItem(id: string): Promise<void> {
+    if (this.data.processing_queue[id]) {
+      delete this.data.processing_queue[id];
+      await this.saveToFile();
+    }
+  }
+
+  // Transaction Queue methods
+  async createTransactionQueueItem(
+    item: Omit<
+      TransactionQueueItem,
+      'id' | 'created_at' | 'updated_at' | 'attempts'
+    >,
+  ): Promise<TransactionQueueItem> {
+    const now = new Date().toISOString();
+    const id = uuidv4();
+
+    const newItem: TransactionQueueItem = {
+      ...item,
+      id,
+      created_at: now,
+      updated_at: now,
+      attempts: 0,
+    };
+
+    this.data.transaction_queue[id] = newItem;
+    await this.saveToFile();
+
+    return newItem;
+  }
+
+  async updateTransactionQueueItem(
+    id: string,
+    update: Partial<
+      Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at'>
+    >,
+  ): Promise<void> {
+    const item = this.data.transaction_queue[id];
+
+    if (!item) {
+      throw new Error(`Transaction queue item with id ${id} not found`);
+    }
+
+    this.data.transaction_queue[id] = {
+      ...item,
+      ...update,
+      updated_at: new Date().toISOString(),
+    };
+
+    await this.saveToFile();
+  }
+
+  async getTransactionQueueItem(
+    id: string,
+  ): Promise<TransactionQueueItem | null> {
+    return id in this.data.transaction_queue
+      ? this.data.transaction_queue[id]!
+      : null;
+  }
+
+  async getTransactionQueueItemsByStatus(
+    status: TransactionQueueStatus,
+  ): Promise<TransactionQueueItem[]> {
+    return Object.values(this.data.transaction_queue).filter(
+      (item) => item.status === status,
+    );
+  }
+
+  async getTransactionQueueItemByDepositId(
+    depositId: string,
+  ): Promise<TransactionQueueItem | null> {
+    const items = Object.values(this.data.transaction_queue).filter(
+      (item) => item.deposit_id === depositId,
+    );
+
+    // Return the most recently updated item if multiple exist
+    if (items.length > 0) {
+      return items.sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      )[0]!;
+    }
+
+    return null;
+  }
+
+  async getTransactionQueueItemsByHash(
+    hash: string,
+  ): Promise<TransactionQueueItem[]> {
+    return Object.values(this.data.transaction_queue).filter(
+      (item) => item.hash === hash,
+    );
+  }
+
+  async deleteTransactionQueueItem(id: string): Promise<void> {
+    if (this.data.transaction_queue[id]) {
+      delete this.data.transaction_queue[id];
+      await this.saveToFile();
+    }
   }
 }
