@@ -67,3 +67,55 @@ export interface MonitorStatus {
     isConnected: boolean;
   };
 }
+
+export interface EventGroup {
+  deposited?: ethers.EventLog;
+  lstDeposited?: ethers.EventLog;
+  altered?: ethers.EventLog;
+  stakedWithAttribution?: ethers.EventLog;
+  unstaked?: ethers.EventLog;
+  depositInitialized?: ethers.EventLog;
+  depositUpdated?: ethers.EventLog;
+}
+
+export interface TransactionEntry {
+  txHash: string;
+  events: EventGroup;
+  blockNumber: number;
+}
+
+export interface GovLstContractInfo {
+  depositId?: string;
+  defaultDelegatee?: string;
+  isDefaultDelegatee?: boolean;
+}
+
+export interface StakedWithAttributionEvent {
+  depositId: string;
+  amount: BigNumberish;
+  referrer: string;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface UnstakedEvent {
+  account: string;
+  amount: BigNumberish;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface DepositInitializedEvent {
+  delegatee: string;
+  depositId: string;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface DepositUpdatedEvent {
+  holder: string;
+  oldDepositId: string;
+  newDepositId: string;
+  blockNumber: number;
+  transactionHash: string;
+}
