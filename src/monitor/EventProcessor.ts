@@ -17,6 +17,13 @@ export class EventProcessor {
     event: StakeDepositedEvent,
   ): Promise<ProcessingResult> {
     try {
+      // Enhanced logging for deposit event processing
+      this.logger.info('PROCESSING DEPOSIT EVENT IN EVENT PROCESSOR', {
+        depositId: event.depositId,
+        delegateeAddress: event.delegateeAddress,
+        isDefaultDelegatee: event.delegateeAddress === "0x0000000000000000000000000000000000000b01"
+      });
+
       // Check if deposit already exists
       const existingDeposit = await this.db.getDeposit(event.depositId);
 
@@ -24,6 +31,15 @@ export class EventProcessor {
         // Calculate the new total amount (accumulate instead of overwrite)
         const currentAmount = BigInt(existingDeposit.amount);
         const newAmount = currentAmount + BigInt(event.amount.toString());
+
+        // Log details about existing deposit and delegatee
+        this.logger.info('UPDATING EXISTING DEPOSIT - DELEGATEE INFO', {
+          depositId: event.depositId,
+          currentDelegatee: existingDeposit.delegatee_address,
+          newDelegatee: event.delegateeAddress,
+          delegateeChanged: existingDeposit.delegatee_address !== event.delegateeAddress,
+          isDefaultDelegatee: event.delegateeAddress === "0x0000000000000000000000000000000000000b01"
+        });
 
         this.logger.info('Updating existing deposit (accumulating amount)', {
           depositId: event.depositId,
@@ -42,6 +58,13 @@ export class EventProcessor {
           amount: newAmount.toString(),
         });
       } else {
+        // Log new deposit creation with delegatee info
+        this.logger.info('CREATING NEW DEPOSIT - DELEGATEE INFO', {
+          depositId: event.depositId,
+          delegateeAddress: event.delegateeAddress,
+          isDefaultDelegatee: event.delegateeAddress === "0x0000000000000000000000000000000000000b01"
+        });
+
         // Create new deposit
         await this.db.createDeposit({
           deposit_id: event.depositId,
@@ -58,6 +81,13 @@ export class EventProcessor {
           amount: event.amount.toString(),
         });
       }
+
+      // Log final state after processing
+      this.logger.info('DEPOSIT PROCESSING COMPLETED', {
+        depositId: event.depositId,
+        delegateeAddress: event.delegateeAddress,
+        success: true
+      });
 
       return {
         success: true,
@@ -130,6 +160,14 @@ export class EventProcessor {
     event: DelegateeAlteredEvent,
   ): Promise<ProcessingResult> {
     try {
+      // Enhanced logging for delegatee alteration processing
+      this.logger.info('PROCESSING DELEGATEE ALTERED EVENT', {
+        depositId: event.depositId,
+        oldDelegatee: event.oldDelegatee,
+        newDelegatee: event.newDelegatee,
+        isDefaultDelegatee: event.newDelegatee === "0x0000000000000000000000000000000000000b01"
+      });
+
       // Check if deposit exists first
       const deposit = await this.db.getDeposit(event.depositId);
       if (!deposit) {
@@ -151,8 +189,25 @@ export class EventProcessor {
         };
       }
 
+      // Log details about deposit before updating delegatee
+      this.logger.info('UPDATING DELEGATEE FOR DEPOSIT', {
+        depositId: event.depositId,
+        owner: deposit.owner_address,
+        depositor: deposit.depositor_address,
+        currentDelegatee: deposit.delegatee_address,
+        newDelegatee: event.newDelegatee,
+        isDefaultDelegatee: event.newDelegatee === "0x0000000000000000000000000000000000000b01"
+      });
+
       await this.db.updateDeposit(event.depositId, {
         delegatee_address: event.newDelegatee,
+      });
+
+      // Log final state after updating
+      this.logger.info('DELEGATEE UPDATE COMPLETED', {
+        depositId: event.depositId,
+        newDelegatee: event.newDelegatee,
+        success: true
       });
 
       return {

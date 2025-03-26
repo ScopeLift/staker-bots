@@ -23,6 +23,7 @@ export const CONFIG = {
     key: process.env.SUPABASE_KEY,
   },
   monitor: {
+    defaultDelegatee: process.env.DEFAULT_DELEGATEE || '',
     networkName: process.env.NETWORK_NAME || 'mainnet',
     rpcUrl: process.env.RPC_URL!,
     chainId: parseInt(process.env.CHAIN_ID || '1'),
