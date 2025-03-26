@@ -52,12 +52,15 @@ async function main() {
 
   // Initialize GovLst contract
   logger.info('Initializing GovLst contract...')
-  const govLstAddress = CONFIG.profitability.rewardTokenAddress
+  const govLstAddress = CONFIG.govlst.addresses[0] // Use first address from config
+  if (!govLstAddress) {
+    throw new Error('No GovLst contract address configured')
+  }
   const govLstAbi = JSON.parse(
     fs.readFileSync('./src/tests/abis/govlst.json', 'utf-8')
   )
   const govLstContract = new ethers.Contract(
-    govLstAddress!,
+    govLstAddress,
     govLstAbi,
     provider
   )
@@ -82,11 +85,11 @@ async function main() {
     logger,
     priceFeed,
     {
-      minProfitMargin: ethers.parseEther('0.01'), // 0.01 ETH min profit
-      maxBatchSize: 10,
-      rewardTokenAddress: CONFIG.profitability.rewardTokenAddress,
-      defaultTipReceiver: CONFIG.executor.tipReceiver || ethers.ZeroAddress,
-      gasPriceBuffer: 20, // 20% buffer for gas price fluctuations
+      minProfitMargin: CONFIG.govlst.minProfitMargin,
+      maxBatchSize: CONFIG.govlst.maxBatchSize,
+      gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,
+      rewardTokenAddress: govLstAddress,
+      defaultTipReceiver: CONFIG.executor.tipReceiver,
       priceFeed: {
         cacheDuration: 10 * 60 * 1000 // 10 minutes
       }
@@ -105,14 +108,16 @@ async function main() {
         minBalance: ethers.parseEther('0.1'),
         maxPendingTransactions: 5
       },
-      maxQueueSize: 10,
-      minConfirmations: 1,
-      maxRetries: 2,
-      retryDelayMs: 2000,
+      maxQueueSize: 100,
+      minConfirmations: CONFIG.monitor.confirmations,
+      maxRetries: CONFIG.monitor.maxRetries,
+      retryDelayMs: 5000,
       transferOutThreshold: ethers.parseEther('0.5'),
-      gasBoostPercentage: 5,
-      concurrentTransactions: 2
-    }
+      gasBoostPercentage: CONFIG.govlst.gasPriceBuffer,
+      concurrentTransactions: 3,
+      defaultTipReceiver: CONFIG.executor.tipReceiver
+    },
+    database
   )
 
   try {
