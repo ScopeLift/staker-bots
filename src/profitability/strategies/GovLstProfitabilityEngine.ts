@@ -20,6 +20,10 @@ import {
   ProfitabilityError,
 } from '../errors'
 
+/**
+ * GovLstProfitabilityEngine - Analyzes and determines profitability of GovLst deposits
+ * Handles gas estimation, share calculation, and grouping deposits into profitable batches
+ */
 export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly logger: Logger
   private isRunning: boolean
@@ -28,6 +32,13 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly rewardTokenAddress: string
   private gasPriceCache: { price: bigint; timestamp: number } | null = null
 
+  /**
+   * Creates a new GovLstProfitabilityEngine instance
+   * @param govLstContract - The GovLst contract instance with required methods
+   * @param provider - Ethers provider for blockchain interaction
+   * @param config - Configuration for profitability calculations
+   * @param priceFeed - Price feed for token price conversions
+   */
   constructor(
     private readonly govLstContract: ethers.Contract & {
       sharesOf(account: string): Promise<bigint>
@@ -49,18 +60,30 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     this.rewardTokenAddress = config.rewardTokenAddress
   }
 
+  /**
+   * Starts the profitability engine
+   * Enables processing of deposits and profitability calculations
+   */
   async start(): Promise<void> {
     if (this.isRunning) return
     this.isRunning = true
     this.logger.info(EVENTS.ENGINE_STARTED)
   }
 
+  /**
+   * Stops the profitability engine
+   * Halts all deposit processing and calculations
+   */
   async stop(): Promise<void> {
     if (!this.isRunning) return
     this.isRunning = false
     this.logger.info(EVENTS.ENGINE_STOPPED)
   }
 
+  /**
+   * Gets the current status of the profitability engine
+   * @returns Object containing running state, gas prices, and queue metrics
+   */
   async getStatus(): Promise<{
     isRunning: boolean
     lastGasPrice: bigint
@@ -79,9 +102,10 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
   /**
    * Checks if a group of deposits can be profitably claimed
+   * Calculates total shares, payout amount, gas costs and expected profit
    * @param deposits Array of deposits to check
    * @returns Profitability analysis for the deposit group
-   * @throws Error if profitability check fails
+   * @throws ProfitabilityError if check fails
    */
   async checkGroupProfitability(deposits: GovLstDeposit[]): Promise<GovLstProfitabilityCheck> {
     if (!deposits.length) return this.createUnprofitableCheck()
@@ -133,9 +157,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   }
 
   /**
-   * Analyzes and groups deposits into profitable batches
+   * Analyzes deposits and groups them into profitable batches
+   * Sorts deposits by shares and creates optimal groups for claiming
    * @param deposits Array of deposits to analyze
    * @returns Analysis of deposit groups with profitability metrics
+   * @throws QueueProcessingError if analysis fails
    */
   async analyzeAndGroupDeposits(deposits: GovLstDeposit[]): Promise<GovLstBatchAnalysis> {
     if (!deposits.length) return this.createEmptyBatchAnalysis()
@@ -159,10 +185,12 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
-  async queueGroupForExecution(): Promise<boolean> {
-    return false
-  }
-
+  /**
+   * Gets current gas price with buffer added for safety margin
+   * Caches results to avoid excessive provider calls
+   * @returns Current gas price with buffer applied
+   * @throws GasEstimationError if gas price fetch fails
+   */
   private async getGasPriceWithBuffer(): Promise<bigint> {
     const now = Date.now()
     if (
@@ -194,16 +222,30 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
+  /**
+   * Estimates gas required for claiming rewards for given deposit IDs
+   * @param depositIds Array of deposit IDs to estimate gas for
+   * @returns Estimated gas amount or fallback value
+   * @throws GasEstimationError if estimation fails
+   */
   private async estimateClaimGas(depositIds: bigint[]): Promise<bigint> {
     try {
+      const payoutAmount = await this.govLstContract.payoutAmount()
+      const minExpectedReward = payoutAmount / BigInt(2)
+
       const gasEstimate = await this.provider.estimateGas({
         to: this.govLstContract.target,
         data: this.govLstContract.interface.encodeFunctionData(
           'claimAndDistributeReward',
-          [CONTRACT_CONSTANTS.ZERO_ADDRESS, BigInt(0), depositIds],
+          [
+            CONTRACT_CONSTANTS.ZERO_ADDRESS,
+            minExpectedReward,
+            depositIds,
+          ],
         ),
       })
-      return gasEstimate
+
+      return gasEstimate || GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE
     } catch (error) {
       throw new GasEstimationError(error as Error, {
         depositIds: depositIds.map(id => id.toString()),
@@ -212,14 +254,42 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
+  /**
+   * Calculates total shares for a group of deposits
+   * @param deposits Array of deposits to sum shares for
+   * @returns Total shares across all deposits
+   */
   private async calculateTotalShares(deposits: GovLstDeposit[]): Promise<bigint> {
-    return deposits.reduce((sum, deposit) => sum + deposit.shares_of, BigInt(0))
+    const shares = await Promise.all(
+      deposits.map(async (deposit) => {
+        try {
+          return await this.govLstContract.sharesOf(deposit.owner_address)
+        } catch (error) {
+          this.logger.warn(`Failed to get shares for ${deposit.owner_address}`, { error })
+          return BigInt(0)
+        }
+      })
+    )
+    return shares.reduce((sum, share) => sum + share, BigInt(0))
   }
 
+  /**
+   * Sorts deposits by share amount in descending order
+   * @param deposits Array of deposits to sort
+   * @returns Sorted array of deposits
+   */
   private sortDepositsByShares(deposits: GovLstDeposit[]): GovLstDeposit[] {
     return [...deposits].sort((a, b) => Number(b.shares_of - a.shares_of))
   }
 
+  /**
+   * Creates groups of deposits that would be profitable to claim
+   * Groups deposits until they exceed payout amount, then checks profitability
+   * @param deposits Array of deposits to group
+   * @param payoutAmount Current payout amount from contract
+   * @returns Array of profitable deposit groups
+   * @throws QueueProcessingError if grouping fails
+   */
   private async createProfitableGroups(
     deposits: GovLstDeposit[],
     payoutAmount: bigint,
@@ -230,8 +300,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
     try {
       for (const deposit of deposits) {
-        currentGroup.push(deposit)
-        currentTotalShares += deposit.shares_of
+        const shares = await this.govLstContract.sharesOf(deposit.owner_address)
+        if (shares <= BigInt(0)) continue
+
+        currentGroup.push({ ...deposit, shares_of: shares })
+        currentTotalShares += shares
 
         if (currentTotalShares > payoutAmount) {
           const profitability = await this.checkGroupProfitability(currentGroup)
@@ -259,14 +332,29 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
+  /**
+   * Calculates total gas estimate across all deposit groups
+   * @param groups Array of deposit groups to sum gas estimates for
+   * @returns Total gas estimate
+   */
   private calculateTotalGasEstimate(groups: GovLstDepositGroup[]): bigint {
     return groups.reduce((sum, group) => sum + group.gas_estimate, BigInt(0))
   }
 
+  /**
+   * Calculates total expected profit across all deposit groups
+   * @param groups Array of deposit groups to sum profits for
+   * @returns Total expected profit
+   */
   private calculateTotalExpectedProfit(groups: GovLstDepositGroup[]): bigint {
     return groups.reduce((sum, group) => sum + group.expected_profit, BigInt(0))
   }
 
+  /**
+   * Creates a default unprofitable check result
+   * Used when deposits array is empty or other preconditions fail
+   * @returns Default unprofitable check result
+   */
   private createUnprofitableCheck(): GovLstProfitabilityCheck {
     return {
       is_profitable: false,
@@ -284,6 +372,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
+  /**
+   * Creates a default empty batch analysis result
+   * Used when deposits array is empty
+   * @returns Default empty batch analysis
+   */
   private createEmptyBatchAnalysis(): GovLstBatchAnalysis {
     return {
       deposit_groups: [],

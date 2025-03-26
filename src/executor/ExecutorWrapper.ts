@@ -12,25 +12,53 @@ import {
   DEFAULT_EXECUTOR_CONFIG,
   DEFAULT_RELAYER_EXECUTOR_CONFIG,
 } from './constants';
-import { ProfitabilityCheck } from '@/profitability/interfaces/types';
+import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { IExecutor } from './interfaces/IExecutor';
 import { DatabaseWrapper } from '@/database';
+import { ExecutorError } from './errors';
 
+/**
+ * Supported executor types
+ */
 export enum ExecutorType {
   WALLET = 'WALLET',
   RELAYER = 'RELAYER',
 }
 
+/**
+ * Wrapper class that manages different executor implementations
+ * Provides a unified interface for interacting with executors
+ */
 export class ExecutorWrapper {
   private executor: IExecutor;
 
+  /**
+   * Creates a new ExecutorWrapper instance
+   * @param stakerContract - The staker contract instance
+   * @param provider - Ethereum provider
+   * @param type - Type of executor to use (WALLET or RELAYER)
+   * @param config - Executor configuration
+   * @param db - Optional database instance
+   */
   constructor(
     stakerContract: ethers.Contract,
     provider: ethers.Provider,
     type: ExecutorType = ExecutorType.WALLET,
     config: Partial<ExecutorConfig | RelayerExecutorConfig> = {},
-    private readonly db?: DatabaseWrapper, // Database access
+    private readonly db?: DatabaseWrapper,
   ) {
+    if (!provider) {
+      throw new ExecutorError('Provider is required', {}, false);
+    }
+
+    if (!stakerContract?.target || !stakerContract?.interface) {
+      throw new ExecutorError(
+        'Invalid staker contract provided',
+        { contract: stakerContract },
+        false
+      );
+    }
+
     if (type === ExecutorType.WALLET) {
       // Create a BaseExecutor with local wallet
       const fullConfig: ExecutorConfig = {
@@ -42,15 +70,12 @@ export class ExecutorWrapper {
         },
       };
 
-      this.executor = new BaseExecutor(
-        stakerContract.target as string,
-        stakerContract.interface.fragments,
+      this.executor = new BaseExecutor({
+        contractAddress: stakerContract.target as string,
+        contractAbi: stakerContract.interface,
         provider,
-        fullConfig,
-      );
-      if (db && this.executor.setDatabase) {
-        this.executor.setDatabase(db);
-      }
+        config: fullConfig,
+      });
     } else if (type === ExecutorType.RELAYER) {
       // Create a RelayerExecutor with OpenZeppelin Defender
       const fullConfig: RelayerExecutorConfig = {
@@ -63,30 +88,53 @@ export class ExecutorWrapper {
       };
 
       this.executor = new RelayerExecutor(stakerContract, provider, fullConfig);
-      if (db && this.executor.setDatabase) {
-        this.executor.setDatabase(db);
-      }
     } else {
-      throw new Error(`Unsupported executor type: ${type}`);
+      throw new ExecutorError(
+        `Unsupported executor type: ${type}`,
+        { type },
+        false
+      );
+    }
+
+    // Set database if provided
+    if (db && this.executor.setDatabase) {
+      this.executor.setDatabase(db);
     }
   }
 
   /**
-   * Start the executor
+   * Starts the executor service
    */
   async start(): Promise<void> {
-    await this.executor.start();
+    try {
+      await this.executor.start();
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to start executor',
+        { error: error instanceof Error ? error.message : String(error) },
+        true
+      );
+    }
   }
 
   /**
-   * Stop the executor
+   * Stops the executor service
    */
   async stop(): Promise<void> {
-    await this.executor.stop();
+    try {
+      await this.executor.stop();
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to stop executor',
+        { error: error instanceof Error ? error.message : String(error) },
+        true
+      );
+    }
   }
 
   /**
-   * Get the current status of the executor
+   * Gets the current status of the executor
+   * @returns Current executor status
    */
   async getStatus(): Promise<{
     isRunning: boolean;
@@ -94,54 +142,128 @@ export class ExecutorWrapper {
     pendingTransactions: number;
     queueSize: number;
   }> {
-    return this.executor.getStatus();
+    try {
+      return await this.executor.getStatus();
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to get executor status',
+        { error: error instanceof Error ? error.message : String(error) },
+        true
+      );
+    }
   }
 
   /**
-   * Queue a transaction for execution
+   * Queues a transaction for execution
+   * @param depositIds - Array of deposit IDs to claim rewards for
+   * @param profitability - Profitability check results
+   * @param txData - Optional transaction data
+   * @returns Queued transaction object
    */
   async queueTransaction(
-    depositId: bigint,
-    profitability: ProfitabilityCheck,
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
     txData?: string,
   ): Promise<QueuedTransaction> {
-    return this.executor.queueTransaction(depositId, profitability, txData);
+    try {
+      return await this.executor.queueTransaction(depositIds, profitability, txData);
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to queue transaction',
+        {
+          error: error instanceof Error ? error.message : String(error),
+          depositIds: depositIds.map(String),
+          profitability,
+        },
+        true
+      );
+    }
   }
 
   /**
-   * Get statistics about the transaction queue
+   * Gets statistics about the transaction queue
+   * @returns Queue statistics
    */
   async getQueueStats(): Promise<QueueStats> {
-    return this.executor.getQueueStats();
+    try {
+      return await this.executor.getQueueStats();
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to get queue statistics',
+        { error: error instanceof Error ? error.message : String(error) },
+        true
+      );
+    }
   }
 
   /**
-   * Get a specific transaction by ID
+   * Gets a specific transaction by ID
+   * @param id - Transaction ID
+   * @returns Transaction object or null if not found
    */
   async getTransaction(id: string): Promise<QueuedTransaction | null> {
-    return this.executor.getTransaction(id);
+    try {
+      return await this.executor.getTransaction(id);
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to get transaction',
+        {
+          error: error instanceof Error ? error.message : String(error),
+          transactionId: id,
+        },
+        true
+      );
+    }
   }
 
   /**
-   * Get transaction receipt
+   * Gets a transaction receipt
+   * @param hash - Transaction hash
+   * @returns Transaction receipt or null if not found
    */
-  async getTransactionReceipt(
-    hash: string,
-  ): Promise<TransactionReceipt | null> {
-    return this.executor.getTransactionReceipt(hash);
+  async getTransactionReceipt(hash: string): Promise<TransactionReceipt | null> {
+    try {
+      return await this.executor.getTransactionReceipt(hash);
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to get transaction receipt',
+        {
+          error: error instanceof Error ? error.message : String(error),
+          transactionHash: hash,
+        },
+        true
+      );
+    }
   }
 
   /**
-   * Transfer accumulated tips to the configured receiver
+   * Transfers accumulated tips to the configured receiver
+   * @returns Transaction receipt or null if transfer not needed/possible
    */
   async transferOutTips(): Promise<TransactionReceipt | null> {
-    return this.executor.transferOutTips();
+    try {
+      return await this.executor.transferOutTips();
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to transfer tips',
+        { error: error instanceof Error ? error.message : String(error) },
+        true
+      );
+    }
   }
 
   /**
-   * Clear the transaction queue
+   * Clears the transaction queue
    */
   async clearQueue(): Promise<void> {
-    await this.executor.clearQueue();
+    try {
+      await this.executor.clearQueue();
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to clear queue',
+        { error: error instanceof Error ? error.message : String(error) },
+        true
+      );
+    }
   }
 }
