@@ -1,36 +1,38 @@
-import { BatchAnalysis, Deposit, ProfitabilityCheck } from './types';
+import { GovLstDeposit, GovLstProfitabilityCheck, GovLstBatchAnalysis } from './types'
 
-export interface IProfitabilityEngine {
-  /**
-   * Check if a single deposit can be profitably bumped
-   * @param deposit The deposit to check
-   * @returns Profitability analysis for the deposit
-   */
-  checkProfitability(deposit: Deposit): Promise<ProfitabilityCheck>;
-
-  /**
-   * Analyze a batch of deposits for optimal profitability
-   * @param deposits Array of deposits to analyze
-   * @returns Batch profitability analysis with recommendations
-   */
-  analyzeBatchProfitability(deposits: Deposit[]): Promise<BatchAnalysis>;
-
+export interface IGovLstProfitabilityEngine {
   /**
    * Start the profitability engine
    */
-  start(): Promise<void>;
+  start(): Promise<void>
 
   /**
    * Stop the profitability engine
    */
-  stop(): Promise<void>;
+  stop(): Promise<void>
 
   /**
    * Get the current status of the profitability engine
    */
   getStatus(): Promise<{
-    isRunning: boolean;
-    lastGasPrice: bigint;
-    lastUpdateTimestamp: number;
-  }>;
+    isRunning: boolean
+    lastGasPrice: bigint
+    lastUpdateTimestamp: number
+    queueSize: number
+    groupCount: number
+  }>
+
+  /**
+   * Check if a group of deposits can be profitably claimed
+   * @param deposits Array of deposits to check
+   * @returns Profitability analysis for the deposit group
+   */
+  checkGroupProfitability(deposits: GovLstDeposit[]): Promise<GovLstProfitabilityCheck>
+
+  /**
+   * Analyze all deposits and group them into profitable batches
+   * @param deposits Array of all deposits to analyze
+   * @returns Analysis of deposit groups with profitability metrics
+   */
+  analyzeAndGroupDeposits(deposits: GovLstDeposit[]): Promise<GovLstBatchAnalysis>
 }

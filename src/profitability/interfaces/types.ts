@@ -62,3 +62,43 @@ export interface ProfitabilityConfig {
     cacheDuration: number; // Cache duration in milliseconds
   };
 }
+
+export interface GovLstDeposit extends Deposit {
+  shares_of: bigint
+  payout_amount: bigint
+}
+
+export interface GovLstDepositGroup {
+  deposit_ids: bigint[]
+  total_shares: bigint
+  total_payout: bigint
+  expected_profit: bigint
+  gas_estimate: bigint
+}
+
+export interface GovLstProfitabilityCheck {
+  is_profitable: boolean
+  constraints: {
+    has_enough_shares: boolean
+    meets_min_reward: boolean
+    is_profitable: boolean
+  }
+  estimates: {
+    total_shares: bigint
+    payout_amount: bigint
+    gas_estimate: bigint
+    expected_profit: bigint
+  }
+}
+
+export interface GovLstBatchAnalysis {
+  deposit_groups: GovLstDepositGroup[]
+  total_gas_estimate: bigint
+  total_expected_profit: bigint
+  total_deposits: number
+}
+
+export interface DepositCache {
+  deposit: GovLstDeposit
+  timestamp: number
+}
