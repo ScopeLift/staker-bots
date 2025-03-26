@@ -4,7 +4,7 @@ import { ConsoleLogger } from './monitor/logging';
 import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
 import { ExecutorWrapper, ExecutorType } from './executor';
-import { ProfitabilityEngineWrapper } from './profitability/ProfitabilityEngineWrapper';
+import { GovLstProfitabilityEngine } from './profitability';
 import { GovLstClaimerWrapper } from './govlst-claimer/GovLstClaimerWrapper';
 import { ethers } from 'ethers';
 import fs from 'fs/promises';
@@ -60,7 +60,7 @@ async function waitForDeposits(database: DatabaseWrapper): Promise<boolean> {
 
 const runningComponents: {
   monitor?: StakerMonitor;
-  profitabilityEngine?: ProfitabilityEngineWrapper;
+  profitabilityEngine?: GovLstProfitabilityEngine;
   transactionExecutor?: ExecutorWrapper;
   govLstClaimer?: GovLstClaimerWrapper;
 } = {};
