@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS deposits (
     deposit_id TEXT PRIMARY KEY,
     owner_address TEXT NOT NULL,
+    depositor_address TEXT NOT NULL,
     delegatee_address TEXT,
     amount NUMERIC NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::TEXT, NOW()) NOT NULL,

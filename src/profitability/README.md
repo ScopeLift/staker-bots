@@ -10,25 +10,24 @@ The profitability engine integrates with the [Staker Contract](https://github.co
 
 ### Queue-Based Processing System
 
-The profitability engine implements a queue-based system that responds to score events from the calculator component:
+The profitability engine implements a queue-based system that processes deposits for profitable bump opportunities:
 
-1. **Score Event Handling**: When delegatee scores change, the calculator notifies the profitability engine
-2. **Deposit Queueing**: All deposits associated with the updated delegatee are added to a processing queue
-3. **Batch Processing**: Deposits are processed in batches to optimize gas usage
-4. **Transaction Execution**: Profitable deposits are forwarded to the executor component
+1. **Deposit Queueing**: Deposits are added to a processing queue
+2. **Batch Processing**: Deposits are processed in batches to optimize gas usage
+3. **Transaction Execution**: Profitable deposits are forwarded to the executor component
 
-This event-driven architecture ensures that deposits are only processed when they might have become profitable due to score changes, rather than checking all deposits periodically.
+This architecture ensures that deposits are processed efficiently and only when they might be profitable.
 
 ### Processing Flow
 
 ```
-┌─────────────┐    Score    ┌─────────────┐   Queue   ┌─────────────┐  Transaction  ┌─────────────┐
-│  Calculator │───Event────▶│Profitability│───Item───▶│ Processing  │───Request────▶│  Executor   │
-│  Component  │             │   Engine    │           │    Queue    │               │  Component  │
-└─────────────┘             └─────────────┘           └─────────────┘               └─────────────┘
-                                   ▲                                                      │
-                                   │                                                      │
-                                   └──────────────────Transaction─Status─────────────────┘
+┌─────────────┐   Queue   ┌─────────────┐  Transaction  ┌─────────────┐
+│Profitability│───Item───▶│ Processing  │───Request────▶│  Executor   │
+│   Engine    │           │    Queue    │               │  Component  │
+└─────────────┘           └─────────────┘               └─────────────┘
+       ▲                                                      │
+       │                                                      │
+       └──────────────────Transaction─Status─────────────────┘
 ```
 
 ### Components
@@ -37,7 +36,6 @@ This event-driven architecture ensures that deposits are only processed when the
 
 - Main entry point for profitability analysis functionality
 - Manages the processing and transaction queues
-- Responds to score events from calculator component
 - Coordinates with executor for transaction submission
 - Implements strategy pattern to support different profitability calculation methods
 - Tracks engine state, queue sizes, and processing statistics
@@ -45,7 +43,7 @@ This event-driven architecture ensures that deposits are only processed when the
 #### BaseProfitabilityEngine
 
 - Default profitability engine implementation
-- Validates bump requirements using calculator
+- Validates bump requirements
 - Calculates optimal tips based on gas costs
 - Performs batch analysis and optimization
 - Implements gas price buffering for volatility
@@ -103,20 +101,11 @@ const engine = new ProfitabilityEngineWrapper(
   },
 );
 
-// Set up connections between components
-calculator.setProfitabilityEngine(engine);
+// Set up connection to executor
 engine.setExecutor(executor);
 
 // Start the engine
 await engine.start();
-```
-
-### Triggering Score Events
-
-Score events are normally triggered by the calculator component when it detects changes in delegatee scores. For testing, you can trigger them manually:
-
-```typescript
-await engine.onScoreEvent(delegateeAddress, newScore);
 ```
 
 ### Checking Single Deposit Profitability
@@ -148,7 +137,6 @@ console.log(
 const status = await engine.getStatus();
 console.log('Engine running:', status.isRunning);
 console.log('Queue size:', status.queueSize);
-console.log('Delegatee count:', status.delegateeCount);
 
 const queueStats = await engine.getQueueStats();
 console.log('Pending items:', queueStats.pendingCount);
@@ -159,7 +147,6 @@ console.log('Failed items:', queueStats.failedCount);
 
 ## Integration Points
 
-- BinaryEligibilityCalculator for bump eligibility checks and score event notifications
 - Executor component for transaction submission
 - Staker contract for reward and tip constraints
 - Price feed for cost estimation
@@ -182,14 +169,13 @@ The engine includes built-in status monitoring:
 - Last gas price
 - Last update timestamp
 - Queue sizes and processing statistics
-- Delegatee breakdown
 - Transaction success/failure rates
 
 ## Backup Processing
 
-In addition to the event-driven queue, a periodic backup process runs to ensure no deposits are missed:
+In addition to the main queue processor, a periodic backup process runs to ensure no deposits are missed:
 
 1. Checks for deposits not currently in the queue
-2. Triggers score events for their delegatees
+2. Adds them to the processing queue
 3. Runs at a lower frequency than the main queue processor
 4. Provides redundancy in case of missed events

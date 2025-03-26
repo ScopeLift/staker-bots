@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import { ConsoleLogger } from '@/monitor/logging';
 
+const SUPABASE_NOT_CONFIGURED_ERROR = 'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
+
 const logger = new ConsoleLogger('info');
 
 /**
@@ -14,8 +16,10 @@ async function runMigrations() {
     // Migration files in order of application
     const migrationFiles = [
       'schema.sql',
+      'depositor_address.sql',
       'score_events.sql',
       'queue_tables.sql',
+      'govlst_tables.sql',
     ];
 
     logger.info('Starting database migrations...');
@@ -37,7 +41,12 @@ async function runMigrations() {
           logger.debug(
             `Executing SQL statement: ${statement.substring(0, 100)}...`,
           );
-          const { error } = await supabase.rpc('exec_sql', { sql: statement });
+          const client = supabase();
+          if (!client) {
+            throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+          }
+
+          const { error } = await client.rpc('exec_sql', { sql: statement });
 
           if (error) {
             logger.error(`Error executing statement in ${filename}:`, {

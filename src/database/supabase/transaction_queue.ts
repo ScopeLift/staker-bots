@@ -4,6 +4,8 @@ import {
   TransactionQueueStatus,
 } from '../interfaces/types';
 
+const SUPABASE_NOT_CONFIGURED_ERROR = 'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
+
 export async function createTransactionQueueItem(
   item: Omit<
     TransactionQueueItem,
@@ -15,7 +17,12 @@ export async function createTransactionQueueItem(
     attempts: 0,
   };
 
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('transaction_queue')
     .insert([newItem])
     .select('*')
@@ -31,7 +38,12 @@ export async function updateTransactionQueueItem(
     Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at'>
   >,
 ): Promise<void> {
-  const { error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { error } = await client
     .from('transaction_queue')
     .update(update)
     .eq('id', id);
@@ -42,7 +54,12 @@ export async function updateTransactionQueueItem(
 export async function getTransactionQueueItem(
   id: string,
 ): Promise<TransactionQueueItem | null> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('transaction_queue')
     .select('*')
     .eq('id', id)
@@ -59,7 +76,12 @@ export async function getTransactionQueueItem(
 export async function getTransactionQueueItemsByStatus(
   status: TransactionQueueStatus,
 ): Promise<TransactionQueueItem[]> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('transaction_queue')
     .select('*')
     .eq('status', status);
@@ -71,7 +93,12 @@ export async function getTransactionQueueItemsByStatus(
 export async function getTransactionQueueItemByDepositId(
   depositId: string,
 ): Promise<TransactionQueueItem | null> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('transaction_queue')
     .select('*')
     .eq('deposit_id', depositId)
@@ -90,7 +117,12 @@ export async function getTransactionQueueItemByDepositId(
 export async function getTransactionQueueItemsByHash(
   hash: string,
 ): Promise<TransactionQueueItem[]> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('transaction_queue')
     .select('*')
     .eq('hash', hash);
@@ -100,7 +132,12 @@ export async function getTransactionQueueItemsByHash(
 }
 
 export async function deleteTransactionQueueItem(id: string): Promise<void> {
-  const { error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { error } = await client
     .from('transaction_queue')
     .delete()
     .eq('id', id);

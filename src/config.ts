@@ -23,6 +23,8 @@ export const CONFIG = {
     key: process.env.SUPABASE_KEY,
   },
   monitor: {
+    defaultDelegatee: process.env.DEFAULT_DELEGATEE || '',
+    networkName: process.env.NETWORK_NAME || 'mainnet',
     rpcUrl: process.env.RPC_URL!,
     chainId: parseInt(process.env.CHAIN_ID || '1'),
     stakerAddress: process.env.STAKER_CONTRACT_ADDRESS!,
@@ -66,6 +68,18 @@ export const CONFIG = {
       tokenAddress: process.env.PRICE_FEED_TOKEN_ADDRESS || '',
       cacheDuration: 10 * 60 * 1000, // 10 minutes
     },
+  },
+  govlst: {
+    addresses: process.env.GOVLST_ADDRESSES?.split(',') || [],
+    payoutAmount: process.env.GOVLST_PAYOUT_AMOUNT
+      ? BigInt(process.env.GOVLST_PAYOUT_AMOUNT)
+      : BigInt(0),
+    minProfitMargin: process.env.GOVLST_MIN_PROFIT_MARGIN
+      ? BigInt(process.env.GOVLST_MIN_PROFIT_MARGIN)
+      : BigInt(0),
+    maxBatchSize: parseInt(process.env.GOVLST_MAX_BATCH_SIZE || '10'),
+    claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600'),
+    gasPriceBuffer: parseInt(process.env.GOVLST_GAS_PRICE_BUFFER || '20'),
   },
 } as const;
 

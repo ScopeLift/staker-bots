@@ -4,8 +4,8 @@ import { IDatabase, ProcessingCheckpoint } from '@/database';
 export interface MonitorConfig {
   provider: ethers.Provider;
   stakerAddress: string;
-  arbTokenAddress: string;
-  rewardCalculatorAddress: string;
+  tokenAddress: string;
+  rewardCalculatorAddress?: string;
   rewardNotifierAddress: string;
   networkName: string;
   chainId: number;
@@ -14,6 +14,7 @@ export interface MonitorConfig {
   database: IDatabase;
   maxBlockRange: number;
   maxRetries: number;
+  lstAddress: string;
   reorgDepth: number;
   confirmations: number;
   healthCheckInterval: number;
@@ -25,6 +26,7 @@ export interface StakeDepositedEvent {
   depositId: string;
   ownerAddress: string;
   delegateeAddress: string;
+  depositorAddress: string;
   amount: BigNumberish;
   blockNumber: number;
   transactionHash: string;
@@ -64,4 +66,56 @@ export interface MonitorStatus {
     networkName: string;
     isConnected: boolean;
   };
+}
+
+export interface EventGroup {
+  deposited?: ethers.EventLog;
+  lstDeposited?: ethers.EventLog;
+  altered?: ethers.EventLog;
+  stakedWithAttribution?: ethers.EventLog;
+  unstaked?: ethers.EventLog;
+  depositInitialized?: ethers.EventLog;
+  depositUpdated?: ethers.EventLog;
+}
+
+export interface TransactionEntry {
+  txHash: string;
+  events: EventGroup;
+  blockNumber: number;
+}
+
+export interface GovLstContractInfo {
+  depositId?: string;
+  defaultDelegatee?: string;
+  isDefaultDelegatee?: boolean;
+}
+
+export interface StakedWithAttributionEvent {
+  depositId: string;
+  amount: BigNumberish;
+  referrer: string;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface UnstakedEvent {
+  account: string;
+  amount: BigNumberish;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface DepositInitializedEvent {
+  delegatee: string;
+  depositId: string;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface DepositUpdatedEvent {
+  holder: string;
+  oldDepositId: string;
+  newDepositId: string;
+  blockNumber: number;
+  transactionHash: string;
 }

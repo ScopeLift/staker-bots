@@ -4,6 +4,8 @@ import {
   ProcessingQueueStatus,
 } from '../interfaces/types';
 
+const SUPABASE_NOT_CONFIGURED_ERROR = 'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
+
 export async function createProcessingQueueItem(
   item: Omit<
     ProcessingQueueItem,
@@ -15,7 +17,12 @@ export async function createProcessingQueueItem(
     attempts: 0,
   };
 
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('processing_queue')
     .insert([newItem])
     .select('*')
@@ -31,7 +38,12 @@ export async function updateProcessingQueueItem(
     Omit<ProcessingQueueItem, 'id' | 'created_at' | 'updated_at'>
   >,
 ): Promise<void> {
-  const { error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { error } = await client
     .from('processing_queue')
     .update(update)
     .eq('id', id);
@@ -42,7 +54,12 @@ export async function updateProcessingQueueItem(
 export async function getProcessingQueueItem(
   id: string,
 ): Promise<ProcessingQueueItem | null> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('processing_queue')
     .select('*')
     .eq('id', id)
@@ -59,7 +76,12 @@ export async function getProcessingQueueItem(
 export async function getProcessingQueueItemsByStatus(
   status: ProcessingQueueStatus,
 ): Promise<ProcessingQueueItem[]> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('processing_queue')
     .select('*')
     .eq('status', status);
@@ -71,7 +93,12 @@ export async function getProcessingQueueItemsByStatus(
 export async function getProcessingQueueItemByDepositId(
   depositId: string,
 ): Promise<ProcessingQueueItem | null> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('processing_queue')
     .select('*')
     .eq('deposit_id', depositId)
@@ -90,7 +117,12 @@ export async function getProcessingQueueItemByDepositId(
 export async function getProcessingQueueItemsByDelegatee(
   delegatee: string,
 ): Promise<ProcessingQueueItem[]> {
-  const { data, error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { data, error } = await client
     .from('processing_queue')
     .select('*')
     .eq('delegatee', delegatee);
@@ -100,7 +132,12 @@ export async function getProcessingQueueItemsByDelegatee(
 }
 
 export async function deleteProcessingQueueItem(id: string): Promise<void> {
-  const { error } = await supabase
+  const client = supabase();
+  if (!client) {
+    throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
+  }
+
+  const { error } = await client
     .from('processing_queue')
     .delete()
     .eq('id', id);

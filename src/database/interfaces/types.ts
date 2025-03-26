@@ -1,6 +1,7 @@
 export interface Deposit {
   deposit_id: string;
   owner_address: string;
+  depositor_address: string;
   amount: string;
   delegatee_address: string | null;
   created_at?: string;
@@ -53,4 +54,27 @@ export type TransactionQueueItem = {
   tip_amount?: string;
   tip_receiver?: string;
   attempts: number;
+};
+
+export type GovLstDeposit = {
+  deposit_id: string;
+  govlst_address: string;
+  last_reward_check?: string;
+  last_unclaimed_reward?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type GovLstClaimHistory = {
+  id?: string;
+  govlst_address: string;
+  deposit_ids: string[];
+  claimed_reward: string;
+  payout_amount: string;
+  profit: string;
+  transaction_hash?: string;
+  gas_used?: string;
+  gas_price?: string;
+  created_at?: string;
+  updated_at?: string;
 };
