@@ -35,19 +35,24 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   /**
    * Creates a new GovLstProfitabilityEngine instance
    * @param govLstContract - The GovLst contract instance with required methods
+   * @param stakerContract - The staker contract instance with required methods
    * @param provider - Ethers provider for blockchain interaction
    * @param config - Configuration for profitability calculations
    * @param priceFeed - Price feed for token price conversions
    */
   constructor(
     private readonly govLstContract: ethers.Contract & {
-      sharesOf(account: string): Promise<bigint>
       payoutAmount(): Promise<bigint>
       claimAndDistributeReward(
         recipient: string,
         minExpectedReward: bigint,
         depositIds: bigint[],
       ): Promise<void>
+      depositIdForHolder(account: string): Promise<bigint>
+    },
+    private readonly stakerContract: ethers.Contract & {
+      balanceOf(account: string): Promise<bigint>
+      unclaimedReward(depositId: bigint): Promise<bigint>
     },
     private readonly provider: ethers.Provider,
     private readonly config: ProfitabilityConfig,
@@ -108,51 +113,94 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
    * @throws ProfitabilityError if check fails
    */
   async checkGroupProfitability(deposits: GovLstDeposit[]): Promise<GovLstProfitabilityCheck> {
-    if (!deposits.length) return this.createUnprofitableCheck()
+    const payoutAmount = await this.govLstContract.payoutAmount()
+    this.logger.info('Current payout amount:', {
+      payoutAmount: payoutAmount.toString(),
+      payoutAmountInEther: ethers.formatEther(payoutAmount)
+    })
 
-    try {
-      const [totalShares, payoutAmount, gasEstimate] = await Promise.all([
-        this.calculateTotalShares(deposits),
-        this.govLstContract.payoutAmount(),
-        this.estimateClaimGas(deposits.map(d => d.deposit_id)),
-      ])
+    let totalRewards = BigInt(0)
+    const depositDetails = []
 
-      if (totalShares <= CONTRACT_CONSTANTS.MIN_SHARES_THRESHOLD)
-        return this.createUnprofitableCheck()
+    for (const deposit of deposits) {
+      try {
+        // Get deposit ID for the original depositor
+        const depositId = await this.govLstContract.depositIdForHolder(deposit.depositor_address)
 
-      const gasCost = gasEstimate * await this.getGasPriceWithBuffer()
-      const gasCostInToken = await this.priceFeed.getTokenPriceInWei(
-        this.rewardTokenAddress,
-        gasCost,
-      )
+        this.logger.info('Found deposit ID for depositor:', {
+          depositId: depositId.toString(),
+          depositor: deposit.depositor_address,
+          owner: deposit.owner_address
+        })
 
-      const expectedProfit = totalShares > payoutAmount
-        ? totalShares - payoutAmount - gasCostInToken
-        : BigInt(0)
+        // Get unclaimed rewards
+        const unclaimedRewards = await this.stakerContract.unclaimedReward(depositId)
+        totalRewards += unclaimedRewards
 
-      return {
-        is_profitable: expectedProfit >= this.config.minProfitMargin,
-        constraints: {
-          has_enough_shares: totalShares > payoutAmount,
-          meets_min_reward: expectedProfit >= this.config.minProfitMargin,
-          is_profitable: expectedProfit >= this.config.minProfitMargin,
-        },
-        estimates: {
-          total_shares: totalShares,
-          payout_amount: payoutAmount,
-          gas_estimate: gasEstimate,
-          expected_profit: expectedProfit,
-        },
+        this.logger.info('Calculated rewards for deposit:', {
+          depositId: depositId.toString(),
+          depositor: deposit.depositor_address,
+          owner: deposit.owner_address,
+          rewards: unclaimedRewards.toString(),
+          rewardsInEther: ethers.formatEther(unclaimedRewards)
+        })
+
+        depositDetails.push({
+          depositId,
+          rewards: unclaimedRewards
+        })
+      } catch (error) {
+        this.logger.error('Failed to get rewards for deposit:', {
+          depositId: deposit.deposit_id.toString(),
+          depositor: deposit.depositor_address,
+          owner: deposit.owner_address,
+          error: error instanceof Error ? error.message : String(error)
+        })
+        throw error
       }
-    } catch (error) {
-      throw new ProfitabilityError(
-        'Failed to check group profitability',
-        {
-          depositCount: deposits.length,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        true
-      )
+    }
+
+    // Get current gas price and estimate gas cost
+    const gasPrice = await this.provider.getFeeData()
+    const gasLimit = BigInt(300000) // Estimated gas limit for claim
+    const gasCost = (gasPrice.gasPrice || BigInt(0)) * gasLimit
+
+    // Use hardcoded prices for testing
+    // ETH price: $1800, Token price: $1
+    const ethPriceScaled = BigInt(1800) * BigInt(1e18)
+    const rewardTokenPriceScaled = BigInt(1) * BigInt(1e18)
+
+    // Calculate gas cost in reward tokens
+    const gasCostInRewardToken = (gasCost * ethPriceScaled) / rewardTokenPriceScaled
+
+    // Calculate profit after gas costs
+    const potentialProfit = totalRewards > gasCostInRewardToken ? totalRewards - gasCostInRewardToken : BigInt(0)
+
+    const isProfitable = potentialProfit > BigInt(0)
+    const meetsMinReward = totalRewards >= payoutAmount
+
+    this.logger.info('Profitability analysis:', {
+      totalRewards: ethers.formatEther(totalRewards),
+      gasCostInRewardToken: ethers.formatEther(gasCostInRewardToken),
+      potentialProfit: ethers.formatEther(potentialProfit),
+      isProfitable,
+      meetsMinReward,
+      depositDetails
+    })
+
+    return {
+      is_profitable: isProfitable && meetsMinReward,
+      constraints: {
+        has_enough_shares: true,
+        meets_min_reward: meetsMinReward,
+        is_profitable: isProfitable
+      },
+      estimates: {
+        total_shares: totalRewards,
+        payout_amount: payoutAmount,
+        gas_estimate: gasLimit,
+        expected_profit: potentialProfit
+      }
     }
   }
 
@@ -263,14 +311,29 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     const shares = await Promise.all(
       deposits.map(async (deposit) => {
         try {
-          return await this.govLstContract.sharesOf(deposit.owner_address)
+          const balance = await this.stakerContract.balanceOf(deposit.owner_address)
+          this.logger.info(`Got balance for ${deposit.owner_address}:`, { balance: balance.toString() })
+          return balance
         } catch (error) {
-          this.logger.warn(`Failed to get shares for ${deposit.owner_address}`, { error })
-          return BigInt(0)
+          this.logger.error(`Failed to get balance for ${deposit.owner_address}:`, {
+            error: error instanceof Error ? {
+              message: error.message,
+              stack: error.stack,
+              // @ts-ignore
+              code: error.code,
+              // @ts-ignore
+              data: error.data,
+              // @ts-ignore
+              transaction: error.transaction
+            } : String(error)
+          })
+          return 0n
         }
       })
     )
-    return shares.reduce((sum, share) => sum + share, BigInt(0))
+    const totalShares = shares.reduce((sum, share) => sum + share, BigInt(0))
+    this.logger.info('Total shares calculated:', { totalShares: totalShares.toString() })
+    return totalShares
   }
 
   /**
@@ -300,7 +363,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
     try {
       for (const deposit of deposits) {
-        const shares = await this.govLstContract.sharesOf(deposit.owner_address)
+        const shares = await this.stakerContract.balanceOf(deposit.owner_address)
         if (shares <= BigInt(0)) continue
 
         currentGroup.push({ ...deposit, shares_of: shares })

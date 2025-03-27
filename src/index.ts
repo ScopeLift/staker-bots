@@ -4,8 +4,9 @@ import { ConsoleLogger } from './monitor/logging';
 import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
 import { ExecutorWrapper, ExecutorType } from './executor';
-import { GovLstProfitabilityEngine } from './profitability';
-import { GovLstClaimerWrapper } from './govlst-claimer/GovLstClaimerWrapper';
+import { GovLstProfitabilityEngine, GovLstProfitabilityEngineWrapper } from './profitability';
+import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
+import { GOVLST_ABI } from './monitor/constants';
 import { ethers } from 'ethers';
 import fs from 'fs/promises';
 import path from 'path';
@@ -60,9 +61,8 @@ async function waitForDeposits(database: DatabaseWrapper): Promise<boolean> {
 
 const runningComponents: {
   monitor?: StakerMonitor;
-  profitabilityEngine?: GovLstProfitabilityEngine;
+  profitabilityEngine?: GovLstProfitabilityEngineWrapper;
   transactionExecutor?: ExecutorWrapper;
-  govLstClaimer?: GovLstClaimerWrapper;
 } = {};
 
 async function shutdown(signal: string) {
@@ -76,9 +76,6 @@ async function shutdown(signal: string) {
     }
     if (runningComponents.transactionExecutor) {
       await runningComponents.transactionExecutor.stop();
-    }
-    if (runningComponents.govLstClaimer) {
-      await runningComponents.govLstClaimer.stop();
     }
     logger.info('Shutdown completed successfully');
     process.exit(0);
@@ -135,21 +132,57 @@ async function runProfitabilityEngine(database: DatabaseWrapper) {
 
   profitabilityLogger.info('Initializing profitability engine');
 
-  const profitabilityEngine = new ProfitabilityEngineWrapper(
-    database,
-    provider,
-    CONFIG.monitor.stakerAddress,
-    profitabilityLogger,
+  // Check required addresses
+  const govLstAddress = CONFIG.govlst.addresses?.[0];
+  if (!govLstAddress) {
+    throw new Error('No GovLst contract address configured');
+  }
+
+  const stakerAddress = CONFIG.monitor.stakerAddress;
+  if (!stakerAddress) {
+    throw new Error('No staker contract address configured');
+  }
+
+  // Create contract instances
+  const govLstContract = new ethers.Contract(
+    govLstAddress,
+    GOVLST_ABI,
+    provider
+  );
+
+  const stakerContract = new ethers.Contract(
+    stakerAddress,
+    STAKER_ABI,
+    provider
+  );
+
+  // Initialize price feed
+  const priceFeed = new CoinMarketCapFeed(
     {
-      minProfitMargin: CONFIG.profitability.minProfitMargin,
-      gasPriceBuffer: CONFIG.profitability.gasPriceBuffer,
-      maxBatchSize: CONFIG.profitability.maxBatchSize,
-      rewardTokenAddress: CONFIG.profitability.rewardTokenAddress,
-      defaultTipReceiver: CONFIG.profitability.defaultTipReceiver,
+      apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
+      baseUrl: CONFIG.priceFeed.coinmarketcap.baseUrl,
+      timeout: CONFIG.priceFeed.coinmarketcap.timeout
+    },
+    profitabilityLogger
+  );
+
+  const profitabilityEngine = new GovLstProfitabilityEngineWrapper(
+    database,
+    govLstContract,
+    stakerContract,
+    provider,
+    profitabilityLogger,
+    priceFeed,
+    {
+      minProfitMargin: CONFIG.govlst.minProfitMargin,
+      gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,
+      maxBatchSize: CONFIG.govlst.maxBatchSize,
+      rewardTokenAddress: govLstAddress,
+      defaultTipReceiver: CONFIG.executor.tipReceiver || ethers.ZeroAddress,
       priceFeed: {
         cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
       },
-    },
+    }
   );
 
   await profitabilityEngine.start();
@@ -198,36 +231,6 @@ async function runExecutor(database: DatabaseWrapper) {
   await executor.start();
 
   return executor;
-}
-
-async function runGovLstClaimer(database: DatabaseWrapper, executor: ExecutorWrapper) {
-  const provider = createProvider();
-
-  // Test provider connection
-  try {
-    await provider.getNetwork();
-  } catch (error) {
-    govLstLogger.error('Failed to connect to provider:', { error });
-    throw error;
-  }
-
-  govLstLogger.info('Initializing GovLst Claimer');
-
-  // Check if GovLst addresses are configured
-  if (CONFIG.govlst.addresses?.length === 0) {
-    govLstLogger.warn('No GovLst addresses configured, claimer will be inactive');
-  }
-
-  const govLstClaimer = new GovLstClaimerWrapper(
-    database,
-    provider,
-    executor,
-    CONFIG.govlst
-  );
-
-  await govLstClaimer.start();
-
-  return govLstClaimer;
 }
 
 async function main() {
@@ -281,29 +284,19 @@ async function main() {
       );
     }
 
-    // Start GovLst claimer if requested
-    if (componentsToRun.includes('govlst') && runningComponents.transactionExecutor) {
-      logger.info('Starting GovLst claimer...');
-      runningComponents.govLstClaimer = await runGovLstClaimer(
-        database,
-        runningComponents.transactionExecutor
-      );
-    }
-
     // Connect components
     if (runningComponents.profitabilityEngine && runningComponents.transactionExecutor) {
-      // Connect profitability engine to executor
-      runningComponents.profitabilityEngine.setExecutor(
-        runningComponents.transactionExecutor,
-      );
-      logger.info('Connected profitability engine to executor');
+      logger.info('Components initialized:', {
+        monitor: !!runningComponents.monitor,
+        profitability: !!runningComponents.profitabilityEngine,
+        executor: !!runningComponents.transactionExecutor,
+      });
     }
 
     logger.info('Startup complete, running components:', {
       monitor: !!runningComponents.monitor,
       profitability: !!runningComponents.profitabilityEngine,
       executor: !!runningComponents.transactionExecutor,
-      govlst: !!runningComponents.govLstClaimer,
     });
   } catch (error) {
     await logError(error, 'Error during startup');

@@ -58,12 +58,18 @@ export interface ProfitabilityConfig {
   gasPriceBuffer: number;
   maxBatchSize: number;
   defaultTipReceiver: string;
+  executorAddress?: string;
   priceFeed: {
     cacheDuration: number; // Cache duration in milliseconds
   };
 }
 
-export interface GovLstDeposit extends Deposit {
+export interface GovLstDeposit {
+  deposit_id: bigint
+  owner_address: string
+  depositor_address: string
+  delegatee_address?: string
+  amount: bigint
   shares_of: bigint
   payout_amount: bigint
 }
@@ -101,4 +107,12 @@ export interface GovLstBatchAnalysis {
 export interface DepositCache {
   deposit: GovLstDeposit
   timestamp: number
+}
+
+export interface GovLstProfitabilityEstimates {
+  total_shares: bigint
+  total_rewards: bigint
+  payout_amount: bigint
+  gas_estimate: bigint
+  expected_profit: bigint
 }

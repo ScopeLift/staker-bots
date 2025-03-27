@@ -594,12 +594,31 @@ export class StakerMonitor extends EventEmitter {
    */
   private async handleDepositUpdated(event: DepositUpdatedEvent): Promise<void> {
     await this.withRetry(async () => {
-      // Update GovLst deposit mapping for the new deposit ID
-      await this.updateGovLstDeposit(event.newDepositId, event.holder)
+      try {
+        const result = await this.eventProcessor.processDepositUpdated(event)
+        if (result.success || !result.retryable) {
+          // Update GovLst deposit mapping for the new deposit ID
+          await this.updateGovLstDeposit(event.newDepositId, event.holder)
+          this.emit(MONITOR_EVENTS.DEPOSIT_UPDATED, event)
+          return
+        }
 
-      this.emit(MONITOR_EVENTS.DEPOSIT_UPDATED, event)
+        throw new EventProcessingError(
+          EVENT_TYPES.DEPOSIT_UPDATED,
+          new Error('Failed to process DepositUpdated event'),
+          { event }
+        )
+      } catch (error) {
+        if (error instanceof MonitorError) throw error
+        throw new EventProcessingError(
+          EVENT_TYPES.DEPOSIT_UPDATED,
+          error as Error,
+          { event }
+        )
+      }
     }, 'process DepositUpdated event')
   }
+
   /**
    * Retries an async operation with exponential backoff until it succeeds or max retries reached
    * @param operation - The async function to retry

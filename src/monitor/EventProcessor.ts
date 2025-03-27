@@ -4,9 +4,10 @@ import {
   StakeDepositedEvent,
   StakeWithdrawnEvent,
   DelegateeAlteredEvent,
+  DepositUpdatedEvent,
 } from './types';
 import { Logger } from './logging';
-import { MONITOR_CONSTANTS, EVENT_TYPES } from './constants';
+import { EVENT_TYPES } from './constants';
 import { EventProcessingError, DepositNotFoundError, DatabaseError } from './errors';
 
 /**
@@ -120,6 +121,61 @@ export class EventProcessor {
         depositId: event.depositId,
         oldDelegatee: event.oldDelegatee,
         newDelegatee: event.newDelegatee,
+      });
+    }
+  }
+
+  /**
+   * Processes a DepositUpdated event by updating the deposit mapping
+   * This event is emitted when a user updates their stake deposit
+   */
+  async processDepositUpdated(
+    event: DepositUpdatedEvent,
+  ): Promise<ProcessingResult> {
+    try {
+      // Get the old deposit to copy over relevant data
+      const oldDeposit = await this.db.getDeposit(event.oldDepositId.toString());
+      if (!oldDeposit) {
+        this.logger.warn('Old deposit not found when processing DepositUpdated', {
+          holder: event.holder,
+          oldDepositId: event.oldDepositId.toString(),
+          newDepositId: event.newDepositId.toString(),
+        });
+      }
+
+      // Create or update the new deposit with data from the old one
+      const depositData = {
+        owner_address: event.holder,
+        depositor_address: event.holder,
+        delegatee_address: oldDeposit?.delegatee_address || event.holder,
+        amount: oldDeposit?.amount || '0',
+      };
+
+      await this.db.createDeposit({
+        deposit_id: event.newDepositId.toString(),
+        ...depositData,
+      });
+
+      // If old deposit exists, mark it as moved
+      if (oldDeposit) {
+        await this.db.updateDeposit(event.oldDepositId.toString(), {
+          amount: '0',
+          delegatee_address: event.holder,
+        });
+      }
+
+      this.logger.info('Processed deposit update', {
+        holder: event.holder,
+        oldDepositId: event.oldDepositId.toString(),
+        newDepositId: event.newDepositId.toString(),
+      });
+
+      return this.createSuccessResult(event);
+    } catch (error) {
+      throw new EventProcessingError(EVENT_TYPES.DEPOSIT_UPDATED, error as Error, {
+        holder: event.holder,
+        oldDepositId: event.oldDepositId.toString(),
+        newDepositId: event.newDepositId.toString(),
       });
     }
   }

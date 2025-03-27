@@ -37,6 +37,7 @@ export class GovLstProfitabilityEngineWrapper implements IGovLstProfitabilityEng
   constructor(
     private readonly db: IDatabase,
     govLstContract: ethers.Contract,
+    stakerContract: ethers.Contract,
     provider: ethers.Provider,
     private readonly logger: Logger,
     priceFeed: IPriceFeed,
@@ -44,17 +45,26 @@ export class GovLstProfitabilityEngineWrapper implements IGovLstProfitabilityEng
   ) {
     this.engine = new GovLstProfitabilityEngine(
       govLstContract as ethers.Contract & {
-        sharesOf(account: string): Promise<bigint>
         payoutAmount(): Promise<bigint>
         claimAndDistributeReward(
           recipient: string,
           minExpectedReward: bigint,
           depositIds: bigint[],
         ): Promise<void>
+        balanceOf(account: string): Promise<bigint>
+        balanceCheckpoint(account: string): Promise<bigint>
+        depositIdForHolder(account: string): Promise<bigint>
+        earningPowerOf(depositId: bigint): Promise<bigint>
+        minQualifyingEarningPowerBips(): Promise<bigint>
+      },
+      stakerContract as ethers.Contract & {
+        balanceOf(account: string): Promise<bigint>
+        deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>
+        unclaimedReward(depositId: bigint): Promise<bigint>
       },
       provider,
       config,
-      priceFeed,
+      priceFeed
     )
   }
 
@@ -186,7 +196,8 @@ export class GovLstProfitabilityEngineWrapper implements IGovLstProfitabilityEng
     return {
       deposit_id: BigInt(deposit.deposit_id),
       owner_address: deposit.owner_address,
-      delegatee_address: deposit.delegatee_address,
+      depositor_address: deposit.depositor_address!,
+      delegatee_address: deposit.delegatee_address!,
       amount: BigInt(deposit.amount),
       shares_of: BigInt(0),
       payout_amount: BigInt(0),

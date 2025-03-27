@@ -59,12 +59,35 @@ async function main() {
   const govLstAbi = JSON.parse(
     fs.readFileSync('./src/tests/abis/govlst.json', 'utf-8')
   )
+  const stakerAbi = JSON.parse(
+    fs.readFileSync('./src/tests/abis/staker.json', 'utf-8')
+  )
   const govLstContract = new ethers.Contract(
     govLstAddress,
     govLstAbi,
     provider
-  )
+  ) as ethers.Contract & {
+    STAKER(): Promise<string>
+    depositIdForHolder(account: string): Promise<bigint>
+  }
+
+  // Get staker address
+  const stakerAddress = await govLstContract.STAKER()
+  if (!stakerAddress) {
+    throw new Error('Failed to get staker address from GovLst contract')
+  }
+
+  const stakerContract = new ethers.Contract(
+    stakerAddress,
+    stakerAbi,
+    provider
+  ) as ethers.Contract & {
+    balanceOf(account: string): Promise<bigint>
+    deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>
+    unclaimedReward(depositId: bigint): Promise<bigint>
+  }
   logger.info('GovLst contract initialized at:', { address: govLstAddress })
+  logger.info('Staker contract initialized at:', { address: stakerAddress })
 
   // Initialize price feed
   const priceFeed = new CoinMarketCapFeed(
@@ -81,6 +104,7 @@ async function main() {
   const profitabilityEngine = new GovLstProfitabilityEngineWrapper(
     database,
     govLstContract,
+    stakerContract,
     provider,
     logger,
     priceFeed,
@@ -105,7 +129,7 @@ async function main() {
     {
       wallet: {
         privateKey: CONFIG.executor.privateKey,
-        minBalance: ethers.parseEther('0.1'),
+        minBalance: ethers.parseEther('0.01'),
         maxPendingTransactions: 5
       },
       maxQueueSize: 100,
@@ -142,10 +166,23 @@ async function main() {
           amount: deposit.amount
         })
 
+        // Get deposit ID from GovLst contract
+        const depositId = await govLstContract.depositIdForHolder(deposit.owner_address)
+
+        // Get unclaimed rewards
+        const unclaimedRewards = await stakerContract.unclaimedReward(depositId)
+
+        logger.info(`Unclaimed rewards for deposit ${deposit.deposit_id}:`, {
+          depositId: depositId.toString(),
+          rewards: ethers.formatEther(unclaimedRewards),
+          owner: deposit.owner_address
+        })
+
         // Check profitability
         const profitability = await profitabilityEngine.checkGroupProfitability([{
           deposit_id: BigInt(deposit.deposit_id),
           owner_address: deposit.owner_address,
+          depositor_address: deposit.depositor_address,
           delegatee_address: deposit.delegatee_address || '',
           amount: BigInt(deposit.amount),
           shares_of: BigInt(0), // Will be fetched by the engine
