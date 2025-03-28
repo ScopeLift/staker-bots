@@ -20,11 +20,11 @@ export const GAS_CONSTANTS = {
 } as const;
 
 export const QUEUE_CONSTANTS = {
-  MAX_BATCH_SIZE: 50, // Maximum number of deposits per batch
-  MIN_BATCH_SIZE: 5, // Minimum number of deposits per batch
-  MAX_RETRIES: 3, // Maximum retry attempts
-  RETRY_DELAY_MS: 5000, // Delay between retries
-  QUEUE_PROCESSOR_INTERVAL: 15000, // Queue processing interval
+  QUEUE_PROCESSOR_INTERVAL: 15000, // 15 seconds
+  MAX_BATCH_SIZE: 100, // Maximum number of deposits per batch
+  MIN_BATCH_SIZE: 1, // Minimum number of deposits per batch
+  MAX_RETRIES: 3, // Maximum number of retries per transaction
+  RETRY_DELAY: 5000, // 5 seconds between retries
 } as const;
 
 export const DEFAULT_EXECUTOR_CONFIG: ExecutorConfig = {
@@ -36,7 +36,7 @@ export const DEFAULT_EXECUTOR_CONFIG: ExecutorConfig = {
   maxQueueSize: 100,
   minConfirmations: 2,
   maxRetries: QUEUE_CONSTANTS.MAX_RETRIES,
-  retryDelayMs: QUEUE_CONSTANTS.RETRY_DELAY_MS,
+  retryDelayMs: QUEUE_CONSTANTS.RETRY_DELAY,
   transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
   gasBoostPercentage: GAS_CONSTANTS.GAS_PRICE_BUFFER_PERCENT,
   concurrentTransactions: 3,
@@ -53,7 +53,7 @@ export const DEFAULT_RELAYER_EXECUTOR_CONFIG: RelayerExecutorConfig = {
   maxQueueSize: 100,
   minConfirmations: 2,
   maxRetries: QUEUE_CONSTANTS.MAX_RETRIES,
-  retryDelayMs: QUEUE_CONSTANTS.RETRY_DELAY_MS,
+  retryDelayMs: QUEUE_CONSTANTS.RETRY_DELAY,
   transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
   gasBoostPercentage: GAS_CONSTANTS.GAS_PRICE_BUFFER_PERCENT,
   concurrentTransactions: 3,

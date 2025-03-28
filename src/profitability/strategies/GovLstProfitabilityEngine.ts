@@ -49,9 +49,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         depositIds: bigint[],
       ): Promise<void>
       depositIdForHolder(account: string): Promise<bigint>
+      minQualifyingEarningPowerBips(): Promise<bigint>
     },
     private readonly stakerContract: ethers.Contract & {
       balanceOf(account: string): Promise<bigint>
+      deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>
       unclaimedReward(depositId: bigint): Promise<bigint>
     },
     private readonly provider: ethers.Provider,
@@ -114,6 +116,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
    */
   async checkGroupProfitability(deposits: GovLstDeposit[]): Promise<GovLstProfitabilityCheck> {
     const payoutAmount = await this.govLstContract.payoutAmount()
+    const minQualifyingEarningPowerBips = await this.govLstContract.minQualifyingEarningPowerBips()
+
     this.logger.info('Current payout amount:', {
       payoutAmount: payoutAmount.toString(),
       payoutAmountInEther: ethers.formatEther(payoutAmount)
@@ -124,14 +128,30 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
     for (const deposit of deposits) {
       try {
-        // Get deposit ID for the original depositor
-        const depositId = await this.govLstContract.depositIdForHolder(deposit.depositor_address)
+        // Use deposit ID from the database
+        const depositId = deposit.deposit_id
 
-        this.logger.info('Found deposit ID for depositor:', {
+        this.logger.info('Using deposit ID from database:', {
           depositId: depositId.toString(),
           depositor: deposit.depositor_address,
           owner: deposit.owner_address
         })
+
+        // Get deposit details from staker contract
+        if (!this.stakerContract.deposits) {
+          throw new Error('Contract method deposits not found')
+        }
+        const [owner, balance, earningPower, delegatee, claimer] = await this.stakerContract.deposits(depositId)
+
+        // Check if earning power meets minimum threshold
+        if (earningPower < minQualifyingEarningPowerBips) {
+          this.logger.info('Deposit does not meet minimum earning power:', {
+            depositId: depositId.toString(),
+            earningPower: earningPower.toString(),
+            minRequired: minQualifyingEarningPowerBips.toString()
+          })
+          continue // Skip this deposit
+        }
 
         // Get unclaimed rewards
         const unclaimedRewards = await this.stakerContract.unclaimedReward(depositId)
@@ -142,7 +162,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           depositor: deposit.depositor_address,
           owner: deposit.owner_address,
           rewards: unclaimedRewards.toString(),
-          rewardsInEther: ethers.formatEther(unclaimedRewards)
+          rewardsInEther: ethers.formatEther(unclaimedRewards),
+          earningPower: earningPower.toString()
         })
 
         depositDetails.push({
@@ -150,57 +171,44 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           rewards: unclaimedRewards
         })
       } catch (error) {
-        this.logger.error('Failed to get rewards for deposit:', {
+        this.logger.error('Error processing deposit:', {
+          error,
           depositId: deposit.deposit_id.toString(),
           depositor: deposit.depositor_address,
-          owner: deposit.owner_address,
-          error: error instanceof Error ? error.message : String(error)
+          owner: deposit.owner_address
         })
         throw error
       }
     }
 
-    // Get current gas price and estimate gas cost
-    const gasPrice = await this.provider.getFeeData()
-    const gasLimit = BigInt(300000) // Estimated gas limit for claim
-    const gasCost = (gasPrice.gasPrice || BigInt(0)) * gasLimit
+    // Calculate gas cost in reward token
+    const gasCostInRewardToken = await this.estimateGasCostInRewardToken()
 
-    // Use hardcoded prices for testing
-    // ETH price: $1800, Token price: $1
-    const ethPriceScaled = BigInt(1800) * BigInt(1e18)
-    const rewardTokenPriceScaled = BigInt(1) * BigInt(1e18)
+    // Calculate total shares and payout amount
+    const totalShares = deposits.reduce((acc, deposit) => acc + deposit.shares_of, BigInt(0))
 
-    // Calculate gas cost in reward tokens
-    const gasCostInRewardToken = (gasCost * ethPriceScaled) / rewardTokenPriceScaled
+    // Check constraints
+    const meetsMinReward = totalRewards >= this.config.minProfitMargin
+    const meetsMinProfit = totalRewards > gasCostInRewardToken
+    const hasEnoughShares = totalShares >= CONTRACT_CONSTANTS.MIN_SHARES_THRESHOLD
 
-    // Calculate profit after gas costs
-    const potentialProfit = totalRewards > gasCostInRewardToken ? totalRewards - gasCostInRewardToken : BigInt(0)
-
-    const isProfitable = potentialProfit > BigInt(0)
-    const meetsMinReward = totalRewards >= payoutAmount
-
-    this.logger.info('Profitability analysis:', {
-      totalRewards: ethers.formatEther(totalRewards),
-      gasCostInRewardToken: ethers.formatEther(gasCostInRewardToken),
-      potentialProfit: ethers.formatEther(potentialProfit),
-      isProfitable,
-      meetsMinReward,
-      depositDetails
-    })
+    // Calculate expected profit (total rewards minus gas cost)
+    const expectedProfit = totalRewards > gasCostInRewardToken ? totalRewards - gasCostInRewardToken : BigInt(0)
 
     return {
-      is_profitable: isProfitable && meetsMinReward,
+      is_profitable: meetsMinReward && meetsMinProfit && hasEnoughShares,
       constraints: {
-        has_enough_shares: true,
         meets_min_reward: meetsMinReward,
-        is_profitable: isProfitable
+        meets_min_profit: meetsMinProfit,
+        has_enough_shares: hasEnoughShares
       },
       estimates: {
-        total_shares: totalRewards,
+        total_shares: totalShares,
         payout_amount: payoutAmount,
-        gas_estimate: gasLimit,
-        expected_profit: potentialProfit
-      }
+        gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
+        expected_profit: expectedProfit
+      },
+      deposit_details: depositDetails
     }
   }
 
@@ -414,28 +422,6 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   }
 
   /**
-   * Creates a default unprofitable check result
-   * Used when deposits array is empty or other preconditions fail
-   * @returns Default unprofitable check result
-   */
-  private createUnprofitableCheck(): GovLstProfitabilityCheck {
-    return {
-      is_profitable: false,
-      constraints: {
-        has_enough_shares: false,
-        meets_min_reward: false,
-        is_profitable: false,
-      },
-      estimates: {
-        total_shares: BigInt(0),
-        payout_amount: BigInt(0),
-        gas_estimate: BigInt(0),
-        expected_profit: BigInt(0),
-      },
-    }
-  }
-
-  /**
    * Creates a default empty batch analysis result
    * Used when deposits array is empty
    * @returns Default empty batch analysis
@@ -447,5 +433,29 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       total_expected_profit: BigInt(0),
       total_deposits: 0,
     }
+  }
+
+  /**
+   * Estimates the gas cost of claiming rewards in terms of reward tokens
+   * Uses current gas price and hardcoded price assumptions for testing:
+   * - ETH price: $1800
+   * - Reward token price: $1
+   * Calculates: (gasPrice * gasLimit * ethPrice) / tokenPrice
+   * @returns Estimated gas cost denominated in reward tokens (scaled to 18 decimals)
+   */
+
+  private async estimateGasCostInRewardToken(): Promise<bigint> {
+    // Get current gas price and estimate gas cost
+    const gasPrice = await this.provider.getFeeData()
+    const gasLimit = BigInt(300000) // Estimated gas limit for claim
+    const gasCost = (gasPrice.gasPrice || BigInt(0)) * gasLimit
+
+    // Use hardcoded prices for testing
+    // ETH price: $1800, Token price: $1
+    const ethPriceScaled = BigInt(1800) * BigInt(1e18)
+    const rewardTokenPriceScaled = BigInt(1) * BigInt(1e18)
+
+    // Calculate gas cost in reward tokens
+    return (gasCost * ethPriceScaled) / rewardTokenPriceScaled
   }
 }

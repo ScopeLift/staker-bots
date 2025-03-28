@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import { BaseExecutor } from './strategies/BaseExecutor';
 import { RelayerExecutor } from './strategies/RelayerExecutor';
+import { ConsoleLogger, Logger } from '@/monitor/logging';
 import {
   ExecutorConfig,
   QueuedTransaction,
@@ -31,6 +32,7 @@ export enum ExecutorType {
  */
 export class ExecutorWrapper {
   private executor: IExecutor;
+  private readonly logger: Logger;
 
   /**
    * Creates a new ExecutorWrapper instance
@@ -58,6 +60,8 @@ export class ExecutorWrapper {
         false
       );
     }
+
+    this.logger = new ConsoleLogger('info');
 
     if (type === ExecutorType.WALLET) {
       // Create a BaseExecutor with local wallet
@@ -153,6 +157,28 @@ export class ExecutorWrapper {
     }
   }
 
+  private serializeProfitabilityCheck(check: GovLstProfitabilityCheck): GovLstProfitabilityCheck {
+    // Convert string values back to BigInt if they were serialized
+    const parseBigInt = (value: string | bigint): bigint => {
+      return typeof value === 'string' ? BigInt(value) : value;
+    };
+
+    return {
+      ...check,
+      estimates: {
+        expected_profit: parseBigInt(check.estimates.expected_profit),
+        gas_estimate: parseBigInt(check.estimates.gas_estimate),
+        total_shares: parseBigInt(check.estimates.total_shares),
+        payout_amount: parseBigInt(check.estimates.payout_amount)
+      },
+      deposit_details: check.deposit_details.map(detail => ({
+        ...detail,
+        depositId: parseBigInt(detail.depositId),
+        rewards: parseBigInt(detail.rewards)
+      }))
+    };
+  }
+
   /**
    * Queues a transaction for execution
    * @param depositIds - Array of deposit IDs to claim rewards for
@@ -166,7 +192,27 @@ export class ExecutorWrapper {
     txData?: string,
   ): Promise<QueuedTransaction> {
     try {
-      return await this.executor.queueTransaction(depositIds, profitability, txData);
+      // Parse txData if it's a string and contains profitability data
+      let processedProfitability = profitability;
+      if (txData) {
+        try {
+          const parsedData = JSON.parse(txData);
+          if (parsedData.profitability) {
+            processedProfitability = this.serializeProfitabilityCheck(parsedData.profitability);
+          }
+        } catch (error) {
+          this.logger.error('Failed to parse txData', {
+            error: error instanceof Error ? error.message : String(error),
+            txData
+          });
+        }
+      }
+
+      return await this.executor.queueTransaction(
+        depositIds,
+        processedProfitability,
+        txData
+      );
     } catch (error) {
       throw new ExecutorError(
         'Failed to queue transaction',

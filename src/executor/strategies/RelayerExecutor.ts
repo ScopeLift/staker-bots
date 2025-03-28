@@ -9,7 +9,6 @@ import {
   TransactionReceipt,
   GovLstExecutorError,
   EthersTransactionReceipt,
-  isGovLstExecutorError,
 } from '../interfaces/types';
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
