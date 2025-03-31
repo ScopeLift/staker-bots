@@ -44,11 +44,14 @@ export const DEFAULT_EXECUTOR_CONFIG: ExecutorConfig = {
 };
 
 export const DEFAULT_RELAYER_EXECUTOR_CONFIG: RelayerExecutorConfig = {
-  relayer: {
-    apiKey: '',
-    apiSecret: '',
-    minBalance: ethers.parseEther('0.1'), // 0.1 ETH
-    maxPendingTransactions: 5,
+  apiKey: '',
+  apiSecret: '',
+  address: '',
+  minBalance: ethers.parseEther('0.1'), // 0.1 ETH
+  maxPendingTransactions: 5,
+  gasPolicy: {
+    maxFeePerGas: undefined,
+    maxPriorityFeePerGas: undefined
   },
   maxQueueSize: 100,
   minConfirmations: 2,
@@ -57,7 +60,7 @@ export const DEFAULT_RELAYER_EXECUTOR_CONFIG: RelayerExecutorConfig = {
   transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
   gasBoostPercentage: GAS_CONSTANTS.GAS_PRICE_BUFFER_PERCENT,
   concurrentTransactions: 3,
-  defaultTipReceiver: '',
+  defaultTipReceiver: ''
 };
 
 export const CONTRACT_CONSTANTS = {

@@ -4,6 +4,7 @@ import { ConsoleLogger } from './monitor/logging';
 import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
 import { ExecutorWrapper, ExecutorType } from './executor';
+import { IExecutor } from './executor/interfaces/IExecutor';
 import { GovLstProfitabilityEngine, GovLstProfitabilityEngineWrapper } from './profitability';
 import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
 import { GOVLST_ABI } from './monitor/constants';
@@ -182,7 +183,8 @@ async function runProfitabilityEngine(database: DatabaseWrapper) {
       priceFeed: {
         cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
       },
-    }
+    },
+    runningComponents.transactionExecutor as IExecutor
   );
 
   await profitabilityEngine.start();
@@ -201,6 +203,14 @@ async function runExecutor(database: DatabaseWrapper) {
     throw error;
   }
 
+  // Get executor type from environment variable
+  const executorType = process.env.EXECUTOR_TYPE?.toLowerCase() || 'wallet';
+
+  // Validate executor type
+  if (!['wallet', 'defender'].includes(executorType)) {
+    throw new Error(`Invalid executor type: ${executorType}. Must be 'wallet' or 'defender'`);
+  }
+
   // Create staker contract instance
   const stakerContract = new ethers.Contract(
     CONFIG.monitor.stakerAddress,
@@ -208,8 +218,20 @@ async function runExecutor(database: DatabaseWrapper) {
     provider
   );
 
-  // Use a minimal config that leverages the defaults
-  const executorConfig = {
+  // Configure executor based on type
+  const executorConfig = executorType === 'defender' ? {
+    relayer: {
+      apiKey: CONFIG.defender.apiKey,
+      secretKey: CONFIG.defender.secretKey,
+      minBalance: CONFIG.defender.relayer.minBalance,
+      maxPendingTransactions: CONFIG.defender.relayer.maxPendingTransactions,
+      gasPolicy: CONFIG.defender.relayer.gasPolicy
+    },
+    defaultTipReceiver: CONFIG.executor.tipReceiver,
+    minConfirmations: CONFIG.monitor.confirmations,
+    maxRetries: CONFIG.monitor.maxRetries,
+    transferOutThreshold: ethers.parseEther('0.5')
+  } : {
     wallet: {
       privateKey: CONFIG.executor.privateKey,
       minBalance: ethers.parseEther('0.01'),
@@ -218,12 +240,12 @@ async function runExecutor(database: DatabaseWrapper) {
     defaultTipReceiver: CONFIG.executor.tipReceiver,
   };
 
-  executorLogger.info('Initializing executor');
+  executorLogger.info('Initializing executor', { type: executorType });
 
   const executor = new ExecutorWrapper(
     stakerContract,
     provider,
-    ExecutorType.WALLET,
+    executorType === 'defender' ? ExecutorType.DEFENDER : ExecutorType.WALLET,
     executorConfig,
     database
   );
@@ -276,6 +298,10 @@ async function main() {
           }
         }
         logger.info('Deposits found, starting profitability engine');
+      }
+
+      if (!runningComponents.transactionExecutor) {
+        throw new Error('Executor must be initialized before profitability engine');
       }
 
       logger.info('Starting profitability engine...');

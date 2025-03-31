@@ -50,6 +50,24 @@ export const CONFIG = {
     tipReceiver:
       process.env.TIP_RECEIVER || '0x0000000000000000000000000000000000000000',
   },
+  defender: {
+    apiKey: process.env.DEFENDER_API_KEY || '',
+    secretKey: process.env.DEFENDER_SECRET_KEY || '',
+    relayer: {
+      minBalance: process.env.DEFENDER_MIN_BALANCE
+        ? BigInt(process.env.DEFENDER_MIN_BALANCE)
+        : ethers.parseEther('0.1'),
+      maxPendingTransactions: parseInt(process.env.DEFENDER_MAX_PENDING_TXS || '5'),
+      gasPolicy: {
+        maxFeePerGas: process.env.DEFENDER_MAX_FEE
+          ? BigInt(process.env.DEFENDER_MAX_FEE)
+          : undefined,
+        maxPriorityFeePerGas: process.env.DEFENDER_PRIORITY_FEE
+          ? BigInt(process.env.DEFENDER_PRIORITY_FEE)
+          : undefined
+      }
+    }
+  },
   priceFeed: {
     coinmarketcap: {
       apiKey: process.env.COINMARKETCAP_API_KEY || '',

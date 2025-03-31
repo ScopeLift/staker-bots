@@ -22,7 +22,8 @@ import { ExecutorError } from './errors';
  * Supported executor types
  */
 export enum ExecutorType {
-  WALLET = 'WALLET',
+  WALLET = 'wallet',
+  DEFENDER = 'defender',
   RELAYER = 'RELAYER',
 }
 
@@ -85,10 +86,6 @@ export class ExecutorWrapper {
       const fullConfig: RelayerExecutorConfig = {
         ...DEFAULT_RELAYER_EXECUTOR_CONFIG,
         ...(config as Partial<RelayerExecutorConfig>),
-        relayer: {
-          ...DEFAULT_RELAYER_EXECUTOR_CONFIG.relayer,
-          ...(config as Partial<RelayerExecutorConfig>).relayer,
-        },
       };
 
       this.executor = new RelayerExecutor(stakerContract, provider, fullConfig);

@@ -10,6 +10,7 @@ export interface WalletConfig {
 export interface RelayerConfig {
   apiKey: string;
   apiSecret: string;
+  address: string;
   minBalance: bigint;
   maxPendingTransactions: number;
   gasPolicy?: {
@@ -52,7 +53,15 @@ export interface ExecutorConfig {
 }
 
 export interface RelayerExecutorConfig {
-  relayer: RelayerConfig;
+  apiKey: string;
+  apiSecret: string;
+  address: string;
+  minBalance: bigint;
+  maxPendingTransactions: number;
+  gasPolicy?: {
+    maxFeePerGas?: bigint;
+    maxPriorityFeePerGas?: bigint;
+  };
   maxQueueSize: number;
   minConfirmations: number;
   maxRetries: number;
