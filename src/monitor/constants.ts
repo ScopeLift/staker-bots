@@ -12,7 +12,7 @@ export const STAKER_ABI = [
   'event StakedWithAttribution(uint256 _depositId, uint256 _amount, address indexed _referrer)',
   'event Unstaked(address indexed account, uint256 amount)',
   'event DepositInitialized(address indexed delegatee, uint256 depositId)',
-  'event DepositUpdated(address indexed holder, uint256 oldDepositId, uint256 newDepositId)'
+  'event DepositUpdated(address indexed holder, uint256 oldDepositId, uint256 newDepositId)',
 ] as const;
 
 export const createMonitorConfig = (
@@ -26,7 +26,8 @@ export const createMonitorConfig = (
 });
 
 // Default addresses
-export const DEFAULT_DELEGATEE_ADDRESS = "0x0000000000000000000000000000000000000B01"
+export const DEFAULT_DELEGATEE_ADDRESS =
+  '0x0000000000000000000000000000000000000B01';
 
 // Event names for type safety
 export const MONITOR_EVENTS = {
@@ -35,46 +36,47 @@ export const MONITOR_EVENTS = {
   STAKE_WITH_ATTRIBUTION: 'stakedWithAttribution',
   UNSTAKED: 'unstaked',
   DEPOSIT_INITIALIZED: 'depositInitialized',
-  DEPOSIT_UPDATED: 'depositUpdated'
-} as const
+  DEPOSIT_UPDATED: 'depositUpdated',
+} as const;
 
 // Processing constants
 export const PROCESSING_COMPONENT = {
   TYPE: 'staker-monitor',
-  INITIAL_BLOCK_HASH: '0x0000000000000000000000000000000000000000000000000000000000000000'
-} as const
+  INITIAL_BLOCK_HASH:
+    '0x0000000000000000000000000000000000000000000000000000000000000000',
+} as const;
 
 // GovLst contract ABI
 export const GOVLST_ABI = [
   {
-    inputs: [{ internalType: "address", name: "_delegatee", type: "address" }],
-    name: "depositForDelegatee",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function"
+    inputs: [{ internalType: 'address', name: '_delegatee', type: 'address' }],
+    name: 'depositForDelegatee',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function',
   },
   {
     inputs: [],
-    name: "defaultDelegatee",
-    outputs: [{ internalType: "address", name: "", type: "address" }],
-    stateMutability: "view",
-    type: "function"
+    name: 'defaultDelegatee',
+    outputs: [{ internalType: 'address', name: '', type: 'address' }],
+    stateMutability: 'view',
+    type: 'function',
   },
   {
-    inputs: [{ internalType: "address", name: "_holder", type: "address" }],
-    name: "depositIdForHolder",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function"
+    inputs: [{ internalType: 'address', name: '_holder', type: 'address' }],
+    name: 'depositIdForHolder',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function',
   },
   {
-    inputs: [{ internalType: "address", name: "_holder", type: "address" }],
-    name: "delegateeForHolder",
-    outputs: [{ internalType: "address", name: "_delegatee", type: "address" }],
-    stateMutability: "view",
-    type: "function"
-  }
-] as const
+    inputs: [{ internalType: 'address', name: '_holder', type: 'address' }],
+    name: 'delegateeForHolder',
+    outputs: [{ internalType: 'address', name: '_delegatee', type: 'address' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+] as const;
 
 export const MONITOR_CONSTANTS = {
   // Default delegatee address
@@ -95,12 +97,16 @@ export const MONITOR_CONSTANTS = {
     PROCESSING_FAILED: 'Event processing failed',
     DB_OPERATION_FAILED: 'Database operation failed',
   },
-} as const
+} as const;
 
 export const EVENT_TYPES = {
   STAKE_DEPOSITED: 'StakeDeposited',
   STAKE_WITHDRAWN: 'StakeWithdrawn',
   DELEGATEE_ALTERED: 'DelegateeAltered',
-} as const
+  STAKED: 'Staked',
+  UNSTAKED: 'Unstaked',
+  DEPOSIT_INITIALIZED: 'DepositInitialized',
+  DEPOSIT_UPDATED: 'DepositUpdated',
+} as const;
 
-export type EventType = typeof EVENT_TYPES[keyof typeof EVENT_TYPES]
+export type EventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];

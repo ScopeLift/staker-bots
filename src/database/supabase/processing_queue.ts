@@ -4,7 +4,8 @@ import {
   ProcessingQueueStatus,
 } from '../interfaces/types';
 
-const SUPABASE_NOT_CONFIGURED_ERROR = 'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
+const SUPABASE_NOT_CONFIGURED_ERROR =
+  'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
 
 export async function createProcessingQueueItem(
   item: Omit<
@@ -137,10 +138,7 @@ export async function deleteProcessingQueueItem(id: string): Promise<void> {
     throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
   }
 
-  const { error } = await client
-    .from('processing_queue')
-    .delete()
-    .eq('id', id);
+  const { error } = await client.from('processing_queue').delete().eq('id', id);
 
   if (error) throw error;
 }

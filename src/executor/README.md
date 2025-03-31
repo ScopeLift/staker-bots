@@ -39,8 +39,8 @@ The Executor component is responsible for managing and executing GovLst reward c
 ## Usage
 
 ```typescript
-import { ExecutorWrapper, ExecutorType } from './executor'
-import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types'
+import { ExecutorWrapper, ExecutorType } from './executor';
+import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 
 // Initialize with custom configuration
 const executor = new ExecutorWrapper(
@@ -60,42 +60,42 @@ const executor = new ExecutorWrapper(
     transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
     gasBoostPercentage: 10, // 10%
     concurrentTransactions: 3,
-  }
-)
+  },
+);
 
 // Start the executor
-await executor.start()
+await executor.start();
 
 // Queue a batch transaction
-const depositIds = [1n, 2n, 3n].map(BigInt)
+const depositIds = [1n, 2n, 3n].map(BigInt);
 const profitability: GovLstProfitabilityCheck = {
   is_profitable: true,
   constraints: {
     has_enough_shares: true,
     meets_min_reward: true,
-    is_profitable: true
+    is_profitable: true,
   },
   estimates: {
     total_shares: BigInt(1000),
     payout_amount: ethers.parseEther('1'),
     gas_estimate: BigInt(500000),
-    expected_profit: ethers.parseEther('0.5')
-  }
-}
+    expected_profit: ethers.parseEther('0.5'),
+  },
+};
 
-const tx = await executor.queueTransaction(depositIds, profitability)
+const tx = await executor.queueTransaction(depositIds, profitability);
 
 // Monitor transaction status
-const status = await executor.getTransaction(tx.id)
+const status = await executor.getTransaction(tx.id);
 
 // Get queue statistics
-const stats = await executor.getQueueStats()
+const stats = await executor.getQueueStats();
 
 // Transfer accumulated tips
-await executor.transferOutTips()
+await executor.transferOutTips();
 
 // Stop the executor
-await executor.stop()
+await executor.stop();
 ```
 
 ## Configuration
@@ -137,30 +137,37 @@ The executor implements a robust, type-safe error handling system with dedicated
 ### Error Classes
 
 - `ExecutorError`: Base error class for executor-related errors
+
   - Includes context and retryable flag
   - Used for general executor state errors
 
 - `TransactionExecutionError`: For transaction execution failures
+
   - Includes transaction ID and deposit details
   - Most transaction errors are retryable
 
 - `GasEstimationError`: For gas estimation failures
+
   - Includes estimation parameters
   - Generally retryable
 
 - `ContractMethodError`: For missing/invalid contract methods
+
   - Includes method name
   - Non-retryable, requires code fix
 
 - `QueueOperationError`: For queue operation failures
+
   - Includes queue state information
   - Generally retryable
 
 - `TransactionValidationError`: For invalid transaction parameters
+
   - Includes validation context
   - Non-retryable, requires valid input
 
 - `InsufficientBalanceError`: For low wallet/relayer balance
+
   - Includes current and required balance
   - Retryable once funds are added
 
@@ -172,14 +179,14 @@ The executor implements a robust, type-safe error handling system with dedicated
 
 ```typescript
 try {
-  await executor.queueTransaction(depositIds, profitability)
+  await executor.queueTransaction(depositIds, profitability);
 } catch (error) {
   if (error instanceof ExecutorError) {
     console.error('Executor error:', {
       message: error.message,
       context: error.context,
-      isRetryable: error.isRetryable
-    })
+      isRetryable: error.isRetryable,
+    });
 
     if (error.isRetryable) {
       // Implement retry logic
@@ -191,6 +198,7 @@ try {
 ### Error Context
 
 All errors include relevant context for debugging:
+
 - Transaction IDs
 - Deposit IDs
 - Gas parameters
@@ -201,6 +209,7 @@ All errors include relevant context for debugging:
 ### Error Propagation
 
 The ExecutorWrapper provides a consistent error handling layer:
+
 - Wraps all underlying errors in appropriate error classes
 - Adds execution context to errors
 - Preserves error traceability
@@ -209,6 +218,7 @@ The ExecutorWrapper provides a consistent error handling layer:
 ### Logging
 
 Errors are automatically logged with:
+
 - Error type and message
 - Full error context
 - Stack trace when available
@@ -237,6 +247,7 @@ A comprehensive test suite is included that verifies:
    TIP_RECEIVER=your_tip_receiver_address
    ```
 3. Run the tests:
+
    ```bash
    # Unit tests
    pnpm test src/executor/strategies/__tests__/BaseExecutor.test.ts

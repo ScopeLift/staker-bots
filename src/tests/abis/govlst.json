@@ -16,7 +16,11 @@
   {
     "inputs": [
       { "internalType": "address", "name": "tipReceiver", "type": "address" },
-      { "internalType": "uint256", "name": "minTotalRewards", "type": "uint256" },
+      {
+        "internalType": "uint256",
+        "name": "minTotalRewards",
+        "type": "uint256"
+      },
       { "internalType": "uint256[]", "name": "depositIds", "type": "uint256[]" }
     ],
     "name": "claimAndDistributeReward",
@@ -25,21 +29,27 @@
     "type": "function"
   },
   {
-    "inputs": [{ "internalType": "address", "name": "account", "type": "address" }],
+    "inputs": [
+      { "internalType": "address", "name": "account", "type": "address" }
+    ],
     "name": "balanceOf",
     "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
     "stateMutability": "view",
     "type": "function"
   },
   {
-    "inputs": [{ "internalType": "address", "name": "account", "type": "address" }],
+    "inputs": [
+      { "internalType": "address", "name": "account", "type": "address" }
+    ],
     "name": "balanceCheckpoint",
     "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
     "stateMutability": "view",
     "type": "function"
   },
   {
-    "inputs": [{ "internalType": "address", "name": "holder", "type": "address" }],
+    "inputs": [
+      { "internalType": "address", "name": "holder", "type": "address" }
+    ],
     "name": "depositIdForHolder",
     "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
     "stateMutability": "view",
@@ -53,7 +63,14 @@
     "type": "function"
   },
   {
-    "inputs": [{ "internalType": "uint256", "name": "earningPower", "type": "uint256" }, { "internalType": "uint256", "name": "thresholdEarningPower", "type": "uint256" }],
+    "inputs": [
+      { "internalType": "uint256", "name": "earningPower", "type": "uint256" },
+      {
+        "internalType": "uint256",
+        "name": "thresholdEarningPower",
+        "type": "uint256"
+      }
+    ],
     "name": "GovLst__EarningPowerNotQualified",
     "type": "error"
   }

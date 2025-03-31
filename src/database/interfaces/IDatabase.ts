@@ -75,18 +75,24 @@ export interface IDatabase {
   createGovLstDeposit(deposit: GovLstDeposit): Promise<void>;
   updateGovLstDeposit(
     depositId: string,
-    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>
+    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>,
   ): Promise<void>;
   getGovLstDeposit(depositId: string): Promise<GovLstDeposit | null>;
   getGovLstDepositsByAddress(govLstAddress: string): Promise<GovLstDeposit[]>;
   getAllGovLstDeposits(): Promise<GovLstDeposit[]>;
 
   // GovLst Claim History
-  createGovLstClaimHistory(claim: GovLstClaimHistory): Promise<GovLstClaimHistory>;
+  createGovLstClaimHistory(
+    claim: GovLstClaimHistory,
+  ): Promise<GovLstClaimHistory>;
   getGovLstClaimHistory(id: string): Promise<GovLstClaimHistory | null>;
-  getGovLstClaimHistoryByAddress(govLstAddress: string): Promise<GovLstClaimHistory[]>;
+  getGovLstClaimHistoryByAddress(
+    govLstAddress: string,
+  ): Promise<GovLstClaimHistory[]>;
   updateGovLstClaimHistory(
     id: string,
-    update: Partial<Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>>
+    update: Partial<
+      Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>
+    >,
   ): Promise<void>;
 }

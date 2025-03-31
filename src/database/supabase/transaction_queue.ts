@@ -4,7 +4,8 @@ import {
   TransactionQueueStatus,
 } from '../interfaces/types';
 
-const SUPABASE_NOT_CONFIGURED_ERROR = 'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
+const SUPABASE_NOT_CONFIGURED_ERROR =
+  'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
 
 export async function createTransactionQueueItem(
   item: Omit<

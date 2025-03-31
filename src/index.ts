@@ -4,7 +4,8 @@ import { ConsoleLogger } from './monitor/logging';
 import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
 import { ExecutorWrapper, ExecutorType } from './executor';
-import { GovLstProfitabilityEngine, GovLstProfitabilityEngineWrapper } from './profitability';
+import { IExecutor } from './executor/interfaces/IExecutor';
+import { GovLstProfitabilityEngineWrapper } from './profitability';
 import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
 import { GOVLST_ABI } from './monitor/constants';
 import { ethers } from 'ethers';
@@ -24,10 +25,7 @@ const executorLogger = new ConsoleLogger('info', {
   color: '\x1b[31m', // Red
   prefix: '[Executor]',
 });
-const govLstLogger = new ConsoleLogger('info', {
-  color: '\x1b[32m', // Green
-  prefix: '[GovLst]',
-});
+
 const logger = new ConsoleLogger('info');
 
 const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
@@ -147,13 +145,13 @@ async function runProfitabilityEngine(database: DatabaseWrapper) {
   const govLstContract = new ethers.Contract(
     govLstAddress,
     GOVLST_ABI,
-    provider
+    provider,
   );
 
   const stakerContract = new ethers.Contract(
     stakerAddress,
     STAKER_ABI,
-    provider
+    provider,
   );
 
   // Initialize price feed
@@ -161,9 +159,9 @@ async function runProfitabilityEngine(database: DatabaseWrapper) {
     {
       apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
       baseUrl: CONFIG.priceFeed.coinmarketcap.baseUrl,
-      timeout: CONFIG.priceFeed.coinmarketcap.timeout
+      timeout: CONFIG.priceFeed.coinmarketcap.timeout,
     },
-    profitabilityLogger
+    profitabilityLogger,
   );
 
   const profitabilityEngine = new GovLstProfitabilityEngineWrapper(
@@ -182,7 +180,8 @@ async function runProfitabilityEngine(database: DatabaseWrapper) {
       priceFeed: {
         cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
       },
-    }
+    },
+    runningComponents.transactionExecutor as IExecutor,
   );
 
   await profitabilityEngine.start();
@@ -201,31 +200,57 @@ async function runExecutor(database: DatabaseWrapper) {
     throw error;
   }
 
+  // Get executor type from environment variable
+  const executorType = process.env.EXECUTOR_TYPE?.toLowerCase() || 'wallet';
+
+  // Validate executor type
+  if (!['wallet', 'defender'].includes(executorType)) {
+    throw new Error(
+      `Invalid executor type: ${executorType}. Must be 'wallet' or 'defender'`,
+    );
+  }
+
   // Create staker contract instance
   const stakerContract = new ethers.Contract(
     CONFIG.monitor.stakerAddress,
     STAKER_ABI,
-    provider
+    provider,
   );
 
-  // Use a minimal config that leverages the defaults
-  const executorConfig = {
-    wallet: {
-      privateKey: CONFIG.executor.privateKey,
-      minBalance: ethers.parseEther('0.01'),
-      maxPendingTransactions: 5,
-    },
-    defaultTipReceiver: CONFIG.executor.tipReceiver,
-  };
+  // Configure executor based on type
+  const executorConfig =
+    executorType === 'defender'
+      ? {
+          relayer: {
+            apiKey: CONFIG.defender.apiKey,
+            secretKey: CONFIG.defender.secretKey,
+            minBalance: CONFIG.defender.relayer.minBalance,
+            maxPendingTransactions:
+              CONFIG.defender.relayer.maxPendingTransactions,
+            gasPolicy: CONFIG.defender.relayer.gasPolicy,
+          },
+          defaultTipReceiver: CONFIG.executor.tipReceiver,
+          minConfirmations: CONFIG.monitor.confirmations,
+          maxRetries: CONFIG.monitor.maxRetries,
+          transferOutThreshold: ethers.parseEther('0.5'),
+        }
+      : {
+          wallet: {
+            privateKey: CONFIG.executor.privateKey,
+            minBalance: ethers.parseEther('0.01'),
+            maxPendingTransactions: 5,
+          },
+          defaultTipReceiver: CONFIG.executor.tipReceiver,
+        };
 
-  executorLogger.info('Initializing executor');
+  executorLogger.info('Initializing executor', { type: executorType });
 
   const executor = new ExecutorWrapper(
     stakerContract,
     provider,
-    ExecutorType.WALLET,
+    executorType === 'defender' ? ExecutorType.DEFENDER : ExecutorType.WALLET,
     executorConfig,
-    database
+    database,
   );
 
   await executor.start();
@@ -243,8 +268,9 @@ async function main() {
     });
 
     // Get components to run from environment variable or run monitor by default
-    const componentsToRun =
-      process.env.COMPONENTS?.split(',').map((c) => c.trim()) || ['monitor'];
+    const componentsToRun = process.env.COMPONENTS?.split(',').map((c) =>
+      c.trim(),
+    ) || ['monitor'];
 
     logger.info('Running components:', { components: componentsToRun });
 
@@ -255,9 +281,11 @@ async function main() {
     }
 
     // Start executor if requested (needed for both profitability and GovLst)
-    if (componentsToRun.includes('executor') ||
-        componentsToRun.includes('profitability') ||
-        componentsToRun.includes('govlst')) {
+    if (
+      componentsToRun.includes('executor') ||
+      componentsToRun.includes('profitability') ||
+      componentsToRun.includes('govlst')
+    ) {
       logger.info('Starting transaction executor...');
       runningComponents.transactionExecutor = await runExecutor(database);
     }
@@ -278,14 +306,22 @@ async function main() {
         logger.info('Deposits found, starting profitability engine');
       }
 
+      if (!runningComponents.transactionExecutor) {
+        throw new Error(
+          'Executor must be initialized before profitability engine',
+        );
+      }
+
       logger.info('Starting profitability engine...');
-      runningComponents.profitabilityEngine = await runProfitabilityEngine(
-        database,
-      );
+      runningComponents.profitabilityEngine =
+        await runProfitabilityEngine(database);
     }
 
     // Connect components
-    if (runningComponents.profitabilityEngine && runningComponents.transactionExecutor) {
+    if (
+      runningComponents.profitabilityEngine &&
+      runningComponents.transactionExecutor
+    ) {
       logger.info('Components initialized:', {
         monitor: !!runningComponents.monitor,
         profitability: !!runningComponents.profitabilityEngine,

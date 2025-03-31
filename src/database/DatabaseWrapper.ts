@@ -30,7 +30,9 @@ export class DatabaseWrapper implements IDatabase {
   private logger: Logger;
   private fallbackToJson: boolean;
 
-  constructor(config: DatabaseConfig = { type: 'supabase', fallbackToJson: true }) {
+  constructor(
+    config: DatabaseConfig = { type: 'supabase', fallbackToJson: true },
+  ) {
     this.logger = new ConsoleLogger('info');
     this.fallbackToJson = config.fallbackToJson ?? true;
 
@@ -39,74 +41,100 @@ export class DatabaseWrapper implements IDatabase {
     } else {
       // Initialize with Supabase
       this.db = {
-        getDepositsByDepositor: this.wrapWithFallback(supabaseDb.getDepositsByDepositor),
+        getDepositsByDepositor: this.wrapWithFallback(
+          supabaseDb.getDepositsByDepositor,
+        ),
         createDeposit: this.wrapWithFallback(supabaseDb.createDeposit),
         updateDeposit: this.wrapWithFallback(supabaseDb.updateDeposit),
         getDeposit: this.wrapWithFallback(supabaseDb.getDeposit),
-        getDepositsByDelegatee: this.wrapWithFallback(supabaseDb.getDepositsByDelegatee),
-        getDepositsByOwner: this.wrapWithFallback(supabaseDb.getDepositsByOwner),
+        getDepositsByDelegatee: this.wrapWithFallback(
+          supabaseDb.getDepositsByDelegatee,
+        ),
+        getDepositsByOwner: this.wrapWithFallback(
+          supabaseDb.getDepositsByOwner,
+        ),
         getAllDeposits: this.wrapWithFallback(supabaseDb.getAllDeposits),
-        updateCheckpoint: this.wrapWithFallback(supabaseCheckpoints.updateCheckpoint),
+        updateCheckpoint: this.wrapWithFallback(
+          supabaseCheckpoints.updateCheckpoint,
+        ),
         getCheckpoint: this.wrapWithFallback(supabaseCheckpoints.getCheckpoint),
 
         // Processing Queue Operations
         createProcessingQueueItem: this.wrapWithFallback(
-          supabaseProcessingQueue.createProcessingQueueItem
+          supabaseProcessingQueue.createProcessingQueueItem,
         ),
         updateProcessingQueueItem: this.wrapWithFallback(
-          supabaseProcessingQueue.updateProcessingQueueItem
+          supabaseProcessingQueue.updateProcessingQueueItem,
         ),
         getProcessingQueueItem: this.wrapWithFallback(
-          supabaseProcessingQueue.getProcessingQueueItem
+          supabaseProcessingQueue.getProcessingQueueItem,
         ),
         getProcessingQueueItemsByStatus: this.wrapWithFallback(
-          supabaseProcessingQueue.getProcessingQueueItemsByStatus
+          supabaseProcessingQueue.getProcessingQueueItemsByStatus,
         ),
         getProcessingQueueItemByDepositId: this.wrapWithFallback(
-          supabaseProcessingQueue.getProcessingQueueItemByDepositId
+          supabaseProcessingQueue.getProcessingQueueItemByDepositId,
         ),
         getProcessingQueueItemsByDelegatee: this.wrapWithFallback(
-          supabaseProcessingQueue.getProcessingQueueItemsByDelegatee
+          supabaseProcessingQueue.getProcessingQueueItemsByDelegatee,
         ),
         deleteProcessingQueueItem: this.wrapWithFallback(
-          supabaseProcessingQueue.deleteProcessingQueueItem
+          supabaseProcessingQueue.deleteProcessingQueueItem,
         ),
 
         // Transaction Queue Operations
         createTransactionQueueItem: this.wrapWithFallback(
-          supabaseTransactionQueue.createTransactionQueueItem
+          supabaseTransactionQueue.createTransactionQueueItem,
         ),
         updateTransactionQueueItem: this.wrapWithFallback(
-          supabaseTransactionQueue.updateTransactionQueueItem
+          supabaseTransactionQueue.updateTransactionQueueItem,
         ),
         getTransactionQueueItem: this.wrapWithFallback(
-          supabaseTransactionQueue.getTransactionQueueItem
+          supabaseTransactionQueue.getTransactionQueueItem,
         ),
         getTransactionQueueItemsByStatus: this.wrapWithFallback(
-          supabaseTransactionQueue.getTransactionQueueItemsByStatus
+          supabaseTransactionQueue.getTransactionQueueItemsByStatus,
         ),
         getTransactionQueueItemByDepositId: this.wrapWithFallback(
-          supabaseTransactionQueue.getTransactionQueueItemByDepositId
+          supabaseTransactionQueue.getTransactionQueueItemByDepositId,
         ),
         getTransactionQueueItemsByHash: this.wrapWithFallback(
-          supabaseTransactionQueue.getTransactionQueueItemsByHash
+          supabaseTransactionQueue.getTransactionQueueItemsByHash,
         ),
         deleteTransactionQueueItem: this.wrapWithFallback(
-          supabaseTransactionQueue.deleteTransactionQueueItem
+          supabaseTransactionQueue.deleteTransactionQueueItem,
         ),
 
         // GovLst Deposit Operations
-        createGovLstDeposit: this.wrapWithFallback(supabaseGovLstRewards.createGovLstDeposit),
-        updateGovLstDeposit: this.wrapWithFallback(supabaseGovLstRewards.updateGovLstDeposit),
-        getGovLstDeposit: this.wrapWithFallback(supabaseGovLstRewards.getGovLstDeposit),
-        getGovLstDepositsByAddress: this.wrapWithFallback(supabaseGovLstRewards.getGovLstDepositsByAddress),
-        getAllGovLstDeposits: this.wrapWithFallback(supabaseGovLstRewards.getAllGovLstDeposits),
+        createGovLstDeposit: this.wrapWithFallback(
+          supabaseGovLstRewards.createGovLstDeposit,
+        ),
+        updateGovLstDeposit: this.wrapWithFallback(
+          supabaseGovLstRewards.updateGovLstDeposit,
+        ),
+        getGovLstDeposit: this.wrapWithFallback(
+          supabaseGovLstRewards.getGovLstDeposit,
+        ),
+        getGovLstDepositsByAddress: this.wrapWithFallback(
+          supabaseGovLstRewards.getGovLstDepositsByAddress,
+        ),
+        getAllGovLstDeposits: this.wrapWithFallback(
+          supabaseGovLstRewards.getAllGovLstDeposits,
+        ),
 
         // GovLst Claim History Operations
-        createGovLstClaimHistory: this.wrapWithFallback(supabaseGovLstRewards.createGovLstClaimHistory),
-        getGovLstClaimHistory: this.wrapWithFallback(supabaseGovLstRewards.getGovLstClaimHistory),
-        getGovLstClaimHistoryByAddress: this.wrapWithFallback(supabaseGovLstRewards.getGovLstClaimHistoryByAddress),
-        updateGovLstClaimHistory: this.wrapWithFallback(supabaseGovLstRewards.updateGovLstClaimHistory),
+        createGovLstClaimHistory: this.wrapWithFallback(
+          supabaseGovLstRewards.createGovLstClaimHistory,
+        ),
+        getGovLstClaimHistory: this.wrapWithFallback(
+          supabaseGovLstRewards.getGovLstClaimHistory,
+        ),
+        getGovLstClaimHistoryByAddress: this.wrapWithFallback(
+          supabaseGovLstRewards.getGovLstClaimHistoryByAddress,
+        ),
+        updateGovLstClaimHistory: this.wrapWithFallback(
+          supabaseGovLstRewards.updateGovLstClaimHistory,
+        ),
       };
     }
   }
@@ -119,15 +147,15 @@ export class DatabaseWrapper implements IDatabase {
     return this.fallbackDb;
   }
 
-  private wrapWithFallback<T extends (...args: any[]) => Promise<any>>(
-    fn: T
-  ): T {
-    return (async (...args: Parameters<T>): Promise<ReturnType<T>> => {
+  private wrapWithFallback<Args extends unknown[], Return>(
+    fn: (...args: Args) => Promise<Return>,
+  ): (...args: Args) => Promise<Return> {
+    return async (...args: Args): Promise<Return> => {
       if (this.usingFallback) {
         // Already using fallback, call the equivalent method on fallbackDb
         const fallbackDb = this.getFallbackDb();
         const methodName = fn.name;
-        // @ts-ignore - Dynamic method call
+        // @ts-expect-error - Dynamic method call on fallback database
         return fallbackDb[methodName](...args);
       }
 
@@ -141,18 +169,21 @@ export class DatabaseWrapper implements IDatabase {
         ) {
           // Supabase is not available, switch to fallback
           if (!this.usingFallback) {
-            this.logger.warn('Supabase not available, switching to JsonDatabase fallback', { error });
+            this.logger.warn(
+              'Supabase not available, switching to JsonDatabase fallback',
+              { error },
+            );
             this.usingFallback = true;
           }
 
           const fallbackDb = this.getFallbackDb();
           const methodName = fn.name;
-          // @ts-ignore - Dynamic method call
+          // @ts-expect-error - Dynamic method call on fallback database
           return fallbackDb[methodName](...args);
         }
         throw error;
       }
-    }) as T;
+    };
   }
 
   // Deposits
@@ -300,7 +331,7 @@ export class DatabaseWrapper implements IDatabase {
 
   async updateGovLstDeposit(
     depositId: string,
-    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>
+    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>,
   ): Promise<void> {
     return this.db.updateGovLstDeposit(depositId, update);
   }
@@ -309,7 +340,9 @@ export class DatabaseWrapper implements IDatabase {
     return this.db.getGovLstDeposit(depositId);
   }
 
-  async getGovLstDepositsByAddress(govLstAddress: string): Promise<GovLstDeposit[]> {
+  async getGovLstDepositsByAddress(
+    govLstAddress: string,
+  ): Promise<GovLstDeposit[]> {
     return this.db.getGovLstDepositsByAddress(govLstAddress);
   }
 
@@ -318,7 +351,9 @@ export class DatabaseWrapper implements IDatabase {
   }
 
   // GovLst Claim History Operations
-  async createGovLstClaimHistory(claim: GovLstClaimHistory): Promise<GovLstClaimHistory> {
+  async createGovLstClaimHistory(
+    claim: GovLstClaimHistory,
+  ): Promise<GovLstClaimHistory> {
     return this.db.createGovLstClaimHistory(claim);
   }
 
@@ -326,13 +361,17 @@ export class DatabaseWrapper implements IDatabase {
     return this.db.getGovLstClaimHistory(id);
   }
 
-  async getGovLstClaimHistoryByAddress(govLstAddress: string): Promise<GovLstClaimHistory[]> {
+  async getGovLstClaimHistoryByAddress(
+    govLstAddress: string,
+  ): Promise<GovLstClaimHistory[]> {
     return this.db.getGovLstClaimHistoryByAddress(govLstAddress);
   }
 
   async updateGovLstClaimHistory(
     id: string,
-    update: Partial<Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>>
+    update: Partial<
+      Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>
+    >,
   ): Promise<void> {
     return this.db.updateGovLstClaimHistory(id, update);
   }

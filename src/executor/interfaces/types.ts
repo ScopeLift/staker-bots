@@ -1,4 +1,4 @@
-import { ProfitabilityCheck, GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
+import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 
 export interface WalletConfig {
   privateKey: string;
@@ -10,6 +10,7 @@ export interface WalletConfig {
 export interface RelayerConfig {
   apiKey: string;
   apiSecret: string;
+  address: string;
   minBalance: bigint;
   maxPendingTransactions: number;
   gasPolicy?: {
@@ -52,7 +53,15 @@ export interface ExecutorConfig {
 }
 
 export interface RelayerExecutorConfig {
-  relayer: RelayerConfig;
+  apiKey: string;
+  apiSecret: string;
+  address: string;
+  minBalance: bigint;
+  maxPendingTransactions: number;
+  gasPolicy?: {
+    maxFeePerGas?: bigint;
+    maxPriorityFeePerGas?: bigint;
+  };
   maxQueueSize: number;
   minConfirmations: number;
   maxRetries: number;
@@ -91,7 +100,9 @@ export interface GovLstExecutorError extends Error {
 }
 
 // Type guard for GovLstExecutorError
-export function isGovLstExecutorError(error: unknown): error is GovLstExecutorError {
+export function isGovLstExecutorError(
+  error: unknown,
+): error is GovLstExecutorError {
   return error instanceof Error && 'context' in error;
 }
 

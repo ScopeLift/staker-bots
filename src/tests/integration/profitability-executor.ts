@@ -1,322 +1,386 @@
-import { ethers } from 'ethers'
-import { DatabaseWrapper } from '@/database'
-import { ConsoleLogger, Logger } from '@/monitor/logging'
-import { GovLstProfitabilityEngineWrapper } from '@/profitability/ProfitabilityEngineWrapper'
-import { ExecutorWrapper, ExecutorType } from '@/executor/ExecutorWrapper'
-import { CONFIG } from '@/config'
-import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed'
-import path from 'path'
-import fs from 'fs'
+import { ethers } from 'ethers';
+import { DatabaseWrapper } from '@/database';
+import { ConsoleLogger } from '@/monitor/logging';
+import { GovLstProfitabilityEngineWrapper } from '@/profitability';
+import { ExecutorWrapper, ExecutorType } from '@/executor';
+import { CONFIG } from '@/config';
+import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
+import { IExecutor } from '@/executor/interfaces/IExecutor';
+import { govlst } from '@/constants';
+import stakerAbi from '../abis/staker.json';
+import {
+  TransactionQueueStatus,
+  ProcessingQueueStatus,
+} from '@/database/interfaces/types';
+import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 
-// Create logger instance
-const logger: Logger = new ConsoleLogger('info')
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonArray | JsonObject | bigint;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+interface JsonArray extends Array<JsonValue> {}
 
-interface DatabaseDeposit {
-  deposit_id: string
-  owner_address: string
-  depositor_address: string
-  delegatee_address?: string
-  amount: string
-  created_at: string
-  updated_at: string
+function serializeBigInt<T extends JsonValue>(value: T): JsonValue {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeBigInt(item));
+  }
+
+  if (value && typeof value === 'object') {
+    const result: JsonObject = {};
+    for (const key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        const val = value[key];
+        if (val !== undefined) {
+          result[key] = serializeBigInt(val);
+        }
+      }
+    }
+    return result;
+  }
+
+  return value;
 }
 
-interface DatabaseContent {
-  deposits: Record<string, DatabaseDeposit>
-  checkpoints: Record<string, any>
-  processing_queue: Record<string, any>
-  transaction_queue: Record<string, any>
-  govlst_deposits: Record<string, any>
-  govlst_claim_history: Record<string, any>
+function serializeProfitabilityCheck(
+  check: GovLstProfitabilityCheck,
+): JsonObject {
+  return {
+    is_profitable: check.is_profitable,
+    constraints: {
+      has_enough_shares: check.constraints.has_enough_shares,
+      meets_min_reward: check.constraints.meets_min_reward,
+      meets_min_profit: check.constraints.meets_min_profit,
+    },
+    estimates: {
+      expected_profit: serializeBigInt(check.estimates.expected_profit),
+      gas_estimate: serializeBigInt(check.estimates.gas_estimate),
+      total_shares: serializeBigInt(check.estimates.total_shares),
+      payout_amount: serializeBigInt(check.estimates.payout_amount),
+    },
+    deposit_details: check.deposit_details.map((detail) => ({
+      depositId: serializeBigInt(detail.depositId),
+      rewards: serializeBigInt(detail.rewards),
+    })),
+  };
 }
 
 async function main() {
-  logger.info('Starting profitability-executor integration test...')
+  const logger = new ConsoleLogger('info');
+  logger.info('Starting profitability-executor integration test...', {
+    executorType: process.env.EXECUTOR_TYPE,
+  });
 
-  // Initialize database with staker-monitor-db.json
-  const dbPath = path.join(process.cwd(), 'staker-monitor-db.json')
-  logger.info(`Using database at ${dbPath}`)
+  // Initialize database
   const database = new DatabaseWrapper({
     type: 'json',
-    jsonDbPath: 'staker-monitor-db.json'
-  })
+  });
+  logger.info('Using database at', {
+    path: process.cwd() + '/staker-monitor-db.json',
+    executorType: process.env.EXECUTOR_TYPE,
+  });
 
   // Initialize provider
-  logger.info('Initializing provider...')
-  const provider = new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl)
-  const network = await provider.getNetwork()
+  logger.info('Initializing provider...');
+  const provider = new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
+  const network = await provider.getNetwork();
   logger.info('Connected to network:', {
     chainId: network.chainId,
-    name: network.name
-  })
+    name: network.name,
+  });
+
+  // Initialize Staker contract
+  logger.info('Initializing Staker contract...');
+  const stakerContract = new ethers.Contract(
+    '0xdFAa0c8116bAFc8a9F474DFa6A5a28dB0BbCF556',
+    stakerAbi,
+    provider,
+  ) as ethers.Contract & {
+    unclaimedReward(depositId: string): Promise<bigint>;
+  };
+  logger.info('Staker contract initialized at:', {
+    address: stakerContract.target,
+  });
 
   // Initialize GovLst contract
-  logger.info('Initializing GovLst contract...')
-  const govLstAddress = CONFIG.govlst.addresses[0] // Use first address from config
-  if (!govLstAddress) {
-    throw new Error('No GovLst contract address configured')
-  }
-  const govLstAbi = JSON.parse(
-    fs.readFileSync('./src/tests/abis/govlst.json', 'utf-8')
-  )
-  const stakerAbi = JSON.parse(
-    fs.readFileSync('./src/tests/abis/staker.json', 'utf-8')
-  )
+  logger.info('Initializing GovLst contract...');
   const govLstContract = new ethers.Contract(
-    govLstAddress,
-    govLstAbi,
-    provider
-  ) as ethers.Contract & {
-    STAKER(): Promise<string>
-    depositIdForHolder(account: string): Promise<bigint>
-    fetchOrInitializeDepositForDelegatee(delegatee: string): Promise<bigint>
+    '0x6fbb31f8c459d773a8d0f67c8c055a70d943c1f1',
+    govlst,
+    provider,
+  );
+  logger.info('GovLst contract initialized at:', {
+    address: govLstContract.target,
+  });
+
+  // Initialize LST contract
+  logger.info('Initializing LST contract...');
+  const lstContract = new ethers.Contract(
+    CONFIG.monitor.lstAddress,
+    govlst,
+    provider,
+  );
+  logger.info('LST contract initialized at:', { address: lstContract.target });
+
+  // Initialize executor
+  logger.info('Initializing executor...');
+  const executorType = process.env.EXECUTOR_TYPE?.toLowerCase() || 'wallet';
+
+  if (!['wallet', 'relayer'].includes(executorType)) {
+    throw new Error(
+      `Invalid executor type: ${executorType}. Must be 'wallet' or 'relayer'`,
+    );
   }
 
-  // Get staker address
-  const stakerAddress = await govLstContract.STAKER()
-  if (!stakerAddress) {
-    throw new Error('Failed to get staker address from GovLst contract')
-  }
+  const executorConfig =
+    executorType === 'relayer'
+      ? {
+          apiKey: process.env.DEFENDER_API_KEY || '',
+          apiSecret: process.env.DEFENDER_SECRET_KEY || '',
+          address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
+          minBalance: BigInt(0),
+          maxPendingTransactions: 5,
+          maxQueueSize: 100,
+          minConfirmations: 2,
+          maxRetries: 3,
+          retryDelayMs: 5000,
+          transferOutThreshold: BigInt(0),
+          gasBoostPercentage: 30,
+          concurrentTransactions: 3,
+          gasPolicy: {
+            maxFeePerGas: BigInt(0),
+            maxPriorityFeePerGas: BigInt(0),
+          },
+        }
+      : {
+          wallet: {
+            privateKey: CONFIG.executor.privateKey,
+            minBalance: ethers.parseEther('0.01'),
+            maxPendingTransactions: 5,
+          },
+          defaultTipReceiver: CONFIG.executor.tipReceiver,
+        };
 
-  const stakerContract = new ethers.Contract(
-    stakerAddress,
-    stakerAbi,
-    provider
-  ) as ethers.Contract & {
-    balanceOf(account: string): Promise<bigint>
-    deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>
-    unclaimedReward(depositId: bigint): Promise<bigint>
-  }
-  logger.info('GovLst contract initialized at:', { address: govLstAddress })
-  logger.info('Staker contract initialized at:', { address: stakerAddress })
+  const executor = new ExecutorWrapper(
+    lstContract, // Pass LST contract instead of Staker contract
+    provider,
+    executorType === 'relayer' ? ExecutorType.RELAYER : ExecutorType.WALLET,
+    executorConfig,
+    database,
+  );
 
-  // Initialize price feed
+  // Initialize profitability engine
+  logger.info('Initializing profitability engine...');
   const priceFeed = new CoinMarketCapFeed(
     {
       apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
       baseUrl: CONFIG.priceFeed.coinmarketcap.baseUrl,
-      timeout: CONFIG.priceFeed.coinmarketcap.timeout
+      timeout: CONFIG.priceFeed.coinmarketcap.timeout,
     },
-    logger
-  )
+    new ConsoleLogger('info'),
+  );
 
-  // Initialize executor
-  logger.info('Initializing executor...')
-  const executor = new ExecutorWrapper(
-    govLstContract,
-    provider,
-    ExecutorType.WALLET,
-    {
-      wallet: {
-        privateKey: CONFIG.executor.privateKey,
-        minBalance: ethers.parseEther('0.005'),
-        maxPendingTransactions: 5
-      },
-      maxQueueSize: 100,
-      minConfirmations: CONFIG.monitor.confirmations,
-      maxRetries: CONFIG.monitor.maxRetries,
-      retryDelayMs: 5000,
-      transferOutThreshold: ethers.parseEther('0.5'),
-      gasBoostPercentage: CONFIG.govlst.gasPriceBuffer,
-      concurrentTransactions: 3,
-      defaultTipReceiver: CONFIG.executor.tipReceiver
-    },
-    database
-  )
-
-  // Initialize profitability engine
-  logger.info('Initializing profitability engine...')
   const profitabilityEngine = new GovLstProfitabilityEngineWrapper(
     database,
     govLstContract,
     stakerContract,
     provider,
-    logger,
+    new ConsoleLogger('info'),
     priceFeed,
     {
       minProfitMargin: CONFIG.govlst.minProfitMargin,
-      maxBatchSize: CONFIG.govlst.maxBatchSize,
       gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,
-      rewardTokenAddress: govLstAddress,
-      defaultTipReceiver: CONFIG.executor.tipReceiver,
+      maxBatchSize: CONFIG.govlst.maxBatchSize,
+      rewardTokenAddress: '0x6fbb31f8c459d773a8d0f67c8c055a70d943c1f1',
+      defaultTipReceiver: CONFIG.executor.tipReceiver || ethers.ZeroAddress,
       priceFeed: {
-        cacheDuration: 10 * 60 * 1000 // 10 minutes
-      }
+        cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
+      },
     },
-    executor
-  )
+    executor as IExecutor,
+  );
 
-  try {
-    // Start components
-    await profitabilityEngine.start()
-    logger.info('Profitability engine started')
+  // Start components
+  await executor.start();
+  logger.info('Executor started');
 
-    await executor.start()
-    logger.info('Executor started')
+  await profitabilityEngine.start();
+  logger.info('Profitability engine started');
 
-    // Read deposits directly from staker-monitor-db.json
-    const dbContent = JSON.parse(fs.readFileSync(dbPath, 'utf-8')) as DatabaseContent
-    const deposits = Object.values(dbContent.deposits)
-    logger.info(`Found ${deposits.length} deposits to analyze`)
+  // Add test deposits to database
+  const deposits = [
+    {
+      deposit_id: '1',
+      owner_address: '0x6Fbb31f8c459d773A8d0f67C8C055a70d943C1F1',
+      depositor_address: '0x6Fbb31f8c459d773A8d0f67C8C055a70d943C1F1',
+      delegatee_address: '0x0000000000000000000000000000000000000B01',
+      amount: '19200000000000000000000',
+      block_number: 7876306,
+      transaction_hash: '0x123',
+    },
+    {
+      deposit_id: '2',
+      owner_address: '0x6Fbb31f8c459d773A8d0f67C8C055a70d943C1F1',
+      depositor_address: '0x0872Dc5D4D11822bb57206c67A65A6d9405f8bcC',
+      delegatee_address: '0x98457E13DDFFD3DbA645688EDBf3a159359b730d',
+      amount: '75436044328372155512382',
+      block_number: 7876306,
+      transaction_hash: '0x456',
+    },
+    {
+      deposit_id: '3',
+      owner_address: '0x6Fbb31f8c459d773A8d0f67C8C055a70d943C1F1',
+      depositor_address: '0x0872Dc5D4D11822bb57206c67A65A6d9405f8bcC',
+      delegatee_address: '0x98457E13DDFFD3DbA645688EDBf3a159359b730d',
+      amount: '0',
+      block_number: 7876306,
+      transaction_hash: '0x789',
+    },
+  ];
 
-    // Process deposits in batches
-    const batchSize = 5;
-    const depositBatches = [];
-    const currentBatch = [];
+  logger.info(`Found ${deposits.length} deposits to analyze`);
 
-    for (const deposit of deposits) {
-      try {
-        // Skip deposits with amount = 0
-        if (BigInt(deposit.amount) === BigInt(0)) {
-          logger.info(`Skipping deposit ${deposit.deposit_id} with amount 0`)
-          continue
-        }
+  // First, add all deposits to the database
+  for (const deposit of deposits) {
+    logger.info('Adding deposit to database', {
+      depositId: deposit.deposit_id,
+      owner: deposit.owner_address,
+      depositor: deposit.depositor_address,
+      delegatee: deposit.delegatee_address,
+      amount: deposit.amount,
+    });
 
-        logger.info(`Processing deposit ${deposit.deposit_id}`, {
-          owner: deposit.owner_address,
-          depositor: deposit.depositor_address,
-          delegatee: deposit.delegatee_address,
-          amount: deposit.amount
-        })
-
-        // Use deposit ID from our database
-        const depositId = BigInt(deposit.deposit_id)
-
-        // Get unclaimed rewards
-        const unclaimedRewards = await stakerContract.unclaimedReward(depositId)
-
-        // Skip if no unclaimed rewards
-        if (unclaimedRewards === BigInt(0)) {
-          logger.info(`Skipping deposit ${deposit.deposit_id} with no unclaimed rewards`)
-          continue
-        }
-
-        logger.info(`Unclaimed rewards for deposit ${deposit.deposit_id}:`, {
-          depositId: depositId.toString(),
-          rewards: ethers.formatEther(unclaimedRewards),
-          owner: deposit.owner_address,
-          depositor: deposit.depositor_address
-        })
-
-        // Add to current batch
-        currentBatch.push({
-          deposit_id: BigInt(deposit.deposit_id),
-          owner_address: deposit.owner_address,
-          depositor_address: deposit.depositor_address,
-          delegatee_address: deposit.delegatee_address || '',
-          amount: BigInt(deposit.amount),
-          shares_of: BigInt(0), // Will be fetched by the engine
-          payout_amount: BigInt(0), // Will be fetched by the engine
-          rewards: unclaimedRewards // Use the unclaimed rewards we fetched earlier
-        });
-
-        // If batch is full or this is the last deposit, process the batch
-        if (currentBatch.length >= batchSize || deposit === deposits[deposits.length - 1]) {
-          if (currentBatch.length >= 1) {  // Only process if we have at least one deposit
-            depositBatches.push([...currentBatch]);
-            currentBatch.length = 0;  // Clear the current batch
-          }
-        }
-      } catch (error) {
-        logger.error(`Error processing deposit ${deposit.deposit_id}:`, {
-          error: error instanceof Error ? error.message : String(error)
-        })
-      }
-    }
-
-    // Process each batch
-    for (const batch of depositBatches) {
-      try {
-        logger.info(`Processing batch of ${batch.length} deposits`)
-
-        // Check profitability
-        const profitability = await profitabilityEngine.checkGroupProfitability(batch)
-
-        if (profitability.is_profitable) {
-          logger.info(`Batch is profitable:`, {
-            expectedProfit: profitability.estimates.expected_profit.toString(),
-            gasEstimate: profitability.estimates.gas_estimate.toString(),
-            depositCount: batch.length
-          })
-
-          // Queue transaction with proper serialization
-          const tx = await executor.queueTransaction(
-            batch.map(d => d.deposit_id),
-            profitability,
-            JSON.stringify({
-              depositIds: batch.map(d => d.deposit_id.toString()),
-              profitability: {
-                ...profitability,
-                estimates: {
-                  expected_profit: profitability.estimates.expected_profit.toString(),
-                  gas_estimate: profitability.estimates.gas_estimate.toString(),
-                  total_shares: profitability.estimates.total_shares.toString(),
-                  payout_amount: profitability.estimates.payout_amount.toString()
-                },
-                deposit_details: profitability.deposit_details.map(detail => ({
-                  ...detail,
-                  depositId: detail.depositId.toString(),
-                  rewards: detail.rewards.toString()
-                }))
-              }
-            })
-          )
-
-          logger.info(`Transaction queued for batch:`, {
-            id: tx.id,
-            status: tx.status,
-            depositIds: batch.map(d => d.deposit_id.toString())
-          })
-        } else {
-          logger.info(`Batch is not profitable:`, {
-            constraints: profitability.constraints,
-            depositIds: batch.map(d => d.deposit_id.toString())
-          })
-        }
-      } catch (error) {
-        logger.error(`Error processing batch:`, {
-          error: error instanceof Error ? error.message : String(error),
-          depositIds: batch.map(d => d.deposit_id.toString())
-        })
-      }
-    }
-
-    // Wait for transactions to process
-    logger.info('Waiting for transactions to complete...')
-    await new Promise(resolve => setTimeout(resolve, 30000))
-
-    // Get final stats
-    const stats = await executor.getQueueStats()
-    logger.info('Final queue stats:', {
-      totalConfirmed: stats.totalConfirmed,
-      totalFailed: stats.totalFailed,
-      totalPending: stats.totalPending,
-      totalQueued: stats.totalQueued,
-      averageGasPrice: stats.averageGasPrice.toString(),
-      totalProfits: stats.totalProfits.toString()
-    })
-
-  } catch (error) {
-    logger.error('Error during test:', {
-      error: error instanceof Error ? error.message : String(error)
-    })
-    throw error
-  } finally {
-    // Stop components
-    await profitabilityEngine.stop()
-    logger.info('Profitability engine stopped')
-
-    await executor.stop()
-    logger.info('Executor stopped')
+    await database.createDeposit({
+      deposit_id: deposit.deposit_id,
+      owner_address: deposit.owner_address,
+      depositor_address: deposit.depositor_address,
+      delegatee_address: deposit.delegatee_address,
+      amount: deposit.amount.toString(),
+    });
   }
+
+  // Then process all deposits together
+  const profitableDeposits = [];
+  const depositDetails = [];
+
+  for (const deposit of deposits) {
+    const unclaimedRewards = await stakerContract.unclaimedReward(
+      deposit.deposit_id,
+    );
+    logger.info(`Unclaimed rewards for deposit ${deposit.deposit_id}:`, {
+      depositId: deposit.deposit_id,
+      rewards: unclaimedRewards.toString(),
+      owner: deposit.owner_address,
+      depositor: deposit.depositor_address,
+    });
+
+    if (unclaimedRewards > 0n) {
+      profitableDeposits.push(deposit);
+      depositDetails.push({
+        depositId: BigInt(deposit.deposit_id),
+        rewards: unclaimedRewards,
+      });
+    }
+  }
+
+  if (profitableDeposits.length > 0) {
+    // Calculate total rewards and shares
+    const totalRewards = depositDetails.reduce(
+      (sum, detail) => sum + detail.rewards,
+      0n,
+    );
+    const totalShares = profitableDeposits.reduce(
+      (sum, deposit) => sum + BigInt(deposit.amount),
+      0n,
+    );
+    const gasEstimate = BigInt(300000); // Default gas estimate
+
+    // Create profitability check object for all deposits
+    const profitabilityCheck: GovLstProfitabilityCheck = {
+      is_profitable: true,
+      constraints: {
+        has_enough_shares: true,
+        meets_min_reward: true,
+        meets_min_profit: true,
+      },
+      estimates: {
+        expected_profit: totalRewards,
+        gas_estimate: gasEstimate,
+        total_shares: totalShares,
+        payout_amount: totalRewards,
+      },
+      deposit_details: depositDetails,
+    };
+
+    // Add all deposits to processing queue
+    for (const deposit of profitableDeposits) {
+      await database.createProcessingQueueItem({
+        deposit_id: deposit.deposit_id,
+        status: ProcessingQueueStatus.PENDING,
+        delegatee: deposit.delegatee_address || '',
+      });
+    }
+
+    // Create a single transaction queue item for all deposits
+    const txQueueItem = await database.createTransactionQueueItem({
+      deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
+      status: TransactionQueueStatus.PENDING,
+      tx_data: JSON.stringify({
+        depositIds: profitableDeposits.map((d) => d.deposit_id),
+        totalRewards: totalRewards.toString(),
+        profitability: serializeProfitabilityCheck(profitabilityCheck),
+      }),
+    });
+
+    // Queue a single transaction with executor for all deposits
+    await executor.queueTransaction(
+      profitableDeposits.map((d) => BigInt(d.deposit_id)),
+      profitabilityCheck,
+      JSON.stringify({
+        depositIds: profitableDeposits.map((d) => d.deposit_id),
+        totalRewards: totalRewards.toString(),
+        profitability: serializeProfitabilityCheck(profitabilityCheck),
+        queueItemId: txQueueItem.id,
+      }),
+    );
+
+    logger.info('Queued batch transaction for deposits:', {
+      depositIds: profitableDeposits.map((d) => d.deposit_id),
+      totalRewards: ethers.formatEther(totalRewards),
+      gasEstimate: gasEstimate.toString(),
+    });
+  }
+
+  // Wait for transactions to complete
+  logger.info('Waiting for transactions to complete...');
+  await new Promise((resolve) => setTimeout(resolve, 30000)); // Wait 30 seconds
+
+  // Get final queue stats
+  const queueStats = await executor.getQueueStats();
+  logger.info('Final queue stats:', {
+    totalConfirmed: queueStats.totalConfirmed,
+    totalFailed: queueStats.totalFailed,
+    totalPending: queueStats.totalPending,
+    totalQueued: queueStats.totalQueued,
+    averageGasPrice: ethers.formatUnits(queueStats.averageGasPrice, 'gwei'),
+    totalProfits: ethers.formatEther(queueStats.totalProfits),
+  });
+
+  // Stop components
+  await profitabilityEngine.stop();
+  logger.info('Profitability engine stopped');
+
+  await executor.stop();
+  logger.info('Executor stopped');
 }
 
 // Run the test
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    logger.error('Fatal error:', {
-      error: error instanceof Error ? error.message : String(error)
-    })
-    process.exit(1)
-  })
+main().catch(async (error) => {
+  const logger = new ConsoleLogger('error');
+  logger.error('Fatal error:', error);
+  process.exit(1);
+});

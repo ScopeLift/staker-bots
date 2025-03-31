@@ -64,47 +64,47 @@ export interface ProfitabilityConfig {
 }
 
 export interface GovLstDeposit extends Deposit {
-  shares_of: bigint
-  payout_amount: bigint
-  rewards: bigint
-  depositor_address: string
+  shares_of: bigint;
+  payout_amount: bigint;
+  rewards: bigint;
+  depositor_address: string;
 }
 
 export interface GovLstDepositGroup {
-  deposit_ids: bigint[]
-  total_shares: bigint
-  total_payout: bigint
-  expected_profit: bigint
-  gas_estimate: bigint
+  deposit_ids: bigint[];
+  total_shares: bigint;
+  total_payout: bigint;
+  expected_profit: bigint;
+  gas_estimate: bigint;
 }
 
 export interface GovLstProfitabilityCheck {
-  is_profitable: boolean
+  is_profitable: boolean;
   constraints: {
-    has_enough_shares: boolean
-    meets_min_reward: boolean
-    meets_min_profit: boolean
-  }
+    has_enough_shares: boolean;
+    meets_min_reward: boolean;
+    meets_min_profit: boolean;
+  };
   estimates: {
-    total_shares: bigint
-    payout_amount: bigint
-    gas_estimate: bigint
-    expected_profit: bigint
-  }
+    total_shares: bigint;
+    payout_amount: bigint;
+    gas_estimate: bigint;
+    expected_profit: bigint;
+  };
   deposit_details: Array<{
-    depositId: bigint
-    rewards: bigint
-  }>
+    depositId: bigint;
+    rewards: bigint;
+  }>;
 }
 
 export interface GovLstBatchAnalysis {
-  deposit_groups: GovLstDepositGroup[]
-  total_gas_estimate: bigint
-  total_expected_profit: bigint
-  total_deposits: number
+  deposit_groups: GovLstDepositGroup[];
+  total_gas_estimate: bigint;
+  total_expected_profit: bigint;
+  total_deposits: number;
 }
 
 export interface DepositCache {
-  deposit: GovLstDeposit
-  timestamp: number
+  deposit: GovLstDeposit;
+  timestamp: number;
 }

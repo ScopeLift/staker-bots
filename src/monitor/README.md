@@ -18,6 +18,7 @@ The Staker Monitor is designed to:
 ### Core Components
 
 1. **StakerMonitor**: The main orchestrator that:
+
    - Manages the event processing lifecycle
    - Handles blockchain polling and event filtering
    - Maintains processing checkpoints
@@ -25,6 +26,7 @@ The Staker Monitor is designed to:
    - Provides monitoring status and health checks
 
 2. **EventProcessor**: Processes multiple types of blockchain events:
+
    - StakeDeposited
    - StakeWithdrawn
    - DelegateeAltered
