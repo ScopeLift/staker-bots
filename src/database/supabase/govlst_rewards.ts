@@ -1,12 +1,13 @@
 import { supabase } from './client';
 import { GovLstDeposit, GovLstClaimHistory } from '../interfaces/types';
 
-const SUPABASE_NOT_CONFIGURED_ERROR = 'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
+const SUPABASE_NOT_CONFIGURED_ERROR =
+  'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
 
 // GovLst Deposits Operations
 
 export async function createGovLstDeposit(
-  deposit: GovLstDeposit
+  deposit: GovLstDeposit,
 ): Promise<void> {
   const client = supabase();
   if (!client) {
@@ -19,7 +20,7 @@ export async function createGovLstDeposit(
 
 export async function updateGovLstDeposit(
   depositId: string,
-  update: Partial<Omit<GovLstDeposit, 'deposit_id'>>
+  update: Partial<Omit<GovLstDeposit, 'deposit_id'>>,
 ): Promise<void> {
   const client = supabase();
   if (!client) {
@@ -34,7 +35,7 @@ export async function updateGovLstDeposit(
 }
 
 export async function getGovLstDeposit(
-  depositId: string
+  depositId: string,
 ): Promise<GovLstDeposit | null> {
   const client = supabase();
   if (!client) {
@@ -51,7 +52,7 @@ export async function getGovLstDeposit(
 }
 
 export async function getGovLstDepositsByAddress(
-  govLstAddress: string
+  govLstAddress: string,
 ): Promise<GovLstDeposit[]> {
   const client = supabase();
   if (!client) {
@@ -80,7 +81,7 @@ export async function getAllGovLstDeposits(): Promise<GovLstDeposit[]> {
 // GovLst Claim History Operations
 
 export async function createGovLstClaimHistory(
-  claim: GovLstClaimHistory
+  claim: GovLstClaimHistory,
 ): Promise<GovLstClaimHistory> {
   const client = supabase();
   if (!client) {
@@ -97,7 +98,7 @@ export async function createGovLstClaimHistory(
 }
 
 export async function getGovLstClaimHistory(
-  id: string
+  id: string,
 ): Promise<GovLstClaimHistory | null> {
   const client = supabase();
   if (!client) {
@@ -114,7 +115,7 @@ export async function getGovLstClaimHistory(
 }
 
 export async function getGovLstClaimHistoryByAddress(
-  govLstAddress: string
+  govLstAddress: string,
 ): Promise<GovLstClaimHistory[]> {
   const client = supabase();
   if (!client) {
@@ -131,7 +132,7 @@ export async function getGovLstClaimHistoryByAddress(
 
 export async function updateGovLstClaimHistory(
   id: string,
-  update: Partial<Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>>
+  update: Partial<Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>>,
 ): Promise<void> {
   const client = supabase();
   if (!client) {

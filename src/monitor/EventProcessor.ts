@@ -8,7 +8,7 @@ import {
 } from './types';
 import { Logger } from './logging';
 import { EVENT_TYPES } from './constants';
-import { EventProcessingError, DepositNotFoundError, DatabaseError } from './errors';
+import { EventProcessingError, DepositNotFoundError } from './errors';
 
 /**
  * Processes blockchain events related to staking operations.
@@ -58,10 +58,14 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
-      throw new EventProcessingError(EVENT_TYPES.STAKE_DEPOSITED, error as Error, {
-        depositId: event.depositId,
-        amount: event.amount.toString(),
-      });
+      throw new EventProcessingError(
+        EVENT_TYPES.STAKE_DEPOSITED,
+        error as Error,
+        {
+          depositId: event.depositId,
+          amount: event.amount.toString(),
+        },
+      );
     }
   }
 
@@ -76,9 +80,10 @@ export class EventProcessor {
       if (!deposit) throw new DepositNotFoundError(event.depositId);
 
       const remainingAmount = BigInt(deposit.amount) - event.withdrawnAmount;
-      const depositData = remainingAmount <= 0
-        ? { amount: '0', delegatee_address: deposit.owner_address }
-        : { amount: remainingAmount.toString() };
+      const depositData =
+        remainingAmount <= 0
+          ? { amount: '0', delegatee_address: deposit.owner_address }
+          : { amount: remainingAmount.toString() };
 
       await this.db.updateDeposit(event.depositId, depositData);
 
@@ -89,10 +94,14 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
-      throw new EventProcessingError(EVENT_TYPES.STAKE_WITHDRAWN, error as Error, {
-        depositId: event.depositId,
-        withdrawnAmount: event.withdrawnAmount.toString(),
-      });
+      throw new EventProcessingError(
+        EVENT_TYPES.STAKE_WITHDRAWN,
+        error as Error,
+        {
+          depositId: event.depositId,
+          withdrawnAmount: event.withdrawnAmount.toString(),
+        },
+      );
     }
   }
 
@@ -117,11 +126,15 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
-      throw new EventProcessingError(EVENT_TYPES.DELEGATEE_ALTERED, error as Error, {
-        depositId: event.depositId,
-        oldDelegatee: event.oldDelegatee,
-        newDelegatee: event.newDelegatee,
-      });
+      throw new EventProcessingError(
+        EVENT_TYPES.DELEGATEE_ALTERED,
+        error as Error,
+        {
+          depositId: event.depositId,
+          oldDelegatee: event.oldDelegatee,
+          newDelegatee: event.newDelegatee,
+        },
+      );
     }
   }
 
@@ -134,13 +147,18 @@ export class EventProcessor {
   ): Promise<ProcessingResult> {
     try {
       // Get the old deposit to copy over relevant data
-      const oldDeposit = await this.db.getDeposit(event.oldDepositId.toString());
+      const oldDeposit = await this.db.getDeposit(
+        event.oldDepositId.toString(),
+      );
       if (!oldDeposit) {
-        this.logger.warn('Old deposit not found when processing DepositUpdated', {
-          holder: event.holder,
-          oldDepositId: event.oldDepositId.toString(),
-          newDepositId: event.newDepositId.toString(),
-        });
+        this.logger.warn(
+          'Old deposit not found when processing DepositUpdated',
+          {
+            holder: event.holder,
+            oldDepositId: event.oldDepositId.toString(),
+            newDepositId: event.newDepositId.toString(),
+          },
+        );
       }
 
       // Create or update the new deposit with data from the old one
@@ -172,11 +190,15 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
-      throw new EventProcessingError(EVENT_TYPES.DEPOSIT_UPDATED, error as Error, {
-        holder: event.holder,
-        oldDepositId: event.oldDepositId.toString(),
-        newDepositId: event.newDepositId.toString(),
-      });
+      throw new EventProcessingError(
+        EVENT_TYPES.DEPOSIT_UPDATED,
+        error as Error,
+        {
+          holder: event.holder,
+          oldDepositId: event.oldDepositId.toString(),
+          newDepositId: event.newDepositId.toString(),
+        },
+      );
     }
   }
 
@@ -184,8 +206,8 @@ export class EventProcessor {
    * Creates a success result object for event processing
    */
   private createSuccessResult(event: {
-    blockNumber: number
-    transactionHash: string
+    blockNumber: number;
+    transactionHash: string;
   }): ProcessingResult {
     return {
       success: true,

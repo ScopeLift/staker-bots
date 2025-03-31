@@ -5,6 +5,7 @@ The Profitability Engine analyzes GovLst deposits to determine optimal grouping 
 ## Core Functionality
 
 The engine performs two primary functions:
+
 1. Analyzing individual deposit groups for profitability
 2. Optimizing deposit batches for maximum profit
 
@@ -29,11 +30,13 @@ graph TD
 ### Key Components
 
 #### ProfitabilityEngineWrapper
+
 - Main orchestrator for profitability analysis
 - Manages deposit caching and queue processing
 - Handles batch optimization and analysis
 
 #### GovLstProfitabilityEngine
+
 - Core profitability calculation logic
 - Gas cost estimation
 - Share and reward calculations
@@ -42,6 +45,7 @@ graph TD
 ## Inputs
 
 ### 1. Configuration (ProfitabilityConfig)
+
 ```typescript
 {
   rewardTokenAddress: string,     // Reward token contract address
@@ -56,6 +60,7 @@ graph TD
 ```
 
 ### 2. Deposit Data (GovLstDeposit)
+
 ```typescript
 {
   deposit_id: bigint,            // Unique deposit identifier
@@ -68,6 +73,7 @@ graph TD
 ```
 
 ### 3. External Dependencies
+
 - Ethereum Provider (RPC connection)
 - GovLst Contract Instance
 - Price Feed Service
@@ -77,6 +83,7 @@ graph TD
 ## Outputs
 
 ### 1. Profitability Analysis (GovLstProfitabilityCheck)
+
 ```typescript
 {
   is_profitable: boolean,        // Overall profitability flag
@@ -95,6 +102,7 @@ graph TD
 ```
 
 ### 2. Batch Analysis (GovLstBatchAnalysis)
+
 ```typescript
 {
   deposit_groups: [             // Array of profitable groups
@@ -113,6 +121,7 @@ graph TD
 ```
 
 ### 3. Engine Status
+
 ```typescript
 {
   isRunning: boolean,           // Engine state
@@ -126,7 +135,9 @@ graph TD
 ## Performance Optimizations
 
 ### 1. Caching System
+
 - **Deposit Cache**
+
   - TTL: 5 minutes
   - Reduces database load
   - Quick access to frequent deposits
@@ -137,6 +148,7 @@ graph TD
   - Reduces RPC calls
 
 ### 2. Batch Processing
+
 - Groups deposits by profitability
 - Optimizes gas usage
 - Maintains processing queue
@@ -145,15 +157,17 @@ graph TD
 ## Error Handling
 
 ### Error Types
+
 ```typescript
-- ProfitabilityError        // Base error class
-- DepositNotFoundError      // Missing deposit
-- InvalidDepositDataError   // Malformed data
-- GasEstimationError       // Gas calculation issues
-- QueueProcessingError     // Queue operation failures
+-ProfitabilityError - // Base error class
+  DepositNotFoundError - // Missing deposit
+  InvalidDepositDataError - // Malformed data
+  GasEstimationError - // Gas calculation issues
+  QueueProcessingError; // Queue operation failures
 ```
 
 ### Error Recovery
+
 - Automatic retry mechanism
 - Configurable retry limits
 - Error context preservation
@@ -162,6 +176,7 @@ graph TD
 ## Usage Examples
 
 ### Initialize Engine
+
 ```typescript
 const engine = new GovLstProfitabilityEngineWrapper(
   database,
@@ -170,36 +185,39 @@ const engine = new GovLstProfitabilityEngineWrapper(
   logger,
   priceFeed,
   {
-    rewardTokenAddress: "0x...",
+    rewardTokenAddress: '0x...',
     minProfitMargin: BigInt(1e16),
     gasPriceBuffer: 20,
     maxBatchSize: 50,
-    defaultTipReceiver: "0x...",
+    defaultTipReceiver: '0x...',
     priceFeed: {
-      cacheDuration: 300_000
-    }
-  }
-)
+      cacheDuration: 300_000,
+    },
+  },
+);
 ```
 
 ### Check Group Profitability
+
 ```typescript
-const profitability = await engine.checkGroupProfitability(deposits)
+const profitability = await engine.checkGroupProfitability(deposits);
 if (profitability.is_profitable) {
-  console.log(`Expected profit: ${profitability.estimates.expected_profit}`)
+  console.log(`Expected profit: ${profitability.estimates.expected_profit}`);
 }
 ```
 
 ### Analyze Deposits
+
 ```typescript
-const analysis = await engine.analyzeAndGroupDeposits(deposits)
-console.log(`Found ${analysis.deposit_groups.length} profitable groups`)
-console.log(`Total profit: ${analysis.total_expected_profit}`)
+const analysis = await engine.analyzeAndGroupDeposits(deposits);
+console.log(`Found ${analysis.deposit_groups.length} profitable groups`);
+console.log(`Total profit: ${analysis.total_expected_profit}`);
 ```
 
 ## Monitoring
 
 ### Health Metrics
+
 - Engine running state
 - Queue processing rate
 - Cache hit rates
@@ -207,6 +225,7 @@ console.log(`Total profit: ${analysis.total_expected_profit}`)
 - Profitability statistics
 
 ### Performance Metrics
+
 - Processing latency
 - Queue backlog size
 - Cache efficiency
@@ -216,6 +235,7 @@ console.log(`Total profit: ${analysis.total_expected_profit}`)
 ## Database Schema
 
 ### Processing Queue
+
 ```sql
 CREATE TABLE processing_queue (
   deposit_id TEXT PRIMARY KEY,
@@ -228,6 +248,7 @@ CREATE TABLE processing_queue (
 ```
 
 ### Profitability Results
+
 ```sql
 CREATE TABLE profitability_results (
   group_id TEXT PRIMARY KEY,
@@ -242,6 +263,7 @@ CREATE TABLE profitability_results (
 ## Testing
 
 ### Unit Tests
+
 - Profitability calculations
 - Gas estimation
 - Batch optimization
@@ -249,6 +271,7 @@ CREATE TABLE profitability_results (
 - Cache management
 
 ### Integration Tests
+
 - Database operations
 - Contract interactions
 - Price feed integration

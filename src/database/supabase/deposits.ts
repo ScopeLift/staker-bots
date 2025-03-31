@@ -1,7 +1,8 @@
 import { supabase } from './client';
 import { Deposit } from '../interfaces/types';
 
-const SUPABASE_NOT_CONFIGURED_ERROR = 'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
+const SUPABASE_NOT_CONFIGURED_ERROR =
+  'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
 
 export async function createDeposit(deposit: Deposit): Promise<void> {
   const client = supabase();
@@ -61,7 +62,7 @@ export async function getDepositsByDelegatee(
 }
 
 export async function getDepositsByOwner(
-  ownerAddress: string
+  ownerAddress: string,
 ): Promise<Deposit[]> {
   const client = supabase();
   if (!client) {
@@ -77,7 +78,7 @@ export async function getDepositsByOwner(
 }
 
 export async function getDepositsByDepositor(
-  depositorAddress: string
+  depositorAddress: string,
 ): Promise<Deposit[]> {
   const client = supabase();
   if (!client) {

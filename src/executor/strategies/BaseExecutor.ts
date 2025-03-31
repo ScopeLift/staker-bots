@@ -33,15 +33,15 @@ interface GovLstContractMethod {
     minExpectedReward: bigint,
     depositIds: bigint[],
     options?: {
-      gasLimit?: bigint
-      gasPrice?: bigint
-    }
-  ): Promise<ContractTransactionResponse>
+      gasLimit?: bigint;
+      gasPrice?: bigint;
+    },
+  ): Promise<ContractTransactionResponse>;
   estimateGas: (
     walletAddress: string,
     minExpectedReward: bigint,
-    depositIds: bigint[]
-  ) => Promise<bigint>
+    depositIds: bigint[],
+  ) => Promise<bigint>;
 }
 
 /**
@@ -93,7 +93,7 @@ export class BaseExecutor implements IExecutor {
     this.govLstContract = new ethers.Contract(
       contractAddress,
       contractAbi,
-      this.wallet
+      this.wallet,
     );
 
     if (!this.govLstContract.interface.hasFunction('claimAndDistributeReward'))
@@ -135,7 +135,7 @@ export class BaseExecutor implements IExecutor {
   }> {
     const balance = await this.getWalletBalance();
     const pendingTxs = Array.from(this.queue.values()).filter(
-      (tx) => tx.status === TransactionStatus.PENDING
+      (tx) => tx.status === TransactionStatus.PENDING,
     ).length;
 
     return {
@@ -153,7 +153,9 @@ export class BaseExecutor implements IExecutor {
    * @param txData - Optional transaction data
    * @returns Queued transaction object
    */
-  private serializeProfitabilityCheck(check: GovLstProfitabilityCheck): GovLstProfitabilityCheck {
+  private serializeProfitabilityCheck(
+    check: GovLstProfitabilityCheck,
+  ): GovLstProfitabilityCheck {
     const serializeBigInt = (value: bigint | string): bigint => {
       return typeof value === 'string' ? BigInt(value) : value;
     };
@@ -164,28 +166,38 @@ export class BaseExecutor implements IExecutor {
         expected_profit: serializeBigInt(check.estimates.expected_profit),
         gas_estimate: serializeBigInt(check.estimates.gas_estimate),
         total_shares: serializeBigInt(check.estimates.total_shares),
-        payout_amount: serializeBigInt(check.estimates.payout_amount)
+        payout_amount: serializeBigInt(check.estimates.payout_amount),
       },
-      deposit_details: check.deposit_details.map(detail => ({
+      deposit_details: check.deposit_details.map((detail) => ({
         ...detail,
         depositId: serializeBigInt(detail.depositId),
-        rewards: serializeBigInt(detail.rewards)
-      }))
+        rewards: serializeBigInt(detail.rewards),
+      })),
     };
   }
 
   async queueTransaction(
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
-    txData?: string
+    txData?: string,
   ): Promise<QueuedTransaction> {
     // Validate state and inputs
-    if (!this.isRunning) throw new ExecutorError('Executor is not running', {}, false);
-    if (this.queue.size >= this.config.maxQueueSize) throw new QueueOperationError('queue', new Error('Queue is full'), { maxSize: this.config.maxQueueSize });
+    if (!this.isRunning)
+      throw new ExecutorError('Executor is not running', {}, false);
+    if (this.queue.size >= this.config.maxQueueSize)
+      throw new QueueOperationError('queue', new Error('Queue is full'), {
+        maxSize: this.config.maxQueueSize,
+      });
     if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE)
-      throw new TransactionValidationError(`Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`, { depositIds: depositIds.map(String) });
+      throw new TransactionValidationError(
+        `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
+        { depositIds: depositIds.map(String) },
+      );
     if (depositIds.length < QUEUE_CONSTANTS.MIN_BATCH_SIZE)
-      throw new TransactionValidationError(`Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`, { depositIds: depositIds.map(String) });
+      throw new TransactionValidationError(
+        `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
+        { depositIds: depositIds.map(String) },
+      );
 
     // Create transaction
     const tx: QueuedTransaction = {
@@ -217,22 +229,30 @@ export class BaseExecutor implements IExecutor {
    */
   async getQueueStats(): Promise<QueueStats> {
     const transactions = Array.from(this.queue.values());
-    const confirmed = transactions.filter((tx) => tx.status === TransactionStatus.CONFIRMED);
-    const failed = transactions.filter((tx) => tx.status === TransactionStatus.FAILED);
-    const pending = transactions.filter((tx) => tx.status === TransactionStatus.PENDING);
-    const queued = transactions.filter((tx) => tx.status === TransactionStatus.QUEUED);
+    const confirmed = transactions.filter(
+      (tx) => tx.status === TransactionStatus.CONFIRMED,
+    );
+    const failed = transactions.filter(
+      (tx) => tx.status === TransactionStatus.FAILED,
+    );
+    const pending = transactions.filter(
+      (tx) => tx.status === TransactionStatus.PENDING,
+    );
+    const queued = transactions.filter(
+      (tx) => tx.status === TransactionStatus.QUEUED,
+    );
 
     const totalGasPrice = confirmed.reduce(
       (sum, tx) => sum + (tx.gasPrice || 0n),
-      0n
+      0n,
     );
     const totalGasLimit = confirmed.reduce(
       (sum, tx) => sum + (tx.gasLimit || 0n),
-      0n
+      0n,
     );
     const totalProfits = confirmed.reduce(
       (sum, tx) => sum + tx.profitability.estimates.expected_profit,
-      0n
+      0n,
     );
 
     return {
@@ -240,8 +260,12 @@ export class BaseExecutor implements IExecutor {
       totalFailed: failed.length,
       totalPending: pending.length,
       totalQueued: queued.length,
-      averageGasPrice: confirmed.length ? totalGasPrice / BigInt(confirmed.length) : 0n,
-      averageGasLimit: confirmed.length ? totalGasLimit / BigInt(confirmed.length) : 0n,
+      averageGasPrice: confirmed.length
+        ? totalGasPrice / BigInt(confirmed.length)
+        : 0n,
+      averageGasLimit: confirmed.length
+        ? totalGasLimit / BigInt(confirmed.length)
+        : 0n,
       totalProfits,
     };
   }
@@ -260,7 +284,9 @@ export class BaseExecutor implements IExecutor {
    * @param hash - Transaction hash
    * @returns Transaction receipt or null if not found
    */
-  async getTransactionReceipt(hash: string): Promise<TransactionReceipt | null> {
+  async getTransactionReceipt(
+    hash: string,
+  ): Promise<TransactionReceipt | null> {
     const receipt = await this.provider.getTransactionReceipt(hash);
     if (!receipt) return null;
 
@@ -283,7 +309,8 @@ export class BaseExecutor implements IExecutor {
    * @returns Transaction receipt or null if transfer not needed/possible
    */
   async transferOutTips(): Promise<TransactionReceipt | null> {
-    if (!this.config.defaultTipReceiver) throw new Error('No tip receiver configured');
+    if (!this.config.defaultTipReceiver)
+      throw new Error('No tip receiver configured');
 
     const balance = await this.getWalletBalance();
     if (balance < this.config.transferOutThreshold) return null;
@@ -348,7 +375,7 @@ export class BaseExecutor implements IExecutor {
 
     this.processingInterval = setInterval(
       () => this.processQueue(true),
-      QUEUE_CONSTANTS.QUEUE_PROCESSOR_INTERVAL
+      QUEUE_CONSTANTS.QUEUE_PROCESSOR_INTERVAL,
     );
   }
 
@@ -376,36 +403,39 @@ export class BaseExecutor implements IExecutor {
       this.logger.info('Starting queue processing cycle', {
         isPeriodicCheck,
         queueSize: this.queue.size,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
 
       const balance = await this.getWalletBalance();
       this.logger.info('Current wallet balance', {
         balance: ethers.formatEther(balance),
-        minRequired: ethers.formatEther(this.config.wallet.minBalance)
+        minRequired: ethers.formatEther(this.config.wallet.minBalance),
       });
 
       if (balance < this.config.wallet.minBalance) {
         this.logger.warn('Insufficient wallet balance', {
           balance: ethers.formatEther(balance),
-          required: ethers.formatEther(this.config.wallet.minBalance)
+          required: ethers.formatEther(this.config.wallet.minBalance),
         });
-        throw new InsufficientBalanceError(balance, this.config.wallet.minBalance);
+        throw new InsufficientBalanceError(
+          balance,
+          this.config.wallet.minBalance,
+        );
       }
 
       const pendingTxs = Array.from(this.queue.values()).filter(
-        (tx) => tx.status === TransactionStatus.PENDING
+        (tx) => tx.status === TransactionStatus.PENDING,
       );
       this.logger.info('Current pending transactions', {
         count: pendingTxs.length,
         maxAllowed: this.config.wallet.maxPendingTransactions,
-        pendingIds: pendingTxs.map(tx => tx.id)
+        pendingIds: pendingTxs.map((tx) => tx.id),
       });
 
       if (pendingTxs.length >= this.config.wallet.maxPendingTransactions) {
         this.logger.warn('Max pending transactions reached', {
           current: pendingTxs.length,
-          max: this.config.wallet.maxPendingTransactions
+          max: this.config.wallet.maxPendingTransactions,
         });
         return;
       }
@@ -417,11 +447,12 @@ export class BaseExecutor implements IExecutor {
       this.logger.info('Processing queued transactions', {
         queuedCount: queuedTxs.length,
         maxConcurrent: this.config.concurrentTransactions,
-        queuedIds: queuedTxs.map(tx => tx.id)
+        queuedIds: queuedTxs.map((tx) => tx.id),
       });
 
       if (queuedTxs.length === 0) {
-        if (!isPeriodicCheck) this.logger.debug('No queued transactions to process');
+        if (!isPeriodicCheck)
+          this.logger.debug('No queued transactions to process');
         return;
       }
 
@@ -430,7 +461,7 @@ export class BaseExecutor implements IExecutor {
       this.logger.info('Queue processing cycle completed', {
         processedCount: queuedTxs.length,
         remainingQueueSize: this.queue.size,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
     } catch (error) {
       const executorError = createExecutorError(error, {
@@ -440,7 +471,7 @@ export class BaseExecutor implements IExecutor {
       this.logger.error(EXECUTOR_EVENTS.ERROR, {
         ...executorError,
         ...executorError.context,
-        stack: error instanceof Error ? error.stack : undefined
+        stack: error instanceof Error ? error.stack : undefined,
       });
     }
   }
@@ -453,7 +484,9 @@ export class BaseExecutor implements IExecutor {
     this.logger.info('Starting transaction execution', {
       id: tx.id,
       depositIds: tx.depositIds.map(String),
-      expectedProfit: ethers.formatEther(tx.profitability.estimates.expected_profit)
+      expectedProfit: ethers.formatEther(
+        tx.profitability.estimates.expected_profit,
+      ),
     });
 
     try {
@@ -464,7 +497,7 @@ export class BaseExecutor implements IExecutor {
       // Calculate total rewards from deposit details
       const totalRewards = tx.profitability.deposit_details.reduce(
         (sum, detail) => sum + detail.rewards,
-        BigInt(0)
+        BigInt(0),
       );
 
       const depositIds = tx.depositIds;
@@ -472,21 +505,23 @@ export class BaseExecutor implements IExecutor {
       this.logger.info('Estimating gas for transaction', {
         id: tx.id,
         depositCount: depositIds.length,
-        minExpectedReward: ethers.formatEther(totalRewards)
+        minExpectedReward: ethers.formatEther(totalRewards),
       });
 
       const gasEstimate = await this.estimateGas(totalRewards, depositIds);
-      const { finalGasLimit, boostedGasPrice } = await this.calculateGasParameters(gasEstimate);
+      const { finalGasLimit, boostedGasPrice } =
+        await this.calculateGasParameters(gasEstimate);
 
       this.logger.info('Gas parameters calculated', {
         id: tx.id,
         baseGasEstimate: gasEstimate.toString(),
         finalGasLimit: finalGasLimit.toString(),
         boostedGasPrice: ethers.formatUnits(boostedGasPrice, 'gwei'),
-        estimatedCostEth: ethers.formatEther(finalGasLimit * boostedGasPrice)
+        estimatedCostEth: ethers.formatEther(finalGasLimit * boostedGasPrice),
       });
 
-      const claimAndDistributeReward = this.govLstContract.claimAndDistributeReward as GovLstContractMethod;
+      const claimAndDistributeReward = this.govLstContract
+        .claimAndDistributeReward as GovLstContractMethod;
       if (!claimAndDistributeReward) {
         throw new ContractMethodError('claimAndDistributeReward');
       }
@@ -495,7 +530,7 @@ export class BaseExecutor implements IExecutor {
         id: tx.id,
         tipReceiver: this.config.defaultTipReceiver,
         minExpectedReward: ethers.formatEther(totalRewards),
-        depositIds: depositIds.map(String)
+        depositIds: depositIds.map(String),
       });
 
       const txResponse = await claimAndDistributeReward(
@@ -505,14 +540,14 @@ export class BaseExecutor implements IExecutor {
         {
           gasLimit: finalGasLimit,
           gasPrice: boostedGasPrice,
-        }
+        },
       );
 
       this.logger.info('Transaction submitted', {
         id: tx.id,
         hash: txResponse.hash,
         nonce: txResponse.nonce,
-        gasPrice: ethers.formatUnits(txResponse.gasPrice || 0n, 'gwei')
+        gasPrice: ethers.formatUnits(txResponse.gasPrice || 0n, 'gwei'),
       });
 
       await this.processTransactionReceipt(tx, txResponse);
@@ -520,7 +555,7 @@ export class BaseExecutor implements IExecutor {
       this.logger.error('Transaction execution failed', {
         id: tx.id,
         error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
+        stack: error instanceof Error ? error.stack : undefined,
       });
       await this.handleTransactionError(tx, error);
     }
@@ -532,8 +567,12 @@ export class BaseExecutor implements IExecutor {
    * @param depositIds - Array of deposit IDs
    * @returns Estimated gas amount
    */
-  private async estimateGas(minExpectedReward: bigint, depositIds: bigint[]): Promise<bigint> {
-    const claimAndDistributeReward = this.govLstContract.claimAndDistributeReward as GovLstContractMethod;
+  private async estimateGas(
+    minExpectedReward: bigint,
+    depositIds: bigint[],
+  ): Promise<bigint> {
+    const claimAndDistributeReward = this.govLstContract
+      .claimAndDistributeReward as GovLstContractMethod;
     if (!claimAndDistributeReward) {
       throw new ContractMethodError('claimAndDistributeReward');
     }
@@ -542,7 +581,7 @@ export class BaseExecutor implements IExecutor {
       const estimate = await claimAndDistributeReward.estimateGas(
         this.config.defaultTipReceiver || this.wallet.address,
         minExpectedReward,
-        depositIds
+        depositIds,
       );
       return BigInt(estimate.toString());
     } catch (error) {
@@ -551,7 +590,7 @@ export class BaseExecutor implements IExecutor {
         {
           minExpectedReward: minExpectedReward.toString(),
           depositIds: depositIds.map(String),
-        }
+        },
       );
     }
   }
@@ -566,12 +605,15 @@ export class BaseExecutor implements IExecutor {
     boostedGasPrice: bigint;
   }> {
     // Calculate gas limit with buffer
-    const gasLimit = BigInt(Math.ceil(Number(gasEstimate) * GAS_CONSTANTS.GAS_LIMIT_BUFFER));
-    const finalGasLimit = gasLimit < GAS_CONSTANTS.MIN_GAS_LIMIT
-      ? GAS_CONSTANTS.MIN_GAS_LIMIT
-      : gasLimit > GAS_CONSTANTS.MAX_GAS_LIMIT
-      ? GAS_CONSTANTS.MAX_GAS_LIMIT
-      : gasLimit;
+    const gasLimit = BigInt(
+      Math.ceil(Number(gasEstimate) * GAS_CONSTANTS.GAS_LIMIT_BUFFER),
+    );
+    const finalGasLimit =
+      gasLimit < GAS_CONSTANTS.MIN_GAS_LIMIT
+        ? GAS_CONSTANTS.MIN_GAS_LIMIT
+        : gasLimit > GAS_CONSTANTS.MAX_GAS_LIMIT
+          ? GAS_CONSTANTS.MAX_GAS_LIMIT
+          : gasLimit;
 
     // Calculate boosted gas price
     const feeData = await this.provider.getFeeData();
@@ -589,16 +631,20 @@ export class BaseExecutor implements IExecutor {
    */
   private async processTransactionReceipt(
     tx: QueuedTransaction,
-    txResponse: ContractTransactionResponse
+    txResponse: ContractTransactionResponse,
   ): Promise<void> {
     const receipt = await txResponse.wait(this.config.minConfirmations);
-    if (!receipt) throw new TransactionReceiptError(txResponse.hash, {
-      transactionId: tx.id,
-      depositIds: tx.depositIds.map(String),
-    });
+    if (!receipt)
+      throw new TransactionReceiptError(txResponse.hash, {
+        transactionId: tx.id,
+        depositIds: tx.depositIds.map(String),
+      });
 
     // Update transaction status
-    tx.status = receipt.status === 1 ? TransactionStatus.CONFIRMED : TransactionStatus.FAILED;
+    tx.status =
+      receipt.status === 1
+        ? TransactionStatus.CONFIRMED
+        : TransactionStatus.FAILED;
     tx.hash = txResponse.hash;
     tx.gasPrice = receipt.gasPrice || 0n;
     tx.gasLimit = receipt.gasUsed;
@@ -628,8 +674,8 @@ export class BaseExecutor implements IExecutor {
             status: TransactionQueueStatus.CONFIRMED,
             hash: txResponse.hash,
             error: undefined,
-          })
-        )
+          }),
+        ),
       );
     }
 
@@ -641,7 +687,10 @@ export class BaseExecutor implements IExecutor {
    * @param tx - Failed transaction
    * @param error - Error that occurred
    */
-  private async handleTransactionError(tx: QueuedTransaction, error: unknown): Promise<void> {
+  private async handleTransactionError(
+    tx: QueuedTransaction,
+    error: unknown,
+  ): Promise<void> {
     tx.status = TransactionStatus.FAILED;
     tx.error = error as Error;
     this.queue.set(tx.id, tx);
@@ -652,9 +701,12 @@ export class BaseExecutor implements IExecutor {
       {
         depositIds: tx.depositIds.map(String),
         profitability: tx.profitability,
-      }
+      },
     );
-    this.logger.error(EXECUTOR_EVENTS.ERROR, { ...executorError, ...executorError.context });
+    this.logger.error(EXECUTOR_EVENTS.ERROR, {
+      ...executorError,
+      ...executorError.context,
+    });
 
     // Update database status
     if (this.db) {
@@ -663,8 +715,8 @@ export class BaseExecutor implements IExecutor {
           this.db!.updateTransactionQueueItem(depositId.toString(), {
             status: TransactionQueueStatus.FAILED,
             error: executorError.message,
-          })
-        )
+          }),
+        ),
       );
     }
   }
@@ -677,7 +729,7 @@ export class BaseExecutor implements IExecutor {
 
     try {
       const pendingItems = await this.db.getTransactionQueueItemsByStatus(
-        TransactionQueueStatus.PENDING
+        TransactionQueueStatus.PENDING,
       );
 
       if (!pendingItems?.length) return;
@@ -696,7 +748,7 @@ export class BaseExecutor implements IExecutor {
           await this.queueTransaction(
             txData.depositIds.map(BigInt),
             txData.profitability,
-            item.tx_data
+            item.tx_data,
           );
         } catch (error) {
           this.logger.error('Failed to requeue transaction', {
@@ -706,16 +758,23 @@ export class BaseExecutor implements IExecutor {
         }
       }
     } catch (error) {
-      const executorError = new Error('Failed to requeue pending items') as GovLstExecutorError;
-      executorError.context = { error: error instanceof Error ? error.message : String(error) };
-      this.logger.error(EXECUTOR_EVENTS.ERROR, { ...executorError, ...executorError.context });
+      const executorError = new Error(
+        'Failed to requeue pending items',
+      ) as GovLstExecutorError;
+      executorError.context = {
+        error: error instanceof Error ? error.message : String(error),
+      };
+      this.logger.error(EXECUTOR_EVENTS.ERROR, {
+        ...executorError,
+        ...executorError.context,
+      });
     }
   }
 
   protected async validateTipReceiver(): Promise<void> {
     if (!this.config.defaultTipReceiver)
       throw new TransactionValidationError('No tip receiver configured', {
-        config: this.config
-      })
+        config: this.config,
+      });
   }
 }

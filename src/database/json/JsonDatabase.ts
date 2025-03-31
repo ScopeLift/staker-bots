@@ -317,7 +317,7 @@ export class JsonDatabase implements IDatabase {
 
   async updateGovLstDeposit(
     depositId: string,
-    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>
+    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>,
   ): Promise<void> {
     const existing = this.data.govlst_deposits[depositId];
     if (!existing) {
@@ -337,9 +337,11 @@ export class JsonDatabase implements IDatabase {
     return this.data.govlst_deposits[depositId] || null;
   }
 
-  async getGovLstDepositsByAddress(govLstAddress: string): Promise<GovLstDeposit[]> {
+  async getGovLstDepositsByAddress(
+    govLstAddress: string,
+  ): Promise<GovLstDeposit[]> {
     return Object.values(this.data.govlst_deposits).filter(
-      (deposit) => deposit.govlst_address === govLstAddress
+      (deposit) => deposit.govlst_address === govLstAddress,
     );
   }
 
@@ -348,7 +350,9 @@ export class JsonDatabase implements IDatabase {
   }
 
   // GovLst Claim History Operations
-  async createGovLstClaimHistory(claim: GovLstClaimHistory): Promise<GovLstClaimHistory> {
+  async createGovLstClaimHistory(
+    claim: GovLstClaimHistory,
+  ): Promise<GovLstClaimHistory> {
     const id = claim.id || uuidv4();
     const newClaim = {
       ...claim,
@@ -367,15 +371,19 @@ export class JsonDatabase implements IDatabase {
     return this.data.govlst_claim_history[id] || null;
   }
 
-  async getGovLstClaimHistoryByAddress(govLstAddress: string): Promise<GovLstClaimHistory[]> {
+  async getGovLstClaimHistoryByAddress(
+    govLstAddress: string,
+  ): Promise<GovLstClaimHistory[]> {
     return Object.values(this.data.govlst_claim_history).filter(
-      (claim) => claim.govlst_address === govLstAddress
+      (claim) => claim.govlst_address === govLstAddress,
     );
   }
 
   async updateGovLstClaimHistory(
     id: string,
-    update: Partial<Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>>
+    update: Partial<
+      Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>
+    >,
   ): Promise<void> {
     const existing = this.data.govlst_claim_history[id];
     if (!existing) {
@@ -394,7 +402,7 @@ export class JsonDatabase implements IDatabase {
   // Don't forget to implement getDepositsByOwner if it doesn't exist
   async getDepositsByOwner(ownerAddress: string): Promise<Deposit[]> {
     return Object.values(this.data.deposits).filter(
-      (deposit) => deposit.owner_address === ownerAddress
+      (deposit) => deposit.owner_address === ownerAddress,
     );
   }
 }

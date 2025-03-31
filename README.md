@@ -25,6 +25,7 @@ The service implements a comprehensive error handling system:
 ### Component-Specific Error Classes
 
 Each component has dedicated error classes that provide:
+
 - Detailed error context
 - Retry status indicators
 - Type-safe error handling
@@ -34,14 +35,14 @@ Example using the executor component:
 
 ```typescript
 try {
-  await executor.queueTransaction(depositIds, profitability)
+  await executor.queueTransaction(depositIds, profitability);
 } catch (error) {
   if (error instanceof ExecutorError) {
     console.error('Executor error:', {
       message: error.message,
       context: error.context,
-      isRetryable: error.isRetryable
-    })
+      isRetryable: error.isRetryable,
+    });
 
     if (error.isRetryable) {
       // Handle retryable errors
@@ -61,6 +62,7 @@ try {
 ### Error Logging
 
 All errors are logged with:
+
 - Error type and message
 - Full error context
 - Stack trace (when available)
@@ -68,6 +70,7 @@ All errors are logged with:
 - Retry status
 
 Logs are written to:
+
 - `output.log`: General operation logs
 - `errors.log`: Detailed error logs with context
 
@@ -131,20 +134,24 @@ All test results are logged to `output.log` and errors to `errors.log`.
 The service can be configured through the following parameters in `config.ts`:
 
 ### Monitor Configuration
+
 - Poll interval: How often to check for profitable opportunities (default: 15s)
 - Gas price buffer: Additional buffer on gas price estimates (default: 20%)
 
 ### Profitability Configuration
+
 - Minimum profit margin: Minimum expected profit to execute a transaction (default: 0.001 ETH)
 - Maximum batch size: Maximum number of deposits to process in a batch (default: 10)
 
 ### Executor Configuration
+
 - Wallet minimum balance: Minimum wallet balance to maintain (default: 0.1 ETH)
 - Maximum pending transactions: Maximum number of pending transactions (default: 5)
 - Gas boost percentage: Percentage to boost gas price by (default: 10%)
 - Concurrent transactions: Number of transactions to execute concurrently (default: 3)
 
 ### GovLst Configuration
+
 - Claim interval: How often to check for claimable rewards (default: 1 hour)
 - Minimum profit margin: Minimum profit required for claims (default: 0.01 ETH)
 - Maximum batch size: Maximum deposits per claim (default: 10)

@@ -1,131 +1,187 @@
-import { ethers } from 'ethers'
-import { DatabaseWrapper } from '@/database'
-import { ConsoleLogger } from '@/monitor/logging'
-import { GovLstProfitabilityEngineWrapper } from '@/profitability'
-import { ExecutorWrapper, ExecutorType } from '@/executor'
-import { CONFIG } from '@/config'
-import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed'
-import { IExecutor } from '@/executor/interfaces/IExecutor'
-import { govlst } from '@/constants'
-import stakerAbi from '../abis/staker.json'
-import { TransactionQueueStatus, ProcessingQueueStatus } from '@/database/interfaces/types'
-import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types'
-import fs from 'fs/promises'
+import { ethers } from 'ethers';
+import { DatabaseWrapper } from '@/database';
+import { ConsoleLogger } from '@/monitor/logging';
+import { GovLstProfitabilityEngineWrapper } from '@/profitability';
+import { ExecutorWrapper, ExecutorType } from '@/executor';
+import { CONFIG } from '@/config';
+import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
+import { IExecutor } from '@/executor/interfaces/IExecutor';
+import { govlst } from '@/constants';
+import stakerAbi from '../abis/staker.json';
+import {
+  TransactionQueueStatus,
+  ProcessingQueueStatus,
+} from '@/database/interfaces/types';
+import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 
-// Helper function to serialize BigInt values
-function serializeBigInt(obj: any): any {
-  if (typeof obj === 'bigint') {
-    return obj.toString();
-  } else if (Array.isArray(obj)) {
-    return obj.map(serializeBigInt);
-  } else if (obj && typeof obj === 'object') {
-    const result: any = {};
-    for (const key in obj) {
-      result[key] = serializeBigInt(obj[key]);
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonArray | JsonObject | bigint;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+interface JsonArray extends Array<JsonValue> {}
+
+function serializeBigInt<T extends JsonValue>(value: T): JsonValue {
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeBigInt(item));
+  }
+
+  if (value && typeof value === 'object') {
+    const result: JsonObject = {};
+    for (const key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        const val = value[key];
+        if (val !== undefined) {
+          result[key] = serializeBigInt(val);
+        }
+      }
     }
     return result;
   }
-  return obj;
+
+  return value;
+}
+
+function serializeProfitabilityCheck(
+  check: GovLstProfitabilityCheck,
+): JsonObject {
+  return {
+    is_profitable: check.is_profitable,
+    constraints: {
+      has_enough_shares: check.constraints.has_enough_shares,
+      meets_min_reward: check.constraints.meets_min_reward,
+      meets_min_profit: check.constraints.meets_min_profit,
+    },
+    estimates: {
+      expected_profit: serializeBigInt(check.estimates.expected_profit),
+      gas_estimate: serializeBigInt(check.estimates.gas_estimate),
+      total_shares: serializeBigInt(check.estimates.total_shares),
+      payout_amount: serializeBigInt(check.estimates.payout_amount),
+    },
+    deposit_details: check.deposit_details.map((detail) => ({
+      depositId: serializeBigInt(detail.depositId),
+      rewards: serializeBigInt(detail.rewards),
+    })),
+  };
 }
 
 async function main() {
-  console.log('Starting profitability-executor integration test...', process.env.EXECUTOR_TYPE);
+  const logger = new ConsoleLogger('info');
+  logger.info('Starting profitability-executor integration test...', {
+    executorType: process.env.EXECUTOR_TYPE,
+  });
 
   // Initialize database
   const database = new DatabaseWrapper({
     type: 'json',
   });
-  console.log('Using database at', process.cwd() + '/staker-monitor-db.json', process.env.EXECUTOR_TYPE);
+  logger.info('Using database at', {
+    path: process.cwd() + '/staker-monitor-db.json',
+    executorType: process.env.EXECUTOR_TYPE,
+  });
 
   // Initialize provider
-  console.log('Initializing provider...');
+  logger.info('Initializing provider...');
   const provider = new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
   const network = await provider.getNetwork();
-  console.log('Connected to network:', {
+  logger.info('Connected to network:', {
     chainId: network.chainId,
     name: network.name,
   });
 
   // Initialize Staker contract
-  console.log('Initializing Staker contract...');
+  logger.info('Initializing Staker contract...');
   const stakerContract = new ethers.Contract(
     '0xdFAa0c8116bAFc8a9F474DFa6A5a28dB0BbCF556',
     stakerAbi,
-    provider
+    provider,
   ) as ethers.Contract & {
     unclaimedReward(depositId: string): Promise<bigint>;
   };
-  console.log('Staker contract initialized at:', { address: stakerContract.target });
+  logger.info('Staker contract initialized at:', {
+    address: stakerContract.target,
+  });
 
   // Initialize GovLst contract
-  console.log('Initializing GovLst contract...');
+  logger.info('Initializing GovLst contract...');
   const govLstContract = new ethers.Contract(
     '0x6fbb31f8c459d773a8d0f67c8c055a70d943c1f1',
     govlst,
-    provider
+    provider,
   );
-  console.log('GovLst contract initialized at:', { address: govLstContract.target });
+  logger.info('GovLst contract initialized at:', {
+    address: govLstContract.target,
+  });
 
   // Initialize LST contract
-  console.log('Initializing LST contract...');
+  logger.info('Initializing LST contract...');
   const lstContract = new ethers.Contract(
     CONFIG.monitor.lstAddress,
     govlst,
-    provider
+    provider,
   );
-  console.log('LST contract initialized at:', { address: lstContract.target });
+  logger.info('LST contract initialized at:', { address: lstContract.target });
 
   // Initialize executor
-  console.log('Initializing executor...');
+  logger.info('Initializing executor...');
   const executorType = process.env.EXECUTOR_TYPE?.toLowerCase() || 'wallet';
 
   if (!['wallet', 'relayer'].includes(executorType)) {
-    throw new Error(`Invalid executor type: ${executorType}. Must be 'wallet' or 'relayer'`);
+    throw new Error(
+      `Invalid executor type: ${executorType}. Must be 'wallet' or 'relayer'`,
+    );
   }
 
-  const executorConfig = executorType === 'relayer' ? {
-    apiKey: process.env.DEFENDER_API_KEY || '',
-    apiSecret: process.env.DEFENDER_SECRET_KEY || '',
-    address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
-    minBalance: BigInt(0),
-    maxPendingTransactions: 5,
-    maxQueueSize: 100,
-    minConfirmations: 2,
-    maxRetries: 3,
-    retryDelayMs: 5000,
-    transferOutThreshold: BigInt(0),
-    gasBoostPercentage: 30,
-    concurrentTransactions: 3,
-    gasPolicy: {
-      maxFeePerGas: BigInt(0),
-      maxPriorityFeePerGas: BigInt(0)
-    }
-  } : {
-    wallet: {
-      privateKey: CONFIG.executor.privateKey,
-      minBalance: ethers.parseEther('0.01'),
-      maxPendingTransactions: 5,
-    },
-    defaultTipReceiver: CONFIG.executor.tipReceiver,
-  };
+  const executorConfig =
+    executorType === 'relayer'
+      ? {
+          apiKey: process.env.DEFENDER_API_KEY || '',
+          apiSecret: process.env.DEFENDER_SECRET_KEY || '',
+          address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
+          minBalance: BigInt(0),
+          maxPendingTransactions: 5,
+          maxQueueSize: 100,
+          minConfirmations: 2,
+          maxRetries: 3,
+          retryDelayMs: 5000,
+          transferOutThreshold: BigInt(0),
+          gasBoostPercentage: 30,
+          concurrentTransactions: 3,
+          gasPolicy: {
+            maxFeePerGas: BigInt(0),
+            maxPriorityFeePerGas: BigInt(0),
+          },
+        }
+      : {
+          wallet: {
+            privateKey: CONFIG.executor.privateKey,
+            minBalance: ethers.parseEther('0.01'),
+            maxPendingTransactions: 5,
+          },
+          defaultTipReceiver: CONFIG.executor.tipReceiver,
+        };
 
   const executor = new ExecutorWrapper(
     lstContract, // Pass LST contract instead of Staker contract
     provider,
     executorType === 'relayer' ? ExecutorType.RELAYER : ExecutorType.WALLET,
     executorConfig,
-    database
+    database,
   );
 
   // Initialize profitability engine
-  console.log('Initializing profitability engine...');
+  logger.info('Initializing profitability engine...');
   const priceFeed = new CoinMarketCapFeed(
     {
       apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
       baseUrl: CONFIG.priceFeed.coinmarketcap.baseUrl,
-      timeout: CONFIG.priceFeed.coinmarketcap.timeout
+      timeout: CONFIG.priceFeed.coinmarketcap.timeout,
     },
-    new ConsoleLogger('info')
+    new ConsoleLogger('info'),
   );
 
   const profitabilityEngine = new GovLstProfitabilityEngineWrapper(
@@ -145,15 +201,15 @@ async function main() {
         cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
       },
     },
-    executor as IExecutor
+    executor as IExecutor,
   );
 
   // Start components
   await executor.start();
-  console.log('Executor started');
+  logger.info('Executor started');
 
   await profitabilityEngine.start();
-  console.log('Profitability engine started');
+  logger.info('Profitability engine started');
 
   // Add test deposits to database
   const deposits = [
@@ -186,11 +242,12 @@ async function main() {
     },
   ];
 
-  console.log(`Found ${deposits.length} deposits to analyze`);
+  logger.info(`Found ${deposits.length} deposits to analyze`);
 
   // First, add all deposits to the database
   for (const deposit of deposits) {
-    console.log('Adding deposit to database', deposit.deposit_id, {
+    logger.info('Adding deposit to database', {
+      depositId: deposit.deposit_id,
       owner: deposit.owner_address,
       depositor: deposit.depositor_address,
       delegatee: deposit.delegatee_address,
@@ -211,8 +268,10 @@ async function main() {
   const depositDetails = [];
 
   for (const deposit of deposits) {
-    const unclaimedRewards = await stakerContract.unclaimedReward(deposit.deposit_id);
-    console.log(`Unclaimed rewards for deposit ${deposit.deposit_id}:`, {
+    const unclaimedRewards = await stakerContract.unclaimedReward(
+      deposit.deposit_id,
+    );
+    logger.info(`Unclaimed rewards for deposit ${deposit.deposit_id}:`, {
       depositId: deposit.deposit_id,
       rewards: unclaimedRewards.toString(),
       owner: deposit.owner_address,
@@ -223,15 +282,21 @@ async function main() {
       profitableDeposits.push(deposit);
       depositDetails.push({
         depositId: BigInt(deposit.deposit_id),
-        rewards: unclaimedRewards
+        rewards: unclaimedRewards,
       });
     }
   }
 
   if (profitableDeposits.length > 0) {
     // Calculate total rewards and shares
-    const totalRewards = depositDetails.reduce((sum, detail) => sum + detail.rewards, 0n);
-    const totalShares = profitableDeposits.reduce((sum, deposit) => sum + BigInt(deposit.amount), 0n);
+    const totalRewards = depositDetails.reduce(
+      (sum, detail) => sum + detail.rewards,
+      0n,
+    );
+    const totalShares = profitableDeposits.reduce(
+      (sum, deposit) => sum + BigInt(deposit.amount),
+      0n,
+    );
     const gasEstimate = BigInt(300000); // Default gas estimate
 
     // Create profitability check object for all deposits
@@ -240,15 +305,15 @@ async function main() {
       constraints: {
         has_enough_shares: true,
         meets_min_reward: true,
-        meets_min_profit: true
+        meets_min_profit: true,
       },
       estimates: {
         expected_profit: totalRewards,
         gas_estimate: gasEstimate,
         total_shares: totalShares,
-        payout_amount: totalRewards
+        payout_amount: totalRewards,
       },
-      deposit_details: depositDetails
+      deposit_details: depositDetails,
     };
 
     // Add all deposits to processing queue
@@ -262,41 +327,41 @@ async function main() {
 
     // Create a single transaction queue item for all deposits
     const txQueueItem = await database.createTransactionQueueItem({
-      deposit_id: profitableDeposits.map(d => d.deposit_id).join(','),
+      deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
       status: TransactionQueueStatus.PENDING,
       tx_data: JSON.stringify({
-        depositIds: profitableDeposits.map(d => d.deposit_id),
+        depositIds: profitableDeposits.map((d) => d.deposit_id),
         totalRewards: totalRewards.toString(),
-        profitability: serializeBigInt(profitabilityCheck)
+        profitability: serializeProfitabilityCheck(profitabilityCheck),
       }),
     });
 
     // Queue a single transaction with executor for all deposits
     await executor.queueTransaction(
-      profitableDeposits.map(d => BigInt(d.deposit_id)),
+      profitableDeposits.map((d) => BigInt(d.deposit_id)),
       profitabilityCheck,
       JSON.stringify({
-        depositIds: profitableDeposits.map(d => d.deposit_id),
+        depositIds: profitableDeposits.map((d) => d.deposit_id),
         totalRewards: totalRewards.toString(),
-        profitability: serializeBigInt(profitabilityCheck),
-        queueItemId: txQueueItem.id
-      })
+        profitability: serializeProfitabilityCheck(profitabilityCheck),
+        queueItemId: txQueueItem.id,
+      }),
     );
 
-    console.log('Queued batch transaction for deposits:', {
-      depositIds: profitableDeposits.map(d => d.deposit_id),
+    logger.info('Queued batch transaction for deposits:', {
+      depositIds: profitableDeposits.map((d) => d.deposit_id),
       totalRewards: ethers.formatEther(totalRewards),
-      gasEstimate: gasEstimate.toString()
+      gasEstimate: gasEstimate.toString(),
     });
   }
 
   // Wait for transactions to complete
-  console.log('Waiting for transactions to complete...');
+  logger.info('Waiting for transactions to complete...');
   await new Promise((resolve) => setTimeout(resolve, 30000)); // Wait 30 seconds
 
   // Get final queue stats
   const queueStats = await executor.getQueueStats();
-  console.log('Final queue stats:', {
+  logger.info('Final queue stats:', {
     totalConfirmed: queueStats.totalConfirmed,
     totalFailed: queueStats.totalFailed,
     totalPending: queueStats.totalPending,
@@ -307,14 +372,15 @@ async function main() {
 
   // Stop components
   await profitabilityEngine.stop();
-  console.log('Profitability engine stopped');
+  logger.info('Profitability engine stopped');
 
   await executor.stop();
-  console.log('Executor stopped');
+  logger.info('Executor stopped');
 }
 
 // Run the test
 main().catch(async (error) => {
-  console.error('Fatal error:', error);
+  const logger = new ConsoleLogger('error');
+  logger.error('Fatal error:', error);
   process.exit(1);
 });

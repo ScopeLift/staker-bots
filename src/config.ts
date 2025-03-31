@@ -57,16 +57,18 @@ export const CONFIG = {
       minBalance: process.env.DEFENDER_MIN_BALANCE
         ? BigInt(process.env.DEFENDER_MIN_BALANCE)
         : ethers.parseEther('0.1'),
-      maxPendingTransactions: parseInt(process.env.DEFENDER_MAX_PENDING_TXS || '5'),
+      maxPendingTransactions: parseInt(
+        process.env.DEFENDER_MAX_PENDING_TXS || '5',
+      ),
       gasPolicy: {
         maxFeePerGas: process.env.DEFENDER_MAX_FEE
           ? BigInt(process.env.DEFENDER_MAX_FEE)
           : undefined,
         maxPriorityFeePerGas: process.env.DEFENDER_PRIORITY_FEE
           ? BigInt(process.env.DEFENDER_PRIORITY_FEE)
-          : undefined
-      }
-    }
+          : undefined,
+      },
+    },
   },
   priceFeed: {
     coinmarketcap: {

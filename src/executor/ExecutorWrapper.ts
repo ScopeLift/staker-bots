@@ -58,7 +58,7 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         'Invalid staker contract provided',
         { contract: stakerContract },
-        false
+        false,
       );
     }
 
@@ -93,7 +93,7 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         `Unsupported executor type: ${type}`,
         { type },
-        false
+        false,
       );
     }
 
@@ -113,7 +113,7 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         'Failed to start executor',
         { error: error instanceof Error ? error.message : String(error) },
-        true
+        true,
       );
     }
   }
@@ -128,7 +128,7 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         'Failed to stop executor',
         { error: error instanceof Error ? error.message : String(error) },
-        true
+        true,
       );
     }
   }
@@ -149,12 +149,14 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         'Failed to get executor status',
         { error: error instanceof Error ? error.message : String(error) },
-        true
+        true,
       );
     }
   }
 
-  private serializeProfitabilityCheck(check: GovLstProfitabilityCheck): GovLstProfitabilityCheck {
+  private serializeProfitabilityCheck(
+    check: GovLstProfitabilityCheck,
+  ): GovLstProfitabilityCheck {
     // Convert string values back to BigInt if they were serialized
     const parseBigInt = (value: string | bigint): bigint => {
       return typeof value === 'string' ? BigInt(value) : value;
@@ -166,13 +168,13 @@ export class ExecutorWrapper {
         expected_profit: parseBigInt(check.estimates.expected_profit),
         gas_estimate: parseBigInt(check.estimates.gas_estimate),
         total_shares: parseBigInt(check.estimates.total_shares),
-        payout_amount: parseBigInt(check.estimates.payout_amount)
+        payout_amount: parseBigInt(check.estimates.payout_amount),
       },
-      deposit_details: check.deposit_details.map(detail => ({
+      deposit_details: check.deposit_details.map((detail) => ({
         ...detail,
         depositId: parseBigInt(detail.depositId),
-        rewards: parseBigInt(detail.rewards)
-      }))
+        rewards: parseBigInt(detail.rewards),
+      })),
     };
   }
 
@@ -195,12 +197,14 @@ export class ExecutorWrapper {
         try {
           const parsedData = JSON.parse(txData);
           if (parsedData.profitability) {
-            processedProfitability = this.serializeProfitabilityCheck(parsedData.profitability);
+            processedProfitability = this.serializeProfitabilityCheck(
+              parsedData.profitability,
+            );
           }
         } catch (error) {
           this.logger.error('Failed to parse txData', {
             error: error instanceof Error ? error.message : String(error),
-            txData
+            txData,
           });
         }
       }
@@ -208,7 +212,7 @@ export class ExecutorWrapper {
       return await this.executor.queueTransaction(
         depositIds,
         processedProfitability,
-        txData
+        txData,
       );
     } catch (error) {
       throw new ExecutorError(
@@ -218,7 +222,7 @@ export class ExecutorWrapper {
           depositIds: depositIds.map(String),
           profitability,
         },
-        true
+        true,
       );
     }
   }
@@ -234,7 +238,7 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         'Failed to get queue statistics',
         { error: error instanceof Error ? error.message : String(error) },
-        true
+        true,
       );
     }
   }
@@ -254,7 +258,7 @@ export class ExecutorWrapper {
           error: error instanceof Error ? error.message : String(error),
           transactionId: id,
         },
-        true
+        true,
       );
     }
   }
@@ -264,7 +268,9 @@ export class ExecutorWrapper {
    * @param hash - Transaction hash
    * @returns Transaction receipt or null if not found
    */
-  async getTransactionReceipt(hash: string): Promise<TransactionReceipt | null> {
+  async getTransactionReceipt(
+    hash: string,
+  ): Promise<TransactionReceipt | null> {
     try {
       return await this.executor.getTransactionReceipt(hash);
     } catch (error) {
@@ -274,7 +280,7 @@ export class ExecutorWrapper {
           error: error instanceof Error ? error.message : String(error),
           transactionHash: hash,
         },
-        true
+        true,
       );
     }
   }
@@ -290,7 +296,7 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         'Failed to transfer tips',
         { error: error instanceof Error ? error.message : String(error) },
-        true
+        true,
       );
     }
   }
@@ -305,7 +311,7 @@ export class ExecutorWrapper {
       throw new ExecutorError(
         'Failed to clear queue',
         { error: error instanceof Error ? error.message : String(error) },
-        true
+        true,
       );
     }
   }

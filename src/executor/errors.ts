@@ -1,6 +1,3 @@
-import { EXECUTOR_EVENTS } from './constants'
-import { TransactionStatus } from './interfaces/types'
-
 /**
  * Base error class for executor-related errors
  */
@@ -8,10 +5,10 @@ export class ExecutorError extends Error {
   constructor(
     message: string,
     public readonly context: Record<string, unknown>,
-    public readonly retryable: boolean = false
+    public readonly retryable: boolean = false,
   ) {
-    super(message)
-    this.name = 'ExecutorError'
+    super(message);
+    this.name = 'ExecutorError';
   }
 }
 
@@ -22,14 +19,14 @@ export class TransactionExecutionError extends ExecutorError {
   constructor(
     transactionId: string,
     error: Error,
-    context: Record<string, unknown>
+    context: Record<string, unknown>,
   ) {
     super(
       `Failed to execute transaction ${transactionId}: ${error.message}`,
       context,
-      true // Most transaction errors are retryable
-    )
-    this.name = 'TransactionExecutionError'
+      true, // Most transaction errors are retryable
+    );
+    this.name = 'TransactionExecutionError';
   }
 }
 
@@ -37,16 +34,13 @@ export class TransactionExecutionError extends ExecutorError {
  * Error thrown when gas estimation fails
  */
 export class GasEstimationError extends ExecutorError {
-  constructor(
-    error: Error,
-    context: Record<string, unknown>
-  ) {
+  constructor(error: Error, context: Record<string, unknown>) {
     super(
       `Gas estimation failed: ${error.message}`,
       context,
-      true // Gas estimation errors are generally retryable
-    )
-    this.name = 'GasEstimationError'
+      true, // Gas estimation errors are generally retryable
+    );
+    this.name = 'GasEstimationError';
   }
 }
 
@@ -58,9 +52,9 @@ export class ContractMethodError extends ExecutorError {
     super(
       `Contract method ${methodName} not found or invalid`,
       { methodName },
-      false // Contract method errors are not retryable
-    )
-    this.name = 'ContractMethodError'
+      false, // Contract method errors are not retryable
+    );
+    this.name = 'ContractMethodError';
   }
 }
 
@@ -71,14 +65,14 @@ export class QueueOperationError extends ExecutorError {
   constructor(
     operation: string,
     error: Error,
-    context: Record<string, unknown>
+    context: Record<string, unknown>,
   ) {
     super(
       `Queue operation ${operation} failed: ${error.message}`,
       context,
-      true // Queue operation errors are generally retryable
-    )
-    this.name = 'QueueOperationError'
+      true, // Queue operation errors are generally retryable
+    );
+    this.name = 'QueueOperationError';
   }
 }
 
@@ -86,16 +80,13 @@ export class QueueOperationError extends ExecutorError {
  * Error thrown when transaction validation fails
  */
 export class TransactionValidationError extends ExecutorError {
-  constructor(
-    reason: string,
-    context: Record<string, unknown>
-  ) {
+  constructor(reason: string, context: Record<string, unknown>) {
     super(
       `Transaction validation failed: ${reason}`,
       context,
-      false // Validation errors are not retryable
-    )
-    this.name = 'TransactionValidationError'
+      false, // Validation errors are not retryable
+    );
+    this.name = 'TransactionValidationError';
   }
 }
 
@@ -103,19 +94,16 @@ export class TransactionValidationError extends ExecutorError {
  * Error thrown when wallet/relayer balance is insufficient
  */
 export class InsufficientBalanceError extends ExecutorError {
-  constructor(
-    currentBalance: bigint,
-    requiredBalance: bigint
-  ) {
+  constructor(currentBalance: bigint, requiredBalance: bigint) {
     super(
       'Insufficient balance for transaction',
       {
         currentBalance: currentBalance.toString(),
         requiredBalance: requiredBalance.toString(),
       },
-      true // Balance errors are retryable once funds are added
-    )
-    this.name = 'InsufficientBalanceError'
+      true, // Balance errors are retryable once funds are added
+    );
+    this.name = 'InsufficientBalanceError';
   }
 }
 
@@ -123,16 +111,13 @@ export class InsufficientBalanceError extends ExecutorError {
  * Error thrown when transaction receipt is invalid or missing
  */
 export class TransactionReceiptError extends ExecutorError {
-  constructor(
-    transactionHash: string,
-    context: Record<string, unknown>
-  ) {
+  constructor(transactionHash: string, context: Record<string, unknown>) {
     super(
       `Failed to get valid transaction receipt for ${transactionHash}`,
       context,
-      true // Receipt errors might be temporary network issues
-    )
-    this.name = 'TransactionReceiptError'
+      true, // Receipt errors might be temporary network issues
+    );
+    this.name = 'TransactionReceiptError';
   }
 }
 
@@ -140,7 +125,7 @@ export class TransactionReceiptError extends ExecutorError {
  * Type guard for ExecutorError
  */
 export function isExecutorError(error: unknown): error is ExecutorError {
-  return error instanceof ExecutorError
+  return error instanceof ExecutorError;
 }
 
 /**
@@ -148,44 +133,44 @@ export function isExecutorError(error: unknown): error is ExecutorError {
  */
 export function createExecutorError(
   error: unknown,
-  context: Record<string, unknown> = {}
+  context: Record<string, unknown> = {},
 ): ExecutorError {
-  if (isExecutorError(error)) return error
+  if (isExecutorError(error)) return error;
 
-  const baseMessage = error instanceof Error ? error.message : String(error)
-  const baseError = error instanceof Error ? error : new Error(baseMessage)
+  const baseMessage = error instanceof Error ? error.message : String(error);
+  const baseError = error instanceof Error ? error : new Error(baseMessage);
 
   // Determine error type based on context and message
   if (context.transactionId) {
     return new TransactionExecutionError(
       context.transactionId as string,
       baseError,
-      context
-    )
+      context,
+    );
   }
 
   if (baseMessage.includes('gas')) {
-    return new GasEstimationError(baseError, context)
+    return new GasEstimationError(baseError, context);
   }
 
   if (baseMessage.includes('method')) {
-    return new ContractMethodError(context.methodName as string || 'unknown')
+    return new ContractMethodError((context.methodName as string) || 'unknown');
   }
 
   if (baseMessage.includes('balance')) {
     return new InsufficientBalanceError(
-      BigInt(context.currentBalance as string || '0'),
-      BigInt(context.requiredBalance as string || '0')
-    )
+      BigInt((context.currentBalance as string) || '0'),
+      BigInt((context.requiredBalance as string) || '0'),
+    );
   }
 
   if (baseMessage.includes('receipt')) {
     return new TransactionReceiptError(
-      context.transactionHash as string || 'unknown',
-      context
-    )
+      (context.transactionHash as string) || 'unknown',
+      context,
+    );
   }
 
   // Default to base executor error
-  return new ExecutorError(baseMessage, context, false)
+  return new ExecutorError(baseMessage, context, false);
 }
