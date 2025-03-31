@@ -1,4 +1,4 @@
-import { ProfitabilityCheck } from '@/profitability/interfaces/types';
+import { ProfitabilityCheck, GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 
 export interface WalletConfig {
   privateKey: string;
@@ -13,24 +13,23 @@ export interface RelayerConfig {
   minBalance: bigint;
   maxPendingTransactions: number;
   gasPolicy?: {
-    maxPriorityFeePerGas?: bigint;
     maxFeePerGas?: bigint;
+    maxPriorityFeePerGas?: bigint;
   };
 }
 
 export interface QueuedTransaction {
   id: string;
-  depositId: bigint;
-  profitability: ProfitabilityCheck;
+  depositIds: bigint[];
+  profitability: GovLstProfitabilityCheck;
   status: TransactionStatus;
-  hash?: string;
-  error?: Error;
   createdAt: Date;
   executedAt?: Date;
+  hash?: string;
   gasPrice?: bigint;
   gasLimit?: bigint;
+  error?: Error;
   tx_data?: string;
-  retryCount?: number;
 }
 
 export enum TransactionStatus {
@@ -52,16 +51,29 @@ export interface ExecutorConfig {
   defaultTipReceiver?: string;
 }
 
-export interface RelayerExecutorConfig extends Omit<ExecutorConfig, 'wallet'> {
+export interface RelayerExecutorConfig {
   relayer: RelayerConfig;
+  maxQueueSize: number;
+  minConfirmations: number;
+  maxRetries: number;
+  retryDelayMs: number;
+  transferOutThreshold: bigint;
+  gasBoostPercentage: number;
+  concurrentTransactions: number;
+  defaultTipReceiver?: string;
 }
 
 export interface TransactionReceipt {
   hash: string;
-  status: boolean;
   blockNumber: number;
   gasUsed: bigint;
-  effectiveGasPrice: bigint;
+  gasPrice: bigint;
+  status: number;
+  logs: Array<{
+    address: string;
+    topics: Array<string>;
+    data: string;
+  }>;
 }
 
 export interface QueueStats {
@@ -69,7 +81,46 @@ export interface QueueStats {
   totalPending: number;
   totalConfirmed: number;
   totalFailed: number;
-  averageExecutionTime: number;
   averageGasPrice: bigint;
+  averageGasLimit: bigint;
   totalProfits: bigint;
+}
+
+export interface GovLstExecutorError extends Error {
+  context?: Record<string, unknown>;
+}
+
+// Type guard for GovLstExecutorError
+export function isGovLstExecutorError(error: unknown): error is GovLstExecutorError {
+  return error instanceof Error && 'context' in error;
+}
+
+// Type for ethers.js v6 TransactionReceipt
+export interface EthersTransactionReceipt {
+  to: string;
+  from: string;
+  contractAddress: string | null;
+  transactionIndex: number;
+  gasUsed: bigint;
+  logsBloom: string;
+  blockHash: string;
+  transactionHash: string;
+  logs: Array<{
+    transactionIndex: number;
+    blockNumber: number;
+    transactionHash: string;
+    address: string;
+    topics: Array<string>;
+    data: string;
+    logIndex: number;
+    blockHash: string;
+    removed: boolean;
+  }>;
+  blockNumber: number;
+  confirmations: number;
+  cumulativeGasUsed: bigint;
+  effectiveGasPrice: bigint;
+  status: number;
+  type: number;
+  byzantium: boolean;
 }

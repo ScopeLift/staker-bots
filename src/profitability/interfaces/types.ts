@@ -66,6 +66,8 @@ export interface ProfitabilityConfig {
 export interface GovLstDeposit extends Deposit {
   shares_of: bigint
   payout_amount: bigint
+  rewards: bigint
+  depositor_address: string
 }
 
 export interface GovLstDepositGroup {
@@ -81,7 +83,7 @@ export interface GovLstProfitabilityCheck {
   constraints: {
     has_enough_shares: boolean
     meets_min_reward: boolean
-    is_profitable: boolean
+    meets_min_profit: boolean
   }
   estimates: {
     total_shares: bigint
@@ -89,6 +91,10 @@ export interface GovLstProfitabilityCheck {
     gas_estimate: bigint
     expected_profit: bigint
   }
+  deposit_details: Array<{
+    depositId: bigint
+    rewards: bigint
+  }>
 }
 
 export interface GovLstBatchAnalysis {

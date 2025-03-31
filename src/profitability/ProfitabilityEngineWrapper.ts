@@ -1,5 +1,5 @@
 import { ethers } from 'ethers'
-import { IDatabase } from '@/database'
+import { ConsoleLogger, Logger } from '@/monitor/logging'
 import { IGovLstProfitabilityEngine } from './interfaces/IProfitabilityEngine'
 import { GovLstProfitabilityEngine } from './strategies/GovLstProfitabilityEngine'
 import {
@@ -8,8 +8,6 @@ import {
   GovLstBatchAnalysis,
   ProfitabilityConfig,
 } from './interfaces/types'
-import { Logger } from '@/monitor/logging'
-import { ProcessingQueueStatus, Deposit as DatabaseDeposit } from '@/database/interfaces/types'
 import { IPriceFeed } from '@/shared/price-feeds/interfaces'
 import { QUEUE_CONSTANTS, EVENTS } from './constants'
 import {
@@ -17,10 +15,30 @@ import {
   InvalidDepositDataError,
   QueueProcessingError,
 } from './errors'
+import { TransactionQueueStatus } from '@/database/interfaces/types'
+import { IExecutor } from '@/executor/interfaces/IExecutor'
+import { DatabaseWrapper } from '@/database'
+import { ProcessingQueueStatus } from '@/database/interfaces/types'
+
+interface DatabaseDeposit {
+  deposit_id: string
+  owner_address: string
+  depositor_address: string
+  delegatee_address: string | null
+  amount: string
+  created_at?: string
+  updated_at?: string
+}
 
 interface DepositCache {
   deposit: GovLstDeposit
   timestamp: number
+}
+
+interface ProfitableTransaction {
+  deposit_id: bigint
+  unclaimed_rewards: bigint
+  expected_profit: bigint
 }
 
 /**
@@ -33,29 +51,98 @@ export class GovLstProfitabilityEngineWrapper implements IGovLstProfitabilityEng
   private queueProcessorInterval: NodeJS.Timeout | null = null
   private isRunning = false
   private static readonly CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+  private profitableTransactions: ProfitableTransaction[] = []
 
   constructor(
-    private readonly db: IDatabase,
+    private readonly db: DatabaseWrapper,
     govLstContract: ethers.Contract,
+    stakerContract: ethers.Contract,
     provider: ethers.Provider,
     private readonly logger: Logger,
     priceFeed: IPriceFeed,
     config: ProfitabilityConfig,
+    private readonly executor: IExecutor,
   ) {
     this.engine = new GovLstProfitabilityEngine(
       govLstContract as ethers.Contract & {
-        sharesOf(account: string): Promise<bigint>
         payoutAmount(): Promise<bigint>
         claimAndDistributeReward(
           recipient: string,
           minExpectedReward: bigint,
           depositIds: bigint[],
         ): Promise<void>
+        balanceOf(account: string): Promise<bigint>
+        balanceCheckpoint(account: string): Promise<bigint>
+        depositIdForHolder(account: string): Promise<bigint>
+        earningPowerOf(depositId: bigint): Promise<bigint>
+        minQualifyingEarningPowerBips(): Promise<bigint>
+      },
+      stakerContract as ethers.Contract & {
+        balanceOf(account: string): Promise<bigint>
+        deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>
+        unclaimedReward(depositId: bigint): Promise<bigint>
       },
       provider,
       config,
-      priceFeed,
+      priceFeed
     )
+  }
+
+  private serializeProfitabilityCheck(check: GovLstProfitabilityCheck): string {
+    return JSON.stringify(check, (_, value) => {
+      if (typeof value === 'bigint') {
+        return value.toString();
+      }
+      return value;
+    });
+  }
+
+  async checkGroupProfitability(deposits: GovLstDeposit[]): Promise<GovLstProfitabilityCheck> {
+    const depositIds = deposits.map(d => BigInt(d.deposit_id));
+    const profitabilityCheck = await this.engine.checkGroupProfitability(deposits);
+    const serializedCheck = this.serializeProfitabilityCheck(profitabilityCheck);
+
+    if (profitabilityCheck.is_profitable && this.executor && this.db) {
+      try {
+        // Create transaction queue items in database first
+        for (const deposit of deposits) {
+          const txData = JSON.stringify({
+            depositIds,
+            profitability: serializedCheck
+          });
+
+          await this.db.createTransactionQueueItem({
+            deposit_id: deposit.deposit_id.toString(),
+            status: TransactionQueueStatus.PENDING,
+            tx_data: txData
+          });
+        }
+
+        // Then queue the transaction in the executor
+        await this.executor.queueTransaction(
+          depositIds,
+          profitabilityCheck,
+          JSON.stringify(serializedCheck)
+        );
+      } catch (error) {
+        this.logger.error('Failed to queue profitable transaction', {
+          error: error instanceof Error ? error.message : String(error),
+          depositIds: deposits.map(d => d.deposit_id.toString()),
+          profitability: serializedCheck
+        });
+        throw error;
+      }
+    }
+
+    return profitabilityCheck;
+  }
+
+  async getProfitableTransactions(): Promise<ProfitableTransaction[]> {
+    return this.profitableTransactions
+  }
+
+  async clearProfitableTransactions(): Promise<void> {
+    this.profitableTransactions = []
   }
 
   async start(): Promise<void> {
@@ -74,6 +161,18 @@ export class GovLstProfitabilityEngineWrapper implements IGovLstProfitabilityEng
     await this.engine.stop()
     this.isRunning = false
     this.stopQueueProcessor()
+
+    // Log profitable transactions before stopping
+    if (this.profitableTransactions.length > 0) {
+      this.logger.info('Profitable transactions found:', {
+        transactions: this.profitableTransactions.map(tx => ({
+          deposit_id: tx.deposit_id.toString(),
+          unclaimed_rewards: ethers.formatEther(tx.unclaimed_rewards),
+          expected_profit: ethers.formatEther(tx.expected_profit)
+        }))
+      })
+    }
+
     this.logger.info(EVENTS.ENGINE_STOPPED)
   }
 
@@ -90,10 +189,6 @@ export class GovLstProfitabilityEngineWrapper implements IGovLstProfitabilityEng
       queueSize: this.processingQueue.size,
       groupCount: 0,
     }
-  }
-
-  async checkGroupProfitability(deposits: GovLstDeposit[]): Promise<GovLstProfitabilityCheck> {
-    return this.engine.checkGroupProfitability(deposits)
   }
 
   async analyzeAndGroupDeposits(deposits: GovLstDeposit[]): Promise<GovLstBatchAnalysis> {
@@ -180,16 +275,20 @@ export class GovLstProfitabilityEngineWrapper implements IGovLstProfitabilityEng
 
   private convertToGovLstDeposit(deposit: DatabaseDeposit): GovLstDeposit {
     if (!deposit.deposit_id || !deposit.owner_address || !deposit.amount) {
-      throw new InvalidDepositDataError(deposit)
+      throw new InvalidDepositDataError(deposit);
     }
 
     return {
       deposit_id: BigInt(deposit.deposit_id),
       owner_address: deposit.owner_address,
+      depositor_address: deposit.depositor_address,
       delegatee_address: deposit.delegatee_address,
       amount: BigInt(deposit.amount),
-      shares_of: BigInt(0),
+      shares_of: BigInt(deposit.amount),
       payout_amount: BigInt(0),
-    }
+      rewards: BigInt(0),
+      created_at: deposit.created_at,
+      updated_at: deposit.updated_at
+    };
   }
 }

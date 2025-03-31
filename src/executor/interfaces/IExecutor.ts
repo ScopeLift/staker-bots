@@ -1,4 +1,4 @@
-import { ProfitabilityCheck } from '@/profitability/interfaces/types';
+import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { QueuedTransaction, QueueStats, TransactionReceipt } from './types';
 import { DatabaseWrapper } from '@/database';
 
@@ -29,11 +29,11 @@ export interface IExecutor {
   }>;
 
   /**
-   * Queue a new transaction for execution
+   * Queue a transaction for execution
    */
   queueTransaction(
-    depositId: bigint,
-    profitability: ProfitabilityCheck,
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
     txData?: string,
   ): Promise<QueuedTransaction>;
 

@@ -18,6 +18,59 @@ npm install
 - `PRIVATE_KEY`: Your wallet's private key (without 0x prefix)
 - `GOVLST_ADDRESSES`: Comma-separated list of GovLst contract addresses
 
+## Error Handling
+
+The service implements a comprehensive error handling system:
+
+### Component-Specific Error Classes
+
+Each component has dedicated error classes that provide:
+- Detailed error context
+- Retry status indicators
+- Type-safe error handling
+- Automatic error logging
+
+Example using the executor component:
+
+```typescript
+try {
+  await executor.queueTransaction(depositIds, profitability)
+} catch (error) {
+  if (error instanceof ExecutorError) {
+    console.error('Executor error:', {
+      message: error.message,
+      context: error.context,
+      isRetryable: error.isRetryable
+    })
+
+    if (error.isRetryable) {
+      // Handle retryable errors
+    }
+  }
+}
+```
+
+### Error Categories
+
+- **Validation Errors**: Non-retryable errors from invalid inputs or states
+- **Network Errors**: Retryable errors from RPC or network issues
+- **Contract Errors**: Method-specific errors from contract interactions
+- **Resource Errors**: Balance or gas-related errors
+- **Queue Errors**: Transaction queue management errors
+
+### Error Logging
+
+All errors are logged with:
+- Error type and message
+- Full error context
+- Stack trace (when available)
+- Component-specific details
+- Retry status
+
+Logs are written to:
+- `output.log`: General operation logs
+- `errors.log`: Detailed error logs with context
+
 ## Running the Service
 
 1. Build the TypeScript code:

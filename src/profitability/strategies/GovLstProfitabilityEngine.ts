@@ -20,6 +20,10 @@ import {
   ProfitabilityError,
 } from '../errors'
 
+/**
+ * GovLstProfitabilityEngine - Analyzes and determines profitability of GovLst deposits
+ * Handles gas estimation, share calculation, and grouping deposits into profitable batches
+ */
 export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly logger: Logger
   private isRunning: boolean
@@ -28,15 +32,29 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly rewardTokenAddress: string
   private gasPriceCache: { price: bigint; timestamp: number } | null = null
 
+  /**
+   * Creates a new GovLstProfitabilityEngine instance
+   * @param govLstContract - The GovLst contract instance with required methods
+   * @param stakerContract - The staker contract instance with required methods
+   * @param provider - Ethers provider for blockchain interaction
+   * @param config - Configuration for profitability calculations
+   * @param priceFeed - Price feed for token price conversions
+   */
   constructor(
     private readonly govLstContract: ethers.Contract & {
-      sharesOf(account: string): Promise<bigint>
       payoutAmount(): Promise<bigint>
       claimAndDistributeReward(
         recipient: string,
         minExpectedReward: bigint,
         depositIds: bigint[],
       ): Promise<void>
+      depositIdForHolder(account: string): Promise<bigint>
+      minQualifyingEarningPowerBips(): Promise<bigint>
+    },
+    private readonly stakerContract: ethers.Contract & {
+      balanceOf(account: string): Promise<bigint>
+      deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>
+      unclaimedReward(depositId: bigint): Promise<bigint>
     },
     private readonly provider: ethers.Provider,
     private readonly config: ProfitabilityConfig,
@@ -49,18 +67,30 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     this.rewardTokenAddress = config.rewardTokenAddress
   }
 
+  /**
+   * Starts the profitability engine
+   * Enables processing of deposits and profitability calculations
+   */
   async start(): Promise<void> {
     if (this.isRunning) return
     this.isRunning = true
     this.logger.info(EVENTS.ENGINE_STARTED)
   }
 
+  /**
+   * Stops the profitability engine
+   * Halts all deposit processing and calculations
+   */
   async stop(): Promise<void> {
     if (!this.isRunning) return
     this.isRunning = false
     this.logger.info(EVENTS.ENGINE_STOPPED)
   }
 
+  /**
+   * Gets the current status of the profitability engine
+   * @returns Object containing running state, gas prices, and queue metrics
+   */
   async getStatus(): Promise<{
     isRunning: boolean
     lastGasPrice: bigint
@@ -79,63 +109,115 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
   /**
    * Checks if a group of deposits can be profitably claimed
+   * Calculates total shares, payout amount, gas costs and expected profit
    * @param deposits Array of deposits to check
    * @returns Profitability analysis for the deposit group
-   * @throws Error if profitability check fails
+   * @throws ProfitabilityError if check fails
    */
   async checkGroupProfitability(deposits: GovLstDeposit[]): Promise<GovLstProfitabilityCheck> {
-    if (!deposits.length) return this.createUnprofitableCheck()
+    const payoutAmount = await this.govLstContract.payoutAmount()
+    const minQualifyingEarningPowerBips = await this.govLstContract.minQualifyingEarningPowerBips()
 
-    try {
-      const [totalShares, payoutAmount, gasEstimate] = await Promise.all([
-        this.calculateTotalShares(deposits),
-        this.govLstContract.payoutAmount(),
-        this.estimateClaimGas(deposits.map(d => d.deposit_id)),
-      ])
+    this.logger.info('Current payout amount:', {
+      payoutAmount: payoutAmount.toString(),
+      payoutAmountInEther: ethers.formatEther(payoutAmount)
+    })
 
-      if (totalShares <= CONTRACT_CONSTANTS.MIN_SHARES_THRESHOLD)
-        return this.createUnprofitableCheck()
+    let totalRewards = BigInt(0)
+    const depositDetails = []
 
-      const gasCost = gasEstimate * await this.getGasPriceWithBuffer()
-      const gasCostInToken = await this.priceFeed.getTokenPriceInWei(
-        this.rewardTokenAddress,
-        gasCost,
-      )
+    for (const deposit of deposits) {
+      try {
+        // Use deposit ID from the database
+        const depositId = deposit.deposit_id
 
-      const expectedProfit = totalShares > payoutAmount
-        ? totalShares - payoutAmount - gasCostInToken
-        : BigInt(0)
+        this.logger.info('Using deposit ID from database:', {
+          depositId: depositId.toString(),
+          depositor: deposit.depositor_address,
+          owner: deposit.owner_address
+        })
 
-      return {
-        is_profitable: expectedProfit >= this.config.minProfitMargin,
-        constraints: {
-          has_enough_shares: totalShares > payoutAmount,
-          meets_min_reward: expectedProfit >= this.config.minProfitMargin,
-          is_profitable: expectedProfit >= this.config.minProfitMargin,
-        },
-        estimates: {
-          total_shares: totalShares,
-          payout_amount: payoutAmount,
-          gas_estimate: gasEstimate,
-          expected_profit: expectedProfit,
-        },
+        // Get deposit details from staker contract
+        if (!this.stakerContract.deposits) {
+          throw new Error('Contract method deposits not found')
+        }
+        const [owner, balance, earningPower, delegatee, claimer] = await this.stakerContract.deposits(depositId)
+
+        // Check if earning power meets minimum threshold
+        if (earningPower < minQualifyingEarningPowerBips) {
+          this.logger.info('Deposit does not meet minimum earning power:', {
+            depositId: depositId.toString(),
+            earningPower: earningPower.toString(),
+            minRequired: minQualifyingEarningPowerBips.toString()
+          })
+          continue // Skip this deposit
+        }
+
+        // Get unclaimed rewards
+        const unclaimedRewards = await this.stakerContract.unclaimedReward(depositId)
+        totalRewards += unclaimedRewards
+
+        this.logger.info('Calculated rewards for deposit:', {
+          depositId: depositId.toString(),
+          depositor: deposit.depositor_address,
+          owner: deposit.owner_address,
+          rewards: unclaimedRewards.toString(),
+          rewardsInEther: ethers.formatEther(unclaimedRewards),
+          earningPower: earningPower.toString()
+        })
+
+        depositDetails.push({
+          depositId,
+          rewards: unclaimedRewards
+        })
+      } catch (error) {
+        this.logger.error('Error processing deposit:', {
+          error,
+          depositId: deposit.deposit_id.toString(),
+          depositor: deposit.depositor_address,
+          owner: deposit.owner_address
+        })
+        throw error
       }
-    } catch (error) {
-      throw new ProfitabilityError(
-        'Failed to check group profitability',
-        {
-          depositCount: deposits.length,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        true
-      )
+    }
+
+    // Calculate gas cost in reward token
+    const gasCostInRewardToken = await this.estimateGasCostInRewardToken()
+
+    // Calculate total shares and payout amount
+    const totalShares = deposits.reduce((acc, deposit) => acc + deposit.shares_of, BigInt(0))
+
+    // Check constraints
+    const meetsMinReward = totalRewards >= this.config.minProfitMargin
+    const meetsMinProfit = totalRewards > gasCostInRewardToken
+    const hasEnoughShares = totalShares >= CONTRACT_CONSTANTS.MIN_SHARES_THRESHOLD
+
+    // Calculate expected profit (total rewards minus gas cost)
+    const expectedProfit = totalRewards > gasCostInRewardToken ? totalRewards - gasCostInRewardToken : BigInt(0)
+
+    return {
+      is_profitable: meetsMinReward && meetsMinProfit && hasEnoughShares,
+      constraints: {
+        meets_min_reward: meetsMinReward,
+        meets_min_profit: meetsMinProfit,
+        has_enough_shares: hasEnoughShares
+      },
+      estimates: {
+        total_shares: totalShares,
+        payout_amount: payoutAmount,
+        gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
+        expected_profit: expectedProfit
+      },
+      deposit_details: depositDetails
     }
   }
 
   /**
-   * Analyzes and groups deposits into profitable batches
+   * Analyzes deposits and groups them into profitable batches
+   * Sorts deposits by shares and creates optimal groups for claiming
    * @param deposits Array of deposits to analyze
    * @returns Analysis of deposit groups with profitability metrics
+   * @throws QueueProcessingError if analysis fails
    */
   async analyzeAndGroupDeposits(deposits: GovLstDeposit[]): Promise<GovLstBatchAnalysis> {
     if (!deposits.length) return this.createEmptyBatchAnalysis()
@@ -159,10 +241,12 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
-  async queueGroupForExecution(): Promise<boolean> {
-    return false
-  }
-
+  /**
+   * Gets current gas price with buffer added for safety margin
+   * Caches results to avoid excessive provider calls
+   * @returns Current gas price with buffer applied
+   * @throws GasEstimationError if gas price fetch fails
+   */
   private async getGasPriceWithBuffer(): Promise<bigint> {
     const now = Date.now()
     if (
@@ -194,16 +278,30 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
+  /**
+   * Estimates gas required for claiming rewards for given deposit IDs
+   * @param depositIds Array of deposit IDs to estimate gas for
+   * @returns Estimated gas amount or fallback value
+   * @throws GasEstimationError if estimation fails
+   */
   private async estimateClaimGas(depositIds: bigint[]): Promise<bigint> {
     try {
+      const payoutAmount = await this.govLstContract.payoutAmount()
+      const minExpectedReward = payoutAmount / BigInt(2)
+
       const gasEstimate = await this.provider.estimateGas({
         to: this.govLstContract.target,
         data: this.govLstContract.interface.encodeFunctionData(
           'claimAndDistributeReward',
-          [CONTRACT_CONSTANTS.ZERO_ADDRESS, BigInt(0), depositIds],
+          [
+            CONTRACT_CONSTANTS.ZERO_ADDRESS,
+            minExpectedReward,
+            depositIds,
+          ],
         ),
       })
-      return gasEstimate
+
+      return gasEstimate || GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE
     } catch (error) {
       throw new GasEstimationError(error as Error, {
         depositIds: depositIds.map(id => id.toString()),
@@ -212,14 +310,57 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
+  /**
+   * Calculates total shares for a group of deposits
+   * @param deposits Array of deposits to sum shares for
+   * @returns Total shares across all deposits
+   */
   private async calculateTotalShares(deposits: GovLstDeposit[]): Promise<bigint> {
-    return deposits.reduce((sum, deposit) => sum + deposit.shares_of, BigInt(0))
+    const shares = await Promise.all(
+      deposits.map(async (deposit) => {
+        try {
+          const balance = await this.stakerContract.balanceOf(deposit.owner_address)
+          this.logger.info(`Got balance for ${deposit.owner_address}:`, { balance: balance.toString() })
+          return balance
+        } catch (error) {
+          this.logger.error(`Failed to get balance for ${deposit.owner_address}:`, {
+            error: error instanceof Error ? {
+              message: error.message,
+              stack: error.stack,
+              // @ts-ignore
+              code: error.code,
+              // @ts-ignore
+              data: error.data,
+              // @ts-ignore
+              transaction: error.transaction
+            } : String(error)
+          })
+          return 0n
+        }
+      })
+    )
+    const totalShares = shares.reduce((sum, share) => sum + share, BigInt(0))
+    this.logger.info('Total shares calculated:', { totalShares: totalShares.toString() })
+    return totalShares
   }
 
+  /**
+   * Sorts deposits by share amount in descending order
+   * @param deposits Array of deposits to sort
+   * @returns Sorted array of deposits
+   */
   private sortDepositsByShares(deposits: GovLstDeposit[]): GovLstDeposit[] {
     return [...deposits].sort((a, b) => Number(b.shares_of - a.shares_of))
   }
 
+  /**
+   * Creates groups of deposits that would be profitable to claim
+   * Groups deposits until they exceed payout amount, then checks profitability
+   * @param deposits Array of deposits to group
+   * @param payoutAmount Current payout amount from contract
+   * @returns Array of profitable deposit groups
+   * @throws QueueProcessingError if grouping fails
+   */
   private async createProfitableGroups(
     deposits: GovLstDeposit[],
     payoutAmount: bigint,
@@ -230,8 +371,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
     try {
       for (const deposit of deposits) {
-        currentGroup.push(deposit)
-        currentTotalShares += deposit.shares_of
+        const shares = await this.stakerContract.balanceOf(deposit.owner_address)
+        if (shares <= BigInt(0)) continue
+
+        currentGroup.push({ ...deposit, shares_of: shares })
+        currentTotalShares += shares
 
         if (currentTotalShares > payoutAmount) {
           const profitability = await this.checkGroupProfitability(currentGroup)
@@ -259,31 +403,29 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
+  /**
+   * Calculates total gas estimate across all deposit groups
+   * @param groups Array of deposit groups to sum gas estimates for
+   * @returns Total gas estimate
+   */
   private calculateTotalGasEstimate(groups: GovLstDepositGroup[]): bigint {
     return groups.reduce((sum, group) => sum + group.gas_estimate, BigInt(0))
   }
 
+  /**
+   * Calculates total expected profit across all deposit groups
+   * @param groups Array of deposit groups to sum profits for
+   * @returns Total expected profit
+   */
   private calculateTotalExpectedProfit(groups: GovLstDepositGroup[]): bigint {
     return groups.reduce((sum, group) => sum + group.expected_profit, BigInt(0))
   }
 
-  private createUnprofitableCheck(): GovLstProfitabilityCheck {
-    return {
-      is_profitable: false,
-      constraints: {
-        has_enough_shares: false,
-        meets_min_reward: false,
-        is_profitable: false,
-      },
-      estimates: {
-        total_shares: BigInt(0),
-        payout_amount: BigInt(0),
-        gas_estimate: BigInt(0),
-        expected_profit: BigInt(0),
-      },
-    }
-  }
-
+  /**
+   * Creates a default empty batch analysis result
+   * Used when deposits array is empty
+   * @returns Default empty batch analysis
+   */
   private createEmptyBatchAnalysis(): GovLstBatchAnalysis {
     return {
       deposit_groups: [],
@@ -291,5 +433,29 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       total_expected_profit: BigInt(0),
       total_deposits: 0,
     }
+  }
+
+  /**
+   * Estimates the gas cost of claiming rewards in terms of reward tokens
+   * Uses current gas price and hardcoded price assumptions for testing:
+   * - ETH price: $1800
+   * - Reward token price: $1
+   * Calculates: (gasPrice * gasLimit * ethPrice) / tokenPrice
+   * @returns Estimated gas cost denominated in reward tokens (scaled to 18 decimals)
+   */
+
+  private async estimateGasCostInRewardToken(): Promise<bigint> {
+    // Get current gas price and estimate gas cost
+    const gasPrice = await this.provider.getFeeData()
+    const gasLimit = BigInt(300000) // Estimated gas limit for claim
+    const gasCost = (gasPrice.gasPrice || BigInt(0)) * gasLimit
+
+    // Use hardcoded prices for testing
+    // ETH price: $1800, Token price: $1
+    const ethPriceScaled = BigInt(1800) * BigInt(1e18)
+    const rewardTokenPriceScaled = BigInt(1) * BigInt(1e18)
+
+    // Calculate gas cost in reward tokens
+    return (gasCost * ethPriceScaled) / rewardTokenPriceScaled
   }
 }
