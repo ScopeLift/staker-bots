@@ -274,6 +274,16 @@ export class GovLstProfitabilityEngineWrapper
         Array.from(this.processingQueue).map((id) => BigInt(id)),
       );
 
+      // Clear the processing queue since we've retrieved the deposits
+      this.processingQueue.clear();
+
+      // Skip if no deposits found
+      if (deposits.length === 0) {
+        this.logger.info('No deposits found to process');
+        return;
+      }
+
+      // Analyze deposits for profitability
       const analysis = await this.analyzeAndGroupDeposits(deposits);
 
       // Update checkpoint after successful processing
@@ -290,12 +300,53 @@ export class GovLstProfitabilityEngineWrapper
         this.lastProcessedBlock = currentBlock;
       }
 
+      // Log analysis results
       this.logger.info(EVENTS.QUEUE_PROCESSED, {
         totalGroups: analysis.deposit_groups.length,
         totalProfit: analysis.total_expected_profit.toString(),
-        lastProcessedBlock: this.lastProcessedBlock
+        lastProcessedBlock: this.lastProcessedBlock,
+        depositCount: deposits.length
       });
+
+      // Update processing queue items to completed
+      for (const deposit of deposits) {
+        const processingItem = await this.db.getProcessingQueueItemByDepositId(deposit.deposit_id.toString());
+        if (processingItem) {
+          await this.db.updateProcessingQueueItem(processingItem.id, {
+            status: ProcessingQueueStatus.COMPLETED,
+          });
+        }
+      }
+
     } catch (error) {
+      // Log the specific error details
+      this.logger.error('Queue processing error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        queueSize: this.processingQueue.size
+      });
+
+      // Re-add failed items back to the queue for retry
+      const failedIds = Array.from(this.processingQueue);
+      this.processingQueue.clear(); // Clear the queue first
+
+      for (const id of failedIds) {
+        try {
+          const processingItem = await this.db.getProcessingQueueItemByDepositId(id);
+          if (processingItem) {
+            await this.db.updateProcessingQueueItem(processingItem.id, {
+              status: ProcessingQueueStatus.FAILED,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        } catch (dbError) {
+          this.logger.error('Failed to update processing queue item:', {
+            error: dbError instanceof Error ? dbError.message : String(dbError),
+            depositId: id
+          });
+        }
+      }
+
       throw new QueueProcessingError(error as Error, {
         queueSize: this.processingQueue.size,
       });

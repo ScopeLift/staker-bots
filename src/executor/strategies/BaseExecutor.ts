@@ -12,7 +12,7 @@ import {
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
 import { DatabaseWrapper } from '@/database';
-import { Interface, Contract } from 'ethers';
+import { Interface } from 'ethers'
 import { TransactionQueueStatus } from '@/database/interfaces/types';
 import { EXECUTOR_EVENTS, GAS_CONSTANTS, QUEUE_CONSTANTS } from '../constants';
 import {
@@ -26,6 +26,7 @@ import {
   TransactionValidationError,
   createExecutorError,
 } from '../errors';
+import { ProcessingQueueStatus } from '@/database/interfaces/types';
 
 interface GovLstContract extends BaseContract {
   estimateGas: {
@@ -40,6 +41,7 @@ interface GovLstContract extends BaseContract {
     minExpectedReward: bigint,
     depositIds: bigint[]
   ) => Promise<ContractTransactionResponse>;
+  payoutAmount(): Promise<bigint>;
 }
 
 interface GovLstContractMethod {
@@ -213,6 +215,31 @@ export class BaseExecutor implements IExecutor {
         `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
         { depositIds: depositIds.map(String) },
       );
+
+    // Get current gas price and calculate gas cost
+    const feeData = await this.provider.getFeeData();
+    if (!feeData.gasPrice) {
+      throw new Error('Failed to get gas price from provider');
+    }
+    const gasBoostMultiplier = BigInt(100 + this.config.gasBoostPercentage);
+    const boostedGasPrice = (feeData.gasPrice * gasBoostMultiplier) / 100n;
+    const estimatedGasCost = boostedGasPrice * profitability.estimates.gas_estimate;
+
+    // Get payout amount from contract
+    const payoutAmount = await this.govLstContract.payoutAmount();
+
+    // Validate that expected reward is sufficient
+    if (profitability.estimates.expected_profit < (payoutAmount + estimatedGasCost)) {
+      throw new TransactionValidationError(
+        'Expected reward is less than payout amount plus gas cost',
+        {
+          expectedReward: profitability.estimates.expected_profit.toString(),
+          payoutAmount: payoutAmount.toString(),
+          estimatedGasCost: estimatedGasCost.toString(),
+          depositIds: depositIds.map(String),
+        },
+      );
+    }
 
     // Create transaction
     const tx: QueuedTransaction = {
@@ -716,17 +743,45 @@ export class BaseExecutor implements IExecutor {
       gasPrice: (receipt.gasPrice || 0n).toString(),
     });
 
-    // Update database status
+    // Update database status and clear queues
     if (this.db) {
-      await Promise.all(
-        tx.depositIds.map((depositId) =>
-          this.db!.updateTransactionQueueItem(depositId.toString(), {
-            status: TransactionQueueStatus.CONFIRMED,
-            hash: txResponse.hash,
-            error: undefined,
-          }),
-        ),
-      );
+      try {
+        // Get transaction queue item to find deposit IDs
+        const txQueueItem = await this.db.getTransactionQueueItem(tx.id);
+        if (txQueueItem) {
+          // Parse deposit IDs from the transaction queue item
+          const depositIds = txQueueItem.deposit_id.split(',');
+
+          // Update transaction queue status and clear processing queue items
+          await Promise.all([
+            // Update transaction queue status
+            this.db.updateTransactionQueueItem(tx.id, {
+              status: TransactionQueueStatus.CONFIRMED,
+              hash: txResponse.hash,
+              error: undefined,
+            }),
+            // Delete transaction queue item
+            this.db.deleteTransactionQueueItem(tx.id),
+            // Update and delete processing queue items for each deposit
+            ...depositIds.map(async (depositId) => {
+              const processingItem = await this.db!.getProcessingQueueItemByDepositId(depositId);
+              if (processingItem) {
+                // First update status to completed
+                await this.db!.updateProcessingQueueItem(processingItem.id, {
+                  status: ProcessingQueueStatus.COMPLETED,
+                });
+                // Then delete the item
+                await this.db!.deleteProcessingQueueItem(processingItem.id);
+              }
+            }),
+          ]);
+        }
+      } catch (error) {
+        this.logger.error('Failed to update queue items', {
+          error: error instanceof Error ? error.message : String(error),
+          transactionId: tx.id,
+        });
+      }
     }
 
     this.queue.set(tx.id, tx);

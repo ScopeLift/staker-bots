@@ -30,6 +30,7 @@ import {
   TransactionValidationError,
   createExecutorError,
 } from '../errors';
+import { ProcessingQueueStatus } from '@/database/interfaces/types';
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -172,6 +173,32 @@ export class RelayerExecutor implements IExecutor {
       throw new TransactionValidationError(
         `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
         { depositIds: depositIds.map(String) },
+      );
+    }
+
+    // Get current gas price and calculate gas cost
+    const feeData = await this.relayProvider.getFeeData();
+    if (!feeData.maxFeePerGas) {
+      throw new Error('Failed to get gas price from provider');
+    }
+    const estimatedGasCost = BigInt(feeData.maxFeePerGas.toString()) * profitability.estimates.gas_estimate;
+
+    // Get payout amount from contract
+    if (!this.lstContract || typeof this.lstContract.payoutAmount !== 'function') {
+      throw new Error('Contract not properly initialized or missing payoutAmount method');
+    }
+    const payoutAmount = await this.lstContract.payoutAmount();
+
+    // Validate that expected reward is sufficient
+    if (profitability.estimates.expected_profit < (payoutAmount + estimatedGasCost)) {
+      throw new TransactionValidationError(
+        'Expected reward is less than payout amount plus gas cost',
+        {
+          expectedReward: profitability.estimates.expected_profit.toString(),
+          payoutAmount: payoutAmount.toString(),
+          estimatedGasCost: estimatedGasCost.toString(),
+          depositIds: depositIds.map(String),
+        },
       );
     }
 
@@ -632,17 +659,44 @@ export class RelayerExecutor implements IExecutor {
       // Update database if available
       if (this.db && queueItemId) {
         try {
-          await this.db.updateTransactionQueueItem(queueItemId, {
-            status:
-              receipt.status === 1
-                ? TransactionQueueStatus.CONFIRMED
-                : TransactionQueueStatus.FAILED,
-            hash: receipt.transactionHash,
-            error: receipt.status !== 1 ? 'Transaction failed' : undefined,
-            gas_price: receipt.effectiveGasPrice.toString(),
-          });
+          // Get transaction queue item to find deposit IDs
+          const txQueueItem = await this.db.getTransactionQueueItem(queueItemId);
+          if (txQueueItem) {
+            // Parse deposit IDs from the transaction queue item
+            const depositIds = txQueueItem.deposit_id.split(',');
+
+            // Update transaction queue status and clear processing queue items
+            await Promise.all([
+              // Update transaction queue status
+              this.db.updateTransactionQueueItem(queueItemId, {
+                status: receipt.status === 1
+                  ? TransactionQueueStatus.CONFIRMED
+                  : TransactionQueueStatus.FAILED,
+                hash: receipt.transactionHash,
+                error: receipt.status !== 1 ? 'Transaction failed' : undefined,
+                gas_price: receipt.effectiveGasPrice.toString(),
+              }),
+              // If transaction succeeded, delete transaction queue item and update processing queue items
+              ...(receipt.status === 1 ? [
+                // Delete transaction queue item
+                this.db.deleteTransactionQueueItem(queueItemId),
+                // Update and delete processing queue items for each deposit
+                ...depositIds.map(async (depositId) => {
+                  const processingItem = await this.db!.getProcessingQueueItemByDepositId(depositId);
+                  if (processingItem) {
+                    // First update status to completed
+                    await this.db!.updateProcessingQueueItem(processingItem.id, {
+                      status: ProcessingQueueStatus.COMPLETED,
+                    });
+                    // Then delete the item
+                    await this.db!.deleteProcessingQueueItem(processingItem.id);
+                  }
+                }),
+              ] : []),
+            ]);
+          }
         } catch (error) {
-          this.logger.error('Failed to update transaction queue item', {
+          this.logger.error('Failed to update queue items', {
             error: error instanceof Error ? error.message : String(error),
             queueItemId,
             status: receipt.status === 1 ? 'confirmed' : 'failed',

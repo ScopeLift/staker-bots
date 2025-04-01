@@ -233,7 +233,25 @@ async function checkAndProcessRewards(
         0n
       );
 
+      // Get current gas price and estimate total gas cost
+      const provider = createProvider();
+      const gasPrice = await provider.getFeeData();
       const gasEstimate = BigInt(300000); // Default gas estimate
+      const gasBuffer = BigInt(CONFIG.govlst.gasPriceBuffer || 20); // 20% buffer by default
+      const totalGasCost = (gasEstimate * (gasPrice.gasPrice || 0n) * (100n + gasBuffer)) / 100n;
+
+      // Check if rewards exceed gas costs plus minimum profit margin
+      const minProfitMargin = BigInt(CONFIG.govlst.minProfitMargin || 0n);
+      const isReallyProfitable = totalRewards > (totalGasCost + minProfitMargin);
+
+      if (!isReallyProfitable) {
+        logger.info('Skipping deposits - not profitable after gas costs:', {
+          totalRewards: ethers.formatEther(totalRewards),
+          estimatedGasCost: ethers.formatEther(totalGasCost),
+          minProfitMargin: ethers.formatEther(minProfitMargin),
+        });
+        return;
+      }
 
       // Create profitability check object for all deposits
       const profitabilityCheck: GovLstProfitabilityCheck = {
@@ -244,7 +262,7 @@ async function checkAndProcessRewards(
           meets_min_profit: true,
         },
         estimates: {
-          expected_profit: totalRewards,
+          expected_profit: totalRewards - totalGasCost,
           gas_estimate: gasEstimate,
           total_shares: totalShares,
           payout_amount: totalRewards,
@@ -287,7 +305,9 @@ async function checkAndProcessRewards(
       logger.info('Queued batch transaction for deposits:', {
         depositIds: profitableDeposits.map((d) => d.deposit_id),
         totalRewards: ethers.formatEther(totalRewards),
+        expectedProfit: ethers.formatEther(totalRewards - totalGasCost),
         gasEstimate: gasEstimate.toString(),
+        gasCost: ethers.formatEther(totalGasCost),
       });
     } else {
       logger.info('No profitable deposits found in this check cycle');
@@ -594,14 +614,6 @@ async function main() {
 
       // Set up periodic reward checking interval
       mainLogger.info(`Setting up reward checking interval (${REWARD_CHECK_INTERVAL/1000/60} minutes)`);
-
-      // Run an initial check immediately
-      await checkAndProcessRewards(
-        database,
-        stakerContract,
-        runningComponents.executor,
-        profitabilityLogger,
-      );
 
       // Then set up the interval for future checks
       runningComponents.rewardCheckInterval = setInterval(
