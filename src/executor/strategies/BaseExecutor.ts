@@ -205,6 +205,37 @@ export class BaseExecutor implements IExecutor {
       throw new QueueOperationError('queue', new Error('Queue is full'), {
         maxSize: this.config.maxQueueSize,
       });
+
+    // Validate the transaction
+    await this.validateTransaction(depositIds, profitability);
+
+    const tx: QueuedTransaction = {
+      id: uuidv4(),
+      depositIds,
+      profitability,
+      status: TransactionStatus.QUEUED,
+      createdAt: new Date(),
+      tx_data: txData,
+    };
+
+    this.queue.set(tx.id, tx);
+    this.logger.info(EXECUTOR_EVENTS.TRANSACTION_QUEUED, {
+      id: tx.id,
+      depositCount: depositIds.length,
+      totalShares: profitability.estimates.total_shares.toString(),
+      expectedProfit: profitability.estimates.expected_profit.toString(),
+    });
+
+    if (this.isRunning) setImmediate(() => this.processQueue(false));
+
+    return tx;
+  }
+
+  async validateTransaction(
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
+  ): Promise<boolean> {
+    // Validate batch size
     if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE)
       throw new TransactionValidationError(
         `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
@@ -241,28 +272,7 @@ export class BaseExecutor implements IExecutor {
       );
     }
 
-    // Create transaction
-    const tx: QueuedTransaction = {
-      id: uuidv4(),
-      depositIds,
-      profitability: this.serializeProfitabilityCheck(profitability),
-      status: TransactionStatus.QUEUED,
-      createdAt: new Date(),
-      tx_data: txData,
-    };
-
-    // Queue and log
-    this.queue.set(tx.id, tx);
-    this.logger.info(EXECUTOR_EVENTS.TRANSACTION_QUEUED, {
-      id: tx.id,
-      depositCount: depositIds.length,
-      totalShares: profitability.estimates.total_shares.toString(),
-      expectedProfit: profitability.estimates.expected_profit.toString(),
-    });
-
-    if (this.isRunning) setImmediate(() => this.processQueue(false));
-
-    return tx;
+    return true;
   }
 
   /**

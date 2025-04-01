@@ -181,6 +181,31 @@ export class ExecutorWrapper {
     }
   }
 
+  /**
+   * Validate a transaction before queueing
+   * @param depositIds - Array of deposit IDs to claim rewards for
+   * @param profitability - Profitability check results
+   * @returns true if the transaction is valid, throws TransactionValidationError otherwise
+   */
+  async validateTransaction(
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
+  ): Promise<boolean> {
+    try {
+      return await this.executor.validateTransaction(depositIds, profitability);
+    } catch (error) {
+      throw new ExecutorError(
+        'Failed to validate transaction',
+        {
+          error: error instanceof Error ? error.message : String(error),
+          depositIds: depositIds.map(String),
+          profitability,
+        },
+        false,
+      );
+    }
+  }
+
   private serializeProfitabilityCheck(
     check: GovLstProfitabilityCheck,
   ): GovLstProfitabilityCheck {

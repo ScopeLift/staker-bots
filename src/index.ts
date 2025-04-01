@@ -174,7 +174,11 @@ async function checkAndProcessRewards(
   logger: Logger
 ) {
   try {
-    logger.info('Starting reward check cycle...');
+    logger.info('Starting reward check cycle with components:', {
+      monitor: !!runningComponents.monitor?.getMonitorStatus(),
+      profitability: !!runningComponents.profitabilityEngine?.getStatus(),
+      executor: !!runningComponents.executor?.getStatus(),
+    });
 
     // Get all deposits from database
     const deposits = await database.getAllDeposits();
@@ -270,50 +274,80 @@ async function checkAndProcessRewards(
         deposit_details: depositDetails,
       };
 
-      // Add all deposits to processing queue
-      for (const deposit of profitableDeposits) {
-        await database.createProcessingQueueItem({
-          deposit_id: deposit.deposit_id,
-          status: ProcessingQueueStatus.PENDING,
-          delegatee: deposit.delegatee_address || '',
+      try {
+        // First validate the transaction
+        await executor.validateTransaction(
+          profitableDeposits.map((d) => BigInt(d.deposit_id)),
+          profitabilityCheck
+        );
+
+        // If validation succeeds, create database entries
+        // Update or create processing queue items
+        for (const deposit of profitableDeposits) {
+          // Check for existing queue item
+          const existingItem = await database.getProcessingQueueItem(deposit.deposit_id);
+          if (existingItem) {
+            // Update existing item
+            await database.updateProcessingQueueItem(existingItem.id, {
+              status: ProcessingQueueStatus.PENDING,
+              delegatee: deposit.delegatee_address || '',
+            });
+            logger.info(`Updated existing queue item for deposit ${deposit.deposit_id}`);
+          } else {
+            // Create new item
+            await database.createProcessingQueueItem({
+              deposit_id: deposit.deposit_id,
+              status: ProcessingQueueStatus.PENDING,
+              delegatee: deposit.delegatee_address || '',
+            });
+            logger.info(`Created new queue item for deposit ${deposit.deposit_id}`);
+          }
+        }
+
+        // Create a single transaction queue item for all deposits
+        const txQueueItem = await database.createTransactionQueueItem({
+          deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
+          status: TransactionQueueStatus.PENDING,
+          tx_data: JSON.stringify({
+            depositIds: profitableDeposits.map((d) => d.deposit_id),
+            totalRewards: totalRewards.toString(),
+            profitability: serializeProfitabilityCheck(profitabilityCheck),
+          }),
         });
-      }
 
-      // Create a single transaction queue item for all deposits
-      const txQueueItem = await database.createTransactionQueueItem({
-        deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
-        status: TransactionQueueStatus.PENDING,
-        tx_data: JSON.stringify({
-          depositIds: profitableDeposits.map((d) => d.deposit_id),
-          totalRewards: totalRewards.toString(),
-          profitability: serializeProfitabilityCheck(profitabilityCheck),
-        }),
-      });
+        // Queue the transaction with the executor
+        const queueResult = await executor.queueTransaction(
+          profitableDeposits.map((d) => BigInt(d.deposit_id)),
+          profitabilityCheck,
+          JSON.stringify({
+            depositIds: profitableDeposits.map((d) => d.deposit_id),
+            totalRewards: totalRewards.toString(),
+            profitability: serializeProfitabilityCheck(profitabilityCheck),
+            queueItemId: txQueueItem.id,
+          })
+        );
 
-      // Queue a single transaction with executor for all deposits
-      await executor.queueTransaction(
-        profitableDeposits.map((d) => BigInt(d.deposit_id)),
-        profitabilityCheck,
-        JSON.stringify({
-          depositIds: profitableDeposits.map((d) => d.deposit_id),
-          totalRewards: totalRewards.toString(),
-          profitability: serializeProfitabilityCheck(profitabilityCheck),
+        logger.info('Transaction processing status:', {
           queueItemId: txQueueItem.id,
-        })
-      );
-
-      logger.info('Queued batch transaction for deposits:', {
-        depositIds: profitableDeposits.map((d) => d.deposit_id),
-        totalRewards: ethers.formatEther(totalRewards),
-        expectedProfit: ethers.formatEther(totalRewards - totalGasCost),
-        gasEstimate: gasEstimate.toString(),
-        gasCost: ethers.formatEther(totalGasCost),
-      });
+          depositIds: profitableDeposits.map((d) => d.deposit_id),
+          totalRewards: ethers.formatEther(totalRewards),
+          gasEstimate: gasEstimate.toString(),
+          executorStatus: await executor.getStatus(),
+          queueResult
+        });
+      } catch (error) {
+        logger.error('Failed to validate/queue transaction:', { error });
+        throw error; // No cleanup needed since we validate before creating database entries
+      }
     } else {
       logger.info('No profitable deposits found in this check cycle');
     }
   } catch (error) {
-    logger.error('Error in reward check cycle:', { error });
+    logger.error('Error in reward check cycle:', {
+      error,
+      message: 'Skipping current cycle and continuing to next one'
+    });
+    // No need for cleanup since validation happens before database operations
   }
 }
 
@@ -381,7 +415,7 @@ async function initializeExecutor(
   }
 
   // Determine executor type from environment or configuration
-  const executorType = process.env.EXECUTOR_TYPE?.toLowerCase() || 'wallet';
+  const executorType = CONFIG.executor.executorType || 'wallet';
 
   // Validate executor type
   if (!['wallet', 'defender', 'relayer'].includes(executorType)) {

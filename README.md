@@ -7,7 +7,7 @@ A service that monitors staking deposits, executes profitable earning power bump
 1. Install dependencies:
 
 ```bash
-npm install
+pnpm install
 ```
 
 2. Configure environment variables:
@@ -17,6 +17,157 @@ npm install
 - `STAKER_CONTRACT_ADDRESS`: The address of the Staker contract
 - `PRIVATE_KEY`: Your wallet's private key (without 0x prefix)
 - `GOVLST_ADDRESSES`: Comma-separated list of GovLst contract addresses
+
+## Configuration Guide
+
+The application uses a comprehensive configuration system defined in `config.ts` that loads from environment variables. Here's a detailed breakdown of each configuration section:
+
+### RPC Configuration
+```typescript
+{
+  rpcUrl: string;        // Ethereum RPC endpoint
+  chainId: number;       // Chain ID (1 for mainnet, 11155111 for sepolia)
+  networkName: string;   // Network name (mainnet, sepolia, etc.)
+}
+```
+
+### Contract Configuration
+```typescript
+{
+  stakerAddress: string;         // Required: Staker contract address
+  lstAddress: string;           // Required: LST token contract address
+  obolTokenAddress?: string;    // Optional: OBOL token address
+  rewardNotifierAddress?: string; // Optional: Reward notifier address
+  defaultDelegatee?: string;    // Optional: Default delegatee address
+}
+```
+
+### Monitor Configuration
+```typescript
+{
+  startBlock: number;           // Block to start monitoring from
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
+  pollInterval: number;         // Seconds between blockchain polls
+  maxBlockRange: number;        // Maximum block range per query
+  maxRetries: number;          // Maximum retry attempts
+  reorgDepth: number;          // Reorg detection depth
+  confirmations: number;       // Required block confirmations
+  healthCheckInterval: number; // Health check frequency in seconds
+}
+```
+
+### Database Configuration
+```typescript
+{
+  type: 'json' | 'supabase';   // Database type
+  supabase?: {
+    url: string;              // Supabase URL (required if using Supabase)
+    key: string;             // Supabase API key
+  }
+}
+```
+
+### Executor Configuration
+```typescript
+{
+  executorType: 'wallet' | 'defender' | 'relayer';
+  privateKey?: string;        // Required for wallet executor
+  tipReceiver?: string;       // Optional tip receiver address
+  minBalance: bigint;         // Minimum wallet balance
+  maxPendingTransactions: number;
+}
+```
+
+### Defender Configuration (for Defender executor)
+```typescript
+{
+  apiKey: string;            // OpenZeppelin Defender API key
+  secretKey: string;         // OpenZeppelin Defender secret key
+  address: string;           // Defender relayer address
+  relayer: {
+    minBalance: bigint;      // Minimum relayer balance
+    maxPendingTransactions: number;
+    gasPolicy: {
+      maxFeePerGas?: bigint;
+      maxPriorityFeePerGas?: bigint;
+    }
+  }
+}
+```
+
+### Price Feed Configuration
+```typescript
+{
+  coinmarketcap: {
+    apiKey: string;          // CoinMarketCap API key
+    baseUrl: string;         // API base URL
+    timeout: number;         // Request timeout in ms
+    retries: number;         // Number of retry attempts
+  }
+}
+```
+
+### GovLst Configuration
+```typescript
+{
+  addresses: string[];       // GovLst contract addresses
+  payoutAmount: bigint;     // Reward payout amount
+  minProfitMargin: bigint;  // Minimum profit required
+  maxBatchSize: number;     // Maximum batch size
+  claimInterval: number;    // Seconds between claim checks
+  gasPriceBuffer: number;   // Gas price buffer percentage
+  minEarningPower: bigint;  // Minimum earning power threshold
+}
+```
+
+### Component Selection
+The application supports running specific components through the `COMPONENTS` environment variable:
+- `monitor`: Blockchain event monitoring
+- `profitability`: Profitability calculations
+- `executor`: Transaction execution
+- `govlst`: GovLst reward claiming
+
+Example:
+```bash
+COMPONENTS=monitor,profitability,executor,govlst
+```
+
+## Production Configuration
+
+The application includes production-optimized settings in `PRODUCTION_CONFIG`:
+
+### Profitability Settings
+- Check interval: 5 minutes
+- Maximum batch size: 50
+- Minimum profit margin: 15%
+- Gas price buffer: 20%
+- Retry delay: 1 minute
+- Maximum retries: 3
+
+### Monitor Settings
+- Required confirmations: 12
+- Maximum block range: 5000
+- Poll interval: 13 seconds
+- Health check interval: 1 minute
+- Maximum reorg depth: 100
+
+### Executor Settings
+- Queue poll interval: 60 seconds
+- Minimum executor balance: 0.1 ETH
+- Maximum pending transactions: 10
+- Gas limit buffer: 30%
+- Maximum batch size: 50
+
+### Database Settings
+- Batch timeout: 1 hour
+- Maximum queue size: 1000
+- Prune interval: 24 hours
+- Maximum archive age: 7 days
+
+### Circuit Breaker Settings
+- Maximum failed transactions: 3
+- Cooldown period: 30 minutes
+- Minimum success rate: 80%
 
 ## Error Handling
 
@@ -79,13 +230,13 @@ Logs are written to:
 1. Build the TypeScript code:
 
 ```bash
-npm run build
+pnpm run build
 ```
 
 2. Start the service:
 
 ```bash
-npm start
+pnpm run prod
 ```
 
 The service will:

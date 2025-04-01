@@ -162,6 +162,37 @@ export class RelayerExecutor implements IExecutor {
       });
     }
 
+    // Validate the transaction
+    await this.validateTransaction(depositIds, profitability);
+
+    const tx: QueuedTransaction = {
+      id: uuidv4(),
+      depositIds,
+      profitability,
+      status: TransactionStatus.QUEUED,
+      createdAt: new Date(),
+      tx_data: txData,
+    };
+
+    this.queue.set(tx.id, tx);
+    this.logger.info(EXECUTOR_EVENTS.TRANSACTION_QUEUED, {
+      id: tx.id,
+      depositCount: depositIds.length,
+      totalShares: profitability.estimates.total_shares.toString(),
+      expectedProfit: profitability.estimates.expected_profit.toString(),
+    });
+
+    if (this.isRunning) {
+      setImmediate(() => this.processQueue(false));
+    }
+
+    return tx;
+  }
+
+  async validateTransaction(
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
+  ): Promise<boolean> {
     if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE) {
       throw new TransactionValidationError(
         `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
@@ -202,28 +233,7 @@ export class RelayerExecutor implements IExecutor {
       );
     }
 
-    const tx: QueuedTransaction = {
-      id: uuidv4(),
-      depositIds,
-      profitability,
-      status: TransactionStatus.QUEUED,
-      createdAt: new Date(),
-      tx_data: txData,
-    };
-
-    this.queue.set(tx.id, tx);
-    this.logger.info(EXECUTOR_EVENTS.TRANSACTION_QUEUED, {
-      id: tx.id,
-      depositCount: depositIds.length,
-      totalShares: profitability.estimates.total_shares.toString(),
-      expectedProfit: profitability.estimates.expected_profit.toString(),
-    });
-
-    if (this.isRunning) {
-      setImmediate(() => this.processQueue(false));
-    }
-
-    return tx;
+    return true;
   }
 
   async getQueueStats(): Promise<QueueStats> {
@@ -613,113 +623,97 @@ export class RelayerExecutor implements IExecutor {
         },
       );
 
-      // Wait for transaction receipt
-      let receipt: EthersTransactionReceipt | null = null;
-      let attempts = 0;
-      const maxAttempts = 30; // 30 attempts * 1 second = 30 seconds max wait
+      this.logger.info('Transaction submitted:', {
+        hash: response.hash,
+        nonce: response.nonce,
+        gasLimit: response.gasLimit.toString(),
+        maxFeePerGas: response.maxFeePerGas?.toString(),
+        maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
+      });
 
-      while (!receipt && attempts < maxAttempts) {
-        receipt = (await this.relayProvider.getTransactionReceipt(
-          response.hash,
-        )) as unknown as EthersTransactionReceipt;
-        if (!receipt) {
-          await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
-          attempts++;
-          continue;
-        }
-
-        // Check if we have enough confirmations
-        const currentBlock = await this.relayProvider.getBlockNumber();
-        const confirmations = currentBlock - receipt.blockNumber;
-        if (confirmations < this.config.minConfirmations) {
-          receipt = null;
-          await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
-          attempts++;
-          continue;
-        }
-      }
+      // Wait for transaction to be mined and get receipt
+      this.logger.info('Waiting for transaction to be mined...');
+      const receipt = await this.relayProvider.waitForTransaction(
+        response.hash,
+        this.config.minConfirmations,
+        30000 // 30 second timeout
+      );
 
       if (!receipt) {
         throw new TransactionReceiptError(response.hash, {
           transactionId: tx.id,
           depositIds: depositIds.map(String),
+          error: 'Transaction timed out'
+        });
+      }
+
+      this.logger.info('Transaction mined:', {
+        hash: response.hash,
+        status: receipt.status,
+        blockNumber: receipt.blockNumber,
+        blockHash: receipt.blockHash,
+        gasUsed: receipt.gasUsed.toString(),
+        effectiveGasPrice: (receipt.effectiveGasPrice || 0n).toString(),
+        confirmations: await this.relayProvider.getBlockNumber() - receipt.blockNumber
+      });
+
+      if (receipt.status === 0) {
+        throw new TransactionReceiptError(response.hash, {
+          transactionId: tx.id,
+          depositIds: depositIds.map(String),
+          receipt,
+          error: 'Transaction reverted'
         });
       }
 
       // Update transaction status
-      tx.status =
-        receipt.status === 1
-          ? TransactionStatus.CONFIRMED
-          : TransactionStatus.FAILED;
-      tx.hash = receipt.transactionHash;
-      tx.gasPrice = receipt.effectiveGasPrice;
-      tx.gasLimit = receipt.gasUsed;
+      tx.status = TransactionStatus.CONFIRMED;
+      tx.hash = response.hash;
+      tx.gasPrice = BigInt(receipt.effectiveGasPrice?.toString() || '0');
+      tx.gasLimit = BigInt(receipt.gasUsed.toString());
       tx.executedAt = new Date();
 
-      // Update database if available
+      // Clean up queue items
       if (this.db && queueItemId) {
         try {
-          // Get transaction queue item to find deposit IDs
           const txQueueItem = await this.db.getTransactionQueueItem(queueItemId);
           if (txQueueItem) {
-            // Parse deposit IDs from the transaction queue item
             const depositIds = txQueueItem.deposit_id.split(',');
 
-            // Update transaction queue status and clear processing queue items
+            // Clean up all related queue items in parallel
             await Promise.all([
-              // Update transaction queue status
-              this.db.updateTransactionQueueItem(queueItemId, {
-                status: receipt.status === 1
-                  ? TransactionQueueStatus.CONFIRMED
-                  : TransactionQueueStatus.FAILED,
-                hash: receipt.transactionHash,
-                error: receipt.status !== 1 ? 'Transaction failed' : undefined,
-                gas_price: receipt.effectiveGasPrice.toString(),
-              }),
-              // If transaction succeeded, delete transaction queue item and update processing queue items
-              ...(receipt.status === 1 ? [
-                // Delete transaction queue item
-                this.db.deleteTransactionQueueItem(queueItemId),
-                // Update and delete processing queue items for each deposit
-                ...depositIds.map(async (depositId) => {
-                  const processingItem = await this.db!.getProcessingQueueItemByDepositId(depositId);
-                  if (processingItem) {
-                    // First update status to completed
-                    await this.db!.updateProcessingQueueItem(processingItem.id, {
-                      status: ProcessingQueueStatus.COMPLETED,
-                    });
-                    // Then delete the item
-                    await this.db!.deleteProcessingQueueItem(processingItem.id);
-                  }
-                }),
-              ] : []),
+              this.db.deleteTransactionQueueItem(queueItemId),
+              ...depositIds.map(async (depositId) => {
+                const processingItem = await this.db!.getProcessingQueueItemByDepositId(depositId);
+                if (processingItem) {
+                  await this.db!.deleteProcessingQueueItem(processingItem.id);
+                }
+              })
             ]);
+
+            this.logger.info('Cleaned up queue items:', {
+              txQueueId: queueItemId,
+              depositIds,
+              hash: response.hash
+            });
           }
         } catch (error) {
-          this.logger.error('Failed to update queue items', {
+          this.logger.error('Failed to clean up queue items:', {
             error: error instanceof Error ? error.message : String(error),
             queueItemId,
-            status: receipt.status === 1 ? 'confirmed' : 'failed',
+            hash: response.hash
           });
         }
       }
 
       this.queue.set(tx.id, tx);
-
-      if (receipt.status !== 1) {
-        this.logger.error(EXECUTOR_EVENTS.TRANSACTION_FAILED, {
-          id: tx.id,
-          hash: receipt.transactionHash,
-        });
-      } else {
-        this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
-          id: tx.id,
-          hash: receipt.transactionHash,
-          blockNumber: receipt.blockNumber,
-          gasUsed: receipt.gasUsed.toString(),
-          gasPrice: receipt.effectiveGasPrice.toString(),
-        });
-      }
+      this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
+        id: tx.id,
+        hash: response.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toString(),
+        gasPrice: (receipt.effectiveGasPrice || 0n).toString()
+      });
     } catch (error) {
       await this.handleExecutionError(tx, error);
     }

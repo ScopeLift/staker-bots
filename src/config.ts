@@ -18,6 +18,7 @@ export const PRODUCTION_CONFIG = {
     maxReorgDepth: 100
   },
   executor: {
+
     queuePollInterval: 60, // seconds
     minExecutorBalance: ethers.parseEther('0.1'),
     maxPendingTransactions: 10,
@@ -86,6 +87,7 @@ export const CONFIG = {
     healthCheckInterval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '60'),
   },
   executor: {
+    executorType: process.env.EXECUTOR_TYPE || '',
     privateKey: process.env.PRIVATE_KEY || '',
     tipReceiver:
       process.env.TIP_RECEIVER || '0x0000000000000000000000000000000000000000',

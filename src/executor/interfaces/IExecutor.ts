@@ -29,6 +29,15 @@ export interface IExecutor {
   }>;
 
   /**
+   * Validate a transaction before queueing
+   * Returns true if the transaction is valid, throws TransactionValidationError otherwise
+   */
+  validateTransaction(
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
+  ): Promise<boolean>;
+
+  /**
    * Queue a transaction for execution
    */
   queueTransaction(
