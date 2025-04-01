@@ -1,4 +1,4 @@
-import { ethers, ContractTransactionResponse } from 'ethers';
+import { ethers, ContractTransactionResponse, BaseContract } from 'ethers';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { IExecutor } from '../interfaces/IExecutor';
 import {
@@ -12,7 +12,7 @@ import {
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
 import { DatabaseWrapper } from '@/database';
-import { Interface } from 'ethers';
+import { Interface, Contract } from 'ethers';
 import { TransactionQueueStatus } from '@/database/interfaces/types';
 import { EXECUTOR_EVENTS, GAS_CONSTANTS, QUEUE_CONSTANTS } from '../constants';
 import {
@@ -26,6 +26,21 @@ import {
   TransactionValidationError,
   createExecutorError,
 } from '../errors';
+
+interface GovLstContract extends BaseContract {
+  estimateGas: {
+    claimAndDistributeReward: (
+      recipient: string,
+      minExpectedReward: bigint,
+      depositIds: bigint[]
+    ) => Promise<bigint>;
+  };
+  claimAndDistributeReward: (
+    recipient: string,
+    minExpectedReward: bigint,
+    depositIds: bigint[]
+  ) => Promise<ContractTransactionResponse>;
+}
 
 interface GovLstContractMethod {
   (
@@ -56,7 +71,7 @@ export class BaseExecutor implements IExecutor {
   private isRunning: boolean;
   private processingInterval: NodeJS.Timeout | null;
   private db?: DatabaseWrapper; // Database access for transaction queue
-  private govLstContract: ethers.Contract;
+  protected readonly govLstContract: GovLstContract;
   private readonly provider: ethers.Provider;
   private readonly config: ExecutorConfig;
 
@@ -94,7 +109,7 @@ export class BaseExecutor implements IExecutor {
       contractAddress,
       contractAbi,
       this.wallet,
-    );
+    ) as unknown as GovLstContract;
 
     if (!this.govLstContract.interface.hasFunction('claimAndDistributeReward'))
       throw new ContractMethodError('claimAndDistributeReward');
@@ -508,7 +523,7 @@ export class BaseExecutor implements IExecutor {
         minExpectedReward: ethers.formatEther(totalRewards),
       });
 
-      const gasEstimate = await this.estimateGas(totalRewards, depositIds);
+      const gasEstimate = await this.estimateGas(depositIds, tx.profitability);
       const { finalGasLimit, boostedGasPrice } =
         await this.calculateGasParameters(gasEstimate);
 
@@ -563,35 +578,70 @@ export class BaseExecutor implements IExecutor {
 
   /**
    * Estimates gas for a transaction
-   * @param minExpectedReward - Minimum expected reward
    * @param depositIds - Array of deposit IDs
+   * @param profitability - Profitability check results
    * @returns Estimated gas amount
    */
-  private async estimateGas(
-    minExpectedReward: bigint,
+  async estimateGas(
     depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck
   ): Promise<bigint> {
-    const claimAndDistributeReward = this.govLstContract
-      .claimAndDistributeReward as GovLstContractMethod;
-    if (!claimAndDistributeReward) {
-      throw new ContractMethodError('claimAndDistributeReward');
-    }
-
     try {
-      const estimate = await claimAndDistributeReward.estimateGas(
-        this.config.defaultTipReceiver || this.wallet.address,
-        minExpectedReward,
-        depositIds,
-      );
-      return BigInt(estimate.toString());
+      // Validate inputs
+      if (!depositIds.length) {
+        throw new Error('No deposit IDs provided for gas estimation');
+      }
+
+      if (!profitability.estimates.payout_amount) {
+        throw new Error('Invalid payout amount in profitability check');
+      }
+
+      // Get current gas price with buffer
+      const feeData = await this.provider.getFeeData();
+      if (!feeData.gasPrice) {
+        throw new Error('Failed to get gas price from provider');
+      }
+
+      const tipReceiver = this.config.defaultTipReceiver || this.wallet.address;
+      if (!tipReceiver) {
+        throw new Error('No tip receiver configured');
+      }
+
+      // First try to estimate with actual values
+      try {
+        const gasEstimate = await (this.govLstContract as any).estimateGas.claimAndDistributeReward(
+          tipReceiver,
+          profitability.estimates.payout_amount,
+          depositIds
+        );
+        return BigInt(gasEstimate.toString());
+      } catch (estimateError) {
+        this.logger.warn('Initial gas estimation failed, trying with minimum values', {
+          error: estimateError instanceof Error ? estimateError.message : String(estimateError)
+        });
+
+        // If that fails, try with minimum values
+        try {
+          const minPayout = BigInt(1); // Minimum possible payout
+          const gasEstimate = await (this.govLstContract as any).estimateGas.claimAndDistributeReward(
+            tipReceiver,
+            minPayout,
+            depositIds
+          );
+          return BigInt(gasEstimate.toString());
+        } catch (fallbackError) {
+          // If both attempts fail, throw with detailed error
+          throw new GasEstimationError(fallbackError as Error, {
+            depositIds: depositIds.map(id => id.toString()),
+            payoutAmount: profitability.estimates.payout_amount.toString(),
+            tipReceiver
+          });
+        }
+      }
     } catch (error) {
-      throw new GasEstimationError(
-        error instanceof Error ? error : new Error(String(error)),
-        {
-          minExpectedReward: minExpectedReward.toString(),
-          depositIds: depositIds.map(String),
-        },
-      );
+      throw new GasEstimationError(error as Error, {
+        depositIds: depositIds.map(id => id.toString())
+      });
     }
   }
 

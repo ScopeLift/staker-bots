@@ -4,7 +4,7 @@
   "description": "Staker bot implementation",
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "COMPONENTS=all tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "start:monitor": "COMPONENTS=monitor tsx src/index.ts",
     "start:profitability": "COMPONENTS=profitability tsx src/index.ts",
@@ -26,7 +26,12 @@
     "test:full": "src/tests/run-test.sh full",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "prod": "NODE_ENV=production EXECUTOR_TYPE=defender COMPONENTS=all tsx src/index.ts",
+    "prod:monitor": "NODE_ENV=production EXECUTOR_TYPE=defender COMPONENTS=monitor tsx src/index.ts",
+    "prod:executor": "NODE_ENV=production COMPONENTS=executor tsx src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",

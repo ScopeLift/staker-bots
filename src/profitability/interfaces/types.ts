@@ -63,11 +63,18 @@ export interface ProfitabilityConfig {
   };
 }
 
-export interface GovLstDeposit extends Deposit {
+export interface GovLstDeposit {
+  deposit_id: bigint;
+  owner_address: string;
+  delegatee_address: string;
+  amount: bigint;
+  depositor_address?: string;
   shares_of: bigint;
   payout_amount: bigint;
   rewards: bigint;
-  depositor_address: string;
+  earning_power: bigint;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface GovLstDepositGroup {
@@ -107,4 +114,10 @@ export interface GovLstBatchAnalysis {
 export interface DepositCache {
   deposit: GovLstDeposit;
   timestamp: number;
+}
+
+export interface GovLstDepositDetail {
+  depositId: bigint;
+  rewards: bigint;
+  earning_power: bigint;
 }

@@ -168,7 +168,7 @@ async function main() {
   const executor = new ExecutorWrapper(
     lstContract, // Pass LST contract instead of Staker contract
     provider,
-    executorType === 'relayer' ? ExecutorType.RELAYER : ExecutorType.WALLET,
+    executorType === 'relayer' ? ExecutorType.DEFENDER : ExecutorType.WALLET,
     executorConfig,
     database,
   );
@@ -260,6 +260,8 @@ async function main() {
       depositor_address: deposit.depositor_address,
       delegatee_address: deposit.delegatee_address,
       amount: deposit.amount.toString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
   }
 

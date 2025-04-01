@@ -23,8 +23,7 @@ import { ExecutorError } from './errors';
  */
 export enum ExecutorType {
   WALLET = 'wallet',
-  DEFENDER = 'defender',
-  RELAYER = 'RELAYER',
+  DEFENDER = 'defender'
 }
 
 /**
@@ -34,12 +33,15 @@ export enum ExecutorType {
 export class ExecutorWrapper {
   private executor: IExecutor;
   private readonly logger: Logger;
+  private isRunning = false;
+  private lastProcessedBlock = 0;
+  private readonly provider: ethers.Provider;
 
   /**
    * Creates a new ExecutorWrapper instance
    * @param stakerContract - The staker contract instance
    * @param provider - Ethereum provider
-   * @param type - Type of executor to use (WALLET or RELAYER)
+   * @param type - Type of executor to use (WALLET or DEFENDER)
    * @param config - Executor configuration
    * @param db - Optional database instance
    */
@@ -63,6 +65,7 @@ export class ExecutorWrapper {
     }
 
     this.logger = new ConsoleLogger('info');
+    this.provider = provider;
 
     if (type === ExecutorType.WALLET) {
       // Create a BaseExecutor with local wallet
@@ -81,7 +84,7 @@ export class ExecutorWrapper {
         provider,
         config: fullConfig,
       });
-    } else if (type === ExecutorType.RELAYER) {
+    } else if (type === ExecutorType.DEFENDER) {
       // Create a RelayerExecutor with OpenZeppelin Defender
       const fullConfig: RelayerExecutorConfig = {
         ...DEFAULT_RELAYER_EXECUTOR_CONFIG,
@@ -91,7 +94,7 @@ export class ExecutorWrapper {
       this.executor = new RelayerExecutor(stakerContract, provider, fullConfig);
     } else {
       throw new ExecutorError(
-        `Unsupported executor type: ${type}`,
+        `Invalid executor type: ${type}. Must be '${ExecutorType.WALLET}' or '${ExecutorType.DEFENDER}'`,
         { type },
         false,
       );
@@ -107,6 +110,27 @@ export class ExecutorWrapper {
    * Starts the executor service
    */
   async start(): Promise<void> {
+    if (this.isRunning) return;
+
+    // Load last checkpoint
+    const checkpoint = await this.db?.getCheckpoint('executor');
+    if (checkpoint) {
+      this.lastProcessedBlock = checkpoint.last_block_number;
+      this.logger.info('Executor resuming from checkpoint', { lastProcessedBlock: this.lastProcessedBlock });
+    } else {
+      // Initialize checkpoint if none exists
+      const currentBlock = await this.provider.getBlockNumber();
+      this.lastProcessedBlock = currentBlock;
+      await this.db?.updateCheckpoint({
+        component_type: 'executor',
+        last_block_number: currentBlock,
+        block_hash: ethers.ZeroHash,
+        last_update: new Date().toISOString(),
+      });
+    }
+
+    this.isRunning = true;
+    this.logger.info('Executor started');
     try {
       await this.executor.start();
     } catch (error) {
@@ -122,6 +146,9 @@ export class ExecutorWrapper {
    * Stops the executor service
    */
   async stop(): Promise<void> {
+    if (!this.isRunning) return;
+    this.isRunning = false;
+    this.logger.info('Executor stopped');
     try {
       await this.executor.stop();
     } catch (error) {
@@ -189,7 +216,13 @@ export class ExecutorWrapper {
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
     txData?: string,
-  ): Promise<QueuedTransaction> {
+  ): Promise<QueuedTransaction | null> {
+    if (!this.isRunning) {
+      throw new ExecutorError('Executor is not running', {
+        depositIds: depositIds.map(id => id.toString()),
+        profitability
+      });
+    }
     try {
       // Parse txData if it's a string and contains profitability data
       let processedProfitability = profitability;
@@ -209,11 +242,28 @@ export class ExecutorWrapper {
         }
       }
 
-      return await this.executor.queueTransaction(
+      const currentBlock = await this.provider.getBlockNumber();
+      const result = await this.executor.queueTransaction(
         depositIds,
         processedProfitability,
         txData,
       );
+
+      // Update checkpoint after successful transaction queueing
+      if (currentBlock > this.lastProcessedBlock) {
+        const block = await this.provider.getBlock(currentBlock);
+        if (!block) throw new Error(`Block ${currentBlock} not found`);
+
+        await this.db?.updateCheckpoint({
+          component_type: 'executor',
+          last_block_number: currentBlock,
+          block_hash: block.hash!,
+          last_update: new Date().toISOString(),
+        });
+        this.lastProcessedBlock = currentBlock;
+      }
+
+      return result;
     } catch (error) {
       throw new ExecutorError(
         'Failed to queue transaction',
