@@ -16,7 +16,7 @@ import {
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { IExecutor } from './interfaces/IExecutor';
 import { DatabaseWrapper } from '@/database';
-import { ExecutorError } from './errors';
+import { ExecutorError } from '@/configuration/errors';
 
 /**
  * Supported executor types

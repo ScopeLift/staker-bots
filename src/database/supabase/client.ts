@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { CONFIG } from '../../config';
+import { CONFIG } from '@/configuration';
 
 export const supabase = () => {
   if (!CONFIG.supabase.url || !CONFIG.supabase.key) return null;

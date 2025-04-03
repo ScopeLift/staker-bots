@@ -1,67 +1,28 @@
-import { config } from 'dotenv';
-import { ethers } from 'ethers';
-
-export const PRODUCTION_CONFIG = {
-  profitability: {
-    checkInterval: 300, // 5 minutes
-    maxBatchSize: 50,
-    minProfitMargin: 0.15, // 15%
-    gasPriceBuffer: 1.2, // 20% buffer for gas price fluctuations
-    retryDelay: 60, // 1 minute
-    maxRetries: 3
-  },
-  monitor: {
-    confirmations: 12,
-    maxBlockRange: 5000,
-    pollInterval: 13, // seconds
-    healthCheckInterval: 60, // 1 minute
-    maxReorgDepth: 100
-  },
-  executor: {
-
-    queuePollInterval: 60, // seconds
-    minExecutorBalance: ethers.parseEther('0.1'),
-    maxPendingTransactions: 10,
-    gasLimitBuffer: 1.3, // 30% buffer for gas limit
-    maxBatchSize: 50,
-    retryDelay: 60, // 1 minute
-    maxRetries: 3
-  },
-  database: {
-    batchTimeout: 3600, // 1 hour
-    maxQueueSize: 1000,
-    pruneInterval: 86400, // 24 hours
-    maxArchiveAge: 604800 // 7 days
-  },
-  circuit_breaker: {
-    maxFailedTransactions: 3,
-    cooldownPeriod: 1800, // 30 minutes
-    minSuccessRate: 0.8 // 80% success rate required
-  }
-} as const
-
-export type ProductionConfig = typeof PRODUCTION_CONFIG
+import { config } from 'dotenv'
+import { ethers } from 'ethers'
 
 // Load environment variables
-config();
+config()
 
-// Validate required environment variables
-const requiredEnvVars = [
+// Required environment variables
+const REQUIRED_ENV_VARS = [
   'RPC_URL',
   'STAKER_CONTRACT_ADDRESS',
   'CHAIN_ID',
-] as const;
+] as const
 
-for (const envVar of requiredEnvVars) {
+// Validate required environment variables
+for (const envVar of REQUIRED_ENV_VARS) {
   if (!process.env[envVar]) {
-    throw new Error(`Missing required environment variable: ${envVar}`);
+    throw new Error(`Missing required environment variable: ${envVar}`)
   }
 }
 
+// Configuration object
 export const CONFIG = {
   supabase: {
-    url: process.env.SUPABASE_URL,
-    key: process.env.SUPABASE_KEY,
+    url: process.env.SUPABASE_URL || '',
+    key: process.env.SUPABASE_KEY || '',
   },
   monitor: {
     defaultDelegatee: process.env.DEFAULT_DELEGATEE || '',
@@ -123,7 +84,7 @@ export const CONFIG = {
   },
   profitability: {
     minProfitMargin: ethers.parseEther('0'), // 0 tokens minimum profit
-    gasPriceBuffer: 50, // 50% buffer for gas price volatility (increased from 20%)
+    gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,
     defaultTipReceiver: process.env.TIP_RECEIVER_ADDRESS || '',
     rewardTokenAddress: process.env.REWARD_TOKEN_ADDRESS || '',
@@ -141,12 +102,17 @@ export const CONFIG = {
     gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer
     minEarningPower: BigInt(process.env.GOVLST_MIN_EARNING_POWER || 10000), // Minimum earning power threshold
   },
-} as const;
+} as const
 
 // Helper to create provider
-export const createProvider = () => {
+export function createProvider() {
   return new ethers.JsonRpcProvider(
     CONFIG.monitor.rpcUrl,
     CONFIG.monitor.chainId,
-  );
-};
+  )
+}
+
+// Re-export everything from constants and abis
+export * from './constants'
+export * from './abis'
+export * from './errors'

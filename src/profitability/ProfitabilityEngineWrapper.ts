@@ -8,13 +8,12 @@ import {
   GovLstBatchAnalysis,
   ProfitabilityConfig,
 } from './interfaces/types';
-import { IPriceFeed } from '@/shared/price-feeds/interfaces';
 import { QUEUE_CONSTANTS, EVENTS } from './constants';
 import {
   DepositNotFoundError,
   InvalidDepositDataError,
   QueueProcessingError,
-} from './errors';
+} from '@/configuration/errors';
 import { IExecutor } from '@/executor/interfaces/IExecutor';
 import { DatabaseWrapper } from '@/database';
 import { ProcessingQueueStatus } from '@/database/interfaces/types';
@@ -73,7 +72,6 @@ export class GovLstProfitabilityEngineWrapper
     stakerContract: ethers.Contract,
     provider: ethers.Provider,
     private readonly logger: Logger,
-    priceFeed: IPriceFeed,
     config: ProfitabilityConfig,
     private readonly executor: IExecutor,
   ) {
@@ -101,7 +99,6 @@ export class GovLstProfitabilityEngineWrapper
       },
       provider,
       config,
-      priceFeed,
     );
   }
 

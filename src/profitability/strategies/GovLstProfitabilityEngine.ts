@@ -1,7 +1,6 @@
 import { ethers } from 'ethers';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { IGovLstProfitabilityEngine } from '../interfaces/IProfitabilityEngine';
-import { IPriceFeed } from '@/shared/price-feeds/interfaces';
 import {
   GovLstDeposit,
   GovLstProfitabilityCheck,
@@ -10,7 +9,7 @@ import {
   ProfitabilityConfig,
 } from '../interfaces/types';
 import { GAS_CONSTANTS, CONTRACT_CONSTANTS, EVENTS } from '../constants';
-import { GasEstimationError, QueueProcessingError } from '../errors';
+import { GasEstimationError, QueueProcessingError } from '@/configuration/errors';
 
 /**
  * GovLstProfitabilityEngine - Analyzes and determines profitability of GovLst deposits
@@ -52,7 +51,6 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     },
     private readonly provider: ethers.Provider,
     private readonly config: ProfitabilityConfig,
-    private readonly priceFeed: IPriceFeed,
   ) {
     this.logger = new ConsoleLogger('info');
     this.isRunning = false;

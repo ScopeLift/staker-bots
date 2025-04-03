@@ -8,7 +8,7 @@ import {
 } from './types';
 import { Logger } from './logging';
 import { EVENT_TYPES } from './constants';
-import { EventProcessingError, DepositNotFoundError } from './errors';
+import { EventProcessingError, DepositNotFoundError } from '@/configuration/errors';
 
 /**
  * Processes blockchain events related to staking operations.
@@ -49,6 +49,8 @@ export class EventProcessor {
         await this.db.createDeposit({
           deposit_id: event.depositId,
           ...depositData,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         });
         this.logger.info('Created new deposit', {
           depositId: event.depositId,
@@ -172,6 +174,8 @@ export class EventProcessor {
       await this.db.createDeposit({
         deposit_id: event.newDepositId.toString(),
         ...depositData,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
 
       // If old deposit exists, mark it as moved

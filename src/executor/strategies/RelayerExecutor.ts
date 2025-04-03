@@ -13,7 +13,6 @@ import {
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
 import { DatabaseWrapper } from '@/database';
-// Update Defender SDK imports for v2
 import {
   DefenderRelayProvider,
   DefenderRelaySigner,
@@ -29,8 +28,7 @@ import {
   TransactionReceiptError,
   TransactionValidationError,
   createExecutorError,
-} from '../errors';
-import { ProcessingQueueStatus } from '@/database/interfaces/types';
+} from '@/configuration/errors';
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;

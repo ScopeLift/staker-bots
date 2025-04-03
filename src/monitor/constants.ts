@@ -1,19 +1,7 @@
 import { ethers } from 'ethers';
 import { MonitorConfig } from './types';
 import { IDatabase } from '@/database';
-import { CONFIG } from '@/config';
-
-// ABI fragments
-export const STAKER_ABI = [
-  'event StakeDeposited(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
-  'event StakeWithdrawn(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
-  'event DelegateeAltered(uint256 indexed depositId, address oldDelegatee, address newDelegatee, uint256 earningPower)',
-  'event Staked(address indexed account, uint256 amount)',
-  'event StakedWithAttribution(uint256 _depositId, uint256 _amount, address indexed _referrer)',
-  'event Unstaked(address indexed account, uint256 amount)',
-  'event DepositInitialized(address indexed delegatee, uint256 depositId)',
-  'event DepositUpdated(address indexed holder, uint256 oldDepositId, uint256 newDepositId)',
-] as const;
+import { CONFIG } from '@/configuration';
 
 export const createMonitorConfig = (
   provider: ethers.Provider,

@@ -1,14 +1,14 @@
 import { DatabaseWrapper } from './database';
-import { CONFIG } from './config';
+import { CONFIG } from './configuration';
 import { ConsoleLogger, Logger } from './monitor/logging';
 import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
+import { stakerAbi } from './configuration/abis';
 import { ExecutorWrapper, ExecutorType } from './executor';
 import { IExecutor } from './executor/interfaces/IExecutor';
 import { GovLstProfitabilityEngineWrapper } from './profitability';
-import { CoinMarketCapFeed } from './shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
 import { ethers } from 'ethers';
-import { govlst } from '@/constants';
+import { govlstAbi } from './configuration/abis';
 import fs from 'fs/promises';
 import { GovLstProfitabilityCheck } from './profitability';
 import { ProcessingQueueStatus, TransactionQueueStatus } from './database';
@@ -33,10 +33,10 @@ const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
 // Reward check interval (in milliseconds)
 const REWARD_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
-// Load the full staker ABI from tests
+// Load staker ABI from configuration
 const loadStakerAbi = async (): Promise<any> => {
   try {
-    return JSON.parse(await fs.readFile('./src/tests/abis/staker.json', 'utf8'));
+    return stakerAbi;
   } catch (error) {
     mainLogger.error('Failed to load staker ABI:', { error });
     throw error;
@@ -425,7 +425,7 @@ async function initializeExecutor(
   // Create LST contract instance - important to use this for the executor
   const lstContract = new ethers.Contract(
     CONFIG.monitor.lstAddress,
-    govlst,
+    govlstAbi,
     provider
   );
 
@@ -522,7 +522,7 @@ async function initializeProfitabilityEngine(
 
   const govLstContract = new ethers.Contract(
     govLstAddress,
-    govlst,
+    govlstAbi,
     provider,
   );
 
@@ -530,17 +530,6 @@ async function initializeProfitabilityEngine(
     stakerAddress,
     stakerAbi,
     provider,
-  );
-
-  // Initialize price feed
-  logger.info('Initializing price feed...');
-  const priceFeed = new CoinMarketCapFeed(
-    {
-      apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
-      baseUrl: CONFIG.priceFeed.coinmarketcap.baseUrl,
-      timeout: CONFIG.priceFeed.coinmarketcap.timeout,
-    },
-    logger,
   );
 
   // Create profitability engine
@@ -551,7 +540,6 @@ async function initializeProfitabilityEngine(
     stakerContract,
     provider,
     logger,
-    priceFeed,
     {
       minProfitMargin: CONFIG.govlst.minProfitMargin,
       gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,

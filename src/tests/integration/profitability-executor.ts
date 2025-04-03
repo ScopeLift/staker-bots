@@ -3,11 +3,10 @@ import { DatabaseWrapper } from '@/database';
 import { ConsoleLogger } from '@/monitor/logging';
 import { GovLstProfitabilityEngineWrapper } from '@/profitability';
 import { ExecutorWrapper, ExecutorType } from '@/executor';
-import { CONFIG } from '@/config';
-import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
+import { CONFIG } from '@/configuration';
 import { IExecutor } from '@/executor/interfaces/IExecutor';
-import { govlst } from '@/constants';
-import stakerAbi from '../abis/staker.json';
+import { govlstAbi, stakerAbi } from '@/configuration/abis';
+
 import {
   TransactionQueueStatus,
   ProcessingQueueStatus,
@@ -111,7 +110,7 @@ async function main() {
   logger.info('Initializing GovLst contract...');
   const govLstContract = new ethers.Contract(
     '0x6fbb31f8c459d773a8d0f67c8c055a70d943c1f1',
-    govlst,
+    govlstAbi,
     provider,
   );
   logger.info('GovLst contract initialized at:', {
@@ -122,7 +121,7 @@ async function main() {
   logger.info('Initializing LST contract...');
   const lstContract = new ethers.Contract(
     CONFIG.monitor.lstAddress,
-    govlst,
+    govlstAbi,
     provider,
   );
   logger.info('LST contract initialized at:', { address: lstContract.target });
@@ -176,14 +175,6 @@ async function main() {
 
   // Initialize profitability engine
   logger.info('Initializing profitability engine...');
-  const priceFeed = new CoinMarketCapFeed(
-    {
-      apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
-      baseUrl: CONFIG.priceFeed.coinmarketcap.baseUrl,
-      timeout: CONFIG.priceFeed.coinmarketcap.timeout,
-    },
-    new ConsoleLogger('info'),
-  );
 
   const profitabilityEngine = new GovLstProfitabilityEngineWrapper(
     database,
@@ -191,7 +182,6 @@ async function main() {
     stakerContract,
     provider,
     new ConsoleLogger('info'),
-    priceFeed,
     {
       minProfitMargin: CONFIG.govlst.minProfitMargin,
       gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,

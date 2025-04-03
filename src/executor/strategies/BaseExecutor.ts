@@ -25,7 +25,7 @@ import {
   TransactionReceiptError,
   TransactionValidationError,
   createExecutorError,
-} from '../errors';
+} from '@/configuration/errors';
 import { ProcessingQueueStatus } from '@/database/interfaces/types';
 
 interface GovLstContract extends BaseContract {
