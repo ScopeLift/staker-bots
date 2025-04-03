@@ -31,7 +31,7 @@ const executorLogger = new ConsoleLogger('info', {
 // Set up error logging path
 const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
 // Reward check interval (in milliseconds)
-const REWARD_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const REWARD_CHECK_INTERVAL = 60 * 1000; // 1 minutes
 
 // Load staker ABI from configuration
 const loadStakerAbi = async (): Promise<any> => {
@@ -111,17 +111,6 @@ async function logError(error: unknown, context: string) {
   }
 
   mainLogger.error(context, { error });
-}
-
-// Helper to check if deposits exist in the database
-async function waitForDeposits(database: DatabaseWrapper): Promise<boolean> {
-  try {
-    const deposits = await database.getAllDeposits();
-    return deposits.length > 0;
-  } catch (error) {
-    await logError(error, 'Error checking deposits');
-    return false;
-  }
 }
 
 // Keep track of running components for graceful shutdown
@@ -672,4 +661,15 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 main().catch(async (error) => {
   await logError(error, 'Unhandled error in main function');
   process.exit(1);
+});
+
+// Add global error handlers to prevent crashes
+process.on('uncaughtException', async (error) => {
+  await logError(error, 'UNCAUGHT EXCEPTION: Application will continue running');
+  // Don't exit the process - allow the application to continue running
+});
+
+process.on('unhandledRejection', async (reason) => {
+  await logError(reason, 'UNHANDLED PROMISE REJECTION: Application will continue running');
+  // Don't exit the process - allow the application to continue running
 });

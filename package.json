@@ -1,7 +1,7 @@
 {
   "name": "staker-bots",
   "version": "1.0.0",
-  "description": "Staker bot implementation",
+  "description": "Staker bots for executing distributions and profitability checks on staker contracts",
   "type": "module",
   "scripts": {
     "start": "COMPONENTS=all tsx src/index.ts",
