@@ -16,7 +16,7 @@ import {
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { IExecutor } from './interfaces/IExecutor';
 import { DatabaseWrapper } from '@/database';
-import { ExecutorError } from '@/configuration/errors';
+import { ExecutorError, TransactionValidationError } from '@/configuration/errors';
 
 /**
  * Supported executor types
@@ -46,7 +46,7 @@ export class ExecutorWrapper {
    * @param db - Optional database instance
    */
   constructor(
-    stakerContract: ethers.Contract,
+    lstContract: ethers.Contract,
     provider: ethers.Provider,
     type: ExecutorType = ExecutorType.WALLET,
     config: Partial<ExecutorConfig | RelayerExecutorConfig> = {},
@@ -56,10 +56,10 @@ export class ExecutorWrapper {
       throw new ExecutorError('Provider is required', {}, false);
     }
 
-    if (!stakerContract?.target || !stakerContract?.interface) {
+    if (!lstContract?.target || !lstContract?.interface) {
       throw new ExecutorError(
         'Invalid staker contract provided',
-        { contract: stakerContract },
+        { contract: lstContract },
         false,
       );
     }
@@ -79,8 +79,8 @@ export class ExecutorWrapper {
       };
 
       this.executor = new BaseExecutor({
-        contractAddress: stakerContract.target as string,
-        contractAbi: stakerContract.interface,
+        contractAddress: lstContract.target as string,
+        contractAbi: lstContract.interface,
         provider,
         config: fullConfig,
       });
@@ -91,7 +91,7 @@ export class ExecutorWrapper {
         ...(config as Partial<RelayerExecutorConfig>),
       };
 
-      this.executor = new RelayerExecutor(stakerContract, provider, fullConfig);
+      this.executor = new RelayerExecutor(lstContract, provider, fullConfig);
     } else {
       throw new ExecutorError(
         `Invalid executor type: ${type}. Must be '${ExecutorType.WALLET}' or '${ExecutorType.DEFENDER}'`,
@@ -190,9 +190,16 @@ export class ExecutorWrapper {
   async validateTransaction(
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
-  ): Promise<boolean> {
+  ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
     try {
-      return await this.executor.validateTransaction(depositIds, profitability);
+      const { isValid, error } = await this.executor.validateTransaction(depositIds, profitability);
+      if (!isValid) {
+        throw error;
+      }
+      return {
+        isValid: true,
+        error: null,
+      };
     } catch (error) {
       throw new ExecutorError(
         'Failed to validate transaction',

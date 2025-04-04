@@ -597,7 +597,7 @@ async function main() {
     // 2. Initialize executor if enabled (required for profitability engine)
     if (componentsToRun.includes('executor') || componentsToRun.includes('profitability')) {
       mainLogger.info('Initializing executor...');
-      runningComponents.executor = await initializeExecutor(database, executorLogger, stakerAbi);
+      runningComponents.executor = await initializeExecutor(database, executorLogger, govlstAbi);
     }
 
     // 3. Initialize profitability engine if enabled

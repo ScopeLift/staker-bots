@@ -149,7 +149,7 @@ export class TransactionValidationError extends ExecutorError {
 export class InsufficientBalanceError extends ExecutorError {
   constructor(currentBalance: bigint, requiredBalance: bigint) {
     super(
-      'Insufficient balance for transaction',
+      'Insufficient gas balance for transaction, top up your wallet',
       {
         currentBalance: currentBalance.toString(),
         requiredBalance: requiredBalance.toString(),

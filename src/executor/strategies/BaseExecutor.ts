@@ -207,7 +207,10 @@ export class BaseExecutor implements IExecutor {
       });
 
     // Validate the transaction
-    await this.validateTransaction(depositIds, profitability);
+    const { isValid, error } = await this.validateTransaction(depositIds, profitability);
+    if (!isValid) {
+      throw error;
+    }
 
     const tx: QueuedTransaction = {
       id: uuidv4(),
@@ -234,23 +237,34 @@ export class BaseExecutor implements IExecutor {
   async validateTransaction(
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
-  ): Promise<boolean> {
+  ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
     // Validate batch size
     if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE)
-      throw new TransactionValidationError(
-        `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
-        { depositIds: depositIds.map(String) },
-      );
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
+          { depositIds: depositIds.map(String) },
+        )
+      };
     if (depositIds.length < QUEUE_CONSTANTS.MIN_BATCH_SIZE)
-      throw new TransactionValidationError(
-        `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
-        { depositIds: depositIds.map(String) },
-      );
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
+          { depositIds: depositIds.map(String) },
+        )
+      };
 
     // Get current gas price and calculate gas cost
     const feeData = await this.provider.getFeeData();
     if (!feeData.gasPrice) {
-      throw new Error('Failed to get gas price from provider');
+      return {
+        isValid: false,
+        error: new TransactionValidationError('Failed to get gas price from provider', {
+          feeData: feeData
+        })
+      };
     }
     const gasBoostMultiplier = BigInt(100 + this.config.gasBoostPercentage);
     const boostedGasPrice = (feeData.gasPrice * gasBoostMultiplier) / 100n;
@@ -265,7 +279,12 @@ export class BaseExecutor implements IExecutor {
           payoutAmount: payoutAmount.toString()
         });
       } else {
-        throw new Error('Contract missing payoutAmount method');
+        return {
+          isValid: false,
+          error: new TransactionValidationError('Contract missing payoutAmount method', {
+            contract: this.govLstContract
+          })
+        };
       }
     } catch (error) {
       // Use the payout amount from profitability check as fallback
@@ -299,7 +318,10 @@ export class BaseExecutor implements IExecutor {
       );
     }
 
-    return true;
+    return {
+      isValid: true,
+      error: null,
+    };
   }
 
   /**
