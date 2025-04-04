@@ -72,7 +72,7 @@ async function main() {
   const logger = new ConsoleLogger('info');
 
   logger.info('Starting profitability-executor integration test...', {
-    executorType: CONFIG.executor.executorType || 'wallet'
+    executorType: CONFIG.executor.executorType || 'wallet',
   });
 
   // Initialize database
@@ -81,7 +81,7 @@ async function main() {
   });
   logger.info('Using database at', {
     path: process.cwd() + '/staker-monitor-db.json',
-    executorType: CONFIG.executor.executorType || 'wallet'
+    executorType: CONFIG.executor.executorType || 'wallet',
   });
 
   // Initialize provider

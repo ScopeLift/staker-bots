@@ -1,4 +1,4 @@
-import { GOVLST_CONSTANTS } from './constants'
+import { GOVLST_CONSTANTS } from './constants';
 
 // -------- Base Error Classes --------
 
@@ -11,8 +11,8 @@ export class BaseError extends Error {
     public readonly context: Record<string, unknown>,
     public readonly retryable: boolean = false,
   ) {
-    super(message)
-    this.name = this.constructor.name
+    super(message);
+    this.name = this.constructor.name;
   }
 }
 
@@ -24,8 +24,8 @@ export class MonitorError extends BaseError {
     context: Record<string, unknown>,
     retryable: boolean = false,
   ) {
-    super(message, context, retryable)
-    this.name = 'MonitorError'
+    super(message, context, retryable);
+    this.name = 'MonitorError';
   }
 }
 
@@ -39,8 +39,8 @@ export class EventProcessingError extends MonitorError {
       `Failed to process ${eventType} event: ${error.message}`,
       context,
       true, // Most event processing errors are retryable
-    )
-    this.name = 'EventProcessingError'
+    );
+    this.name = 'EventProcessingError';
   }
 }
 
@@ -54,8 +54,8 @@ export class DatabaseError extends MonitorError {
       `Database ${operation} failed: ${error.message}`,
       context,
       true, // Database errors are generally retryable
-    )
-    this.name = 'DatabaseError'
+    );
+    this.name = 'DatabaseError';
   }
 }
 
@@ -65,8 +65,8 @@ export class DepositNotFoundError extends MonitorError {
       'Deposit not found',
       { depositId },
       false, // Non-existent deposits are not retryable
-    )
-    this.name = 'DepositNotFoundError'
+    );
+    this.name = 'DepositNotFoundError';
   }
 }
 
@@ -78,8 +78,8 @@ export class ExecutorError extends BaseError {
     context: Record<string, unknown>,
     retryable: boolean = false,
   ) {
-    super(message, context, retryable)
-    this.name = 'ExecutorError'
+    super(message, context, retryable);
+    this.name = 'ExecutorError';
   }
 }
 
@@ -93,8 +93,8 @@ export class TransactionExecutionError extends ExecutorError {
       `Failed to execute transaction ${transactionId}: ${error.message}`,
       context,
       true, // Most transaction errors are retryable
-    )
-    this.name = 'TransactionExecutionError'
+    );
+    this.name = 'TransactionExecutionError';
   }
 }
 
@@ -104,8 +104,8 @@ export class GasEstimationError extends ExecutorError {
       `Gas estimation failed: ${error.message}`,
       context,
       true, // Gas estimation errors are generally retryable
-    )
-    this.name = 'GasEstimationError'
+    );
+    this.name = 'GasEstimationError';
   }
 }
 
@@ -115,8 +115,8 @@ export class ContractMethodError extends ExecutorError {
       `Contract method ${methodName} not found or invalid`,
       { methodName },
       false, // Contract method errors are not retryable
-    )
-    this.name = 'ContractMethodError'
+    );
+    this.name = 'ContractMethodError';
   }
 }
 
@@ -130,8 +130,8 @@ export class QueueOperationError extends ExecutorError {
       `Queue operation ${operation} failed: ${error.message}`,
       context,
       true, // Queue operation errors are generally retryable
-    )
-    this.name = 'QueueOperationError'
+    );
+    this.name = 'QueueOperationError';
   }
 }
 
@@ -141,8 +141,8 @@ export class TransactionValidationError extends ExecutorError {
       `Transaction validation failed: ${reason}`,
       context,
       false, // Validation errors are not retryable
-    )
-    this.name = 'TransactionValidationError'
+    );
+    this.name = 'TransactionValidationError';
   }
 }
 
@@ -155,8 +155,8 @@ export class InsufficientBalanceError extends ExecutorError {
         requiredBalance: requiredBalance.toString(),
       },
       true, // Balance errors are retryable once funds are added
-    )
-    this.name = 'InsufficientBalanceError'
+    );
+    this.name = 'InsufficientBalanceError';
   }
 }
 
@@ -166,24 +166,24 @@ export class TransactionReceiptError extends ExecutorError {
       `Failed to get valid transaction receipt for ${transactionHash}`,
       context,
       true, // Receipt errors might be temporary network issues
-    )
-    this.name = 'TransactionReceiptError'
+    );
+    this.name = 'TransactionReceiptError';
   }
 }
 
 // Utility functions for Executor errors
 export function isExecutorError(error: unknown): error is ExecutorError {
-  return error instanceof ExecutorError
+  return error instanceof ExecutorError;
 }
 
 export function createExecutorError(
   error: unknown,
   context: Record<string, unknown> = {},
 ): ExecutorError {
-  if (isExecutorError(error)) return error
+  if (isExecutorError(error)) return error;
 
-  const baseMessage = error instanceof Error ? error.message : String(error)
-  const baseError = error instanceof Error ? error : new Error(baseMessage)
+  const baseMessage = error instanceof Error ? error.message : String(error);
+  const baseError = error instanceof Error ? error : new Error(baseMessage);
 
   // Determine error type based on context and message
   if (context.transactionId) {
@@ -191,33 +191,33 @@ export function createExecutorError(
       context.transactionId as string,
       baseError,
       context,
-    )
+    );
   }
 
   if (baseMessage.includes('gas')) {
-    return new GasEstimationError(baseError, context)
+    return new GasEstimationError(baseError, context);
   }
 
   if (baseMessage.includes('method')) {
-    return new ContractMethodError((context.methodName as string) || 'unknown')
+    return new ContractMethodError((context.methodName as string) || 'unknown');
   }
 
   if (baseMessage.includes('balance')) {
     return new InsufficientBalanceError(
       BigInt((context.currentBalance as string) || '0'),
       BigInt((context.requiredBalance as string) || '0'),
-    )
+    );
   }
 
   if (baseMessage.includes('receipt')) {
     return new TransactionReceiptError(
       (context.transactionHash as string) || 'unknown',
       context,
-    )
+    );
   }
 
   // Default to base executor error
-  return new ExecutorError(baseMessage, context, false)
+  return new ExecutorError(baseMessage, context, false);
 }
 
 // -------- Profitability Errors --------
@@ -228,8 +228,8 @@ export class ProfitabilityError extends BaseError {
     context: Record<string, unknown>,
     retryable: boolean = false,
   ) {
-    super(message, context, retryable)
-    this.name = 'ProfitabilityError'
+    super(message, context, retryable);
+    this.name = 'ProfitabilityError';
   }
 }
 
@@ -239,8 +239,8 @@ export class ProfitabilityDepositNotFoundError extends ProfitabilityError {
       `Deposit not found: ${depositId}`,
       { depositId },
       false, // Non-existent deposits are not retryable
-    )
-    this.name = 'ProfitabilityDepositNotFoundError'
+    );
+    this.name = 'ProfitabilityDepositNotFoundError';
   }
 }
 
@@ -250,8 +250,8 @@ export class InvalidDepositDataError extends ProfitabilityError {
       'Invalid deposit data received',
       { deposit },
       false, // Invalid data is not retryable
-    )
-    this.name = 'InvalidDepositDataError'
+    );
+    this.name = 'InvalidDepositDataError';
   }
 }
 
@@ -261,8 +261,8 @@ export class ProfitabilityGasEstimationError extends ProfitabilityError {
       'Gas estimation failed for profitability calculation',
       { ...context, error: error.message },
       true, // Gas estimation errors are generally retryable
-    )
-    this.name = 'ProfitabilityGasEstimationError'
+    );
+    this.name = 'ProfitabilityGasEstimationError';
   }
 }
 
@@ -272,8 +272,8 @@ export class QueueProcessingError extends ProfitabilityError {
       'Queue processing error in profitability engine',
       { ...context, error: error.message },
       true, // Queue processing errors are generally retryable
-    )
-    this.name = 'QueueProcessingError'
+    );
+    this.name = 'QueueProcessingError';
   }
 }
 
@@ -285,8 +285,8 @@ export class GovLstError extends BaseError {
     context: Record<string, unknown>,
     retryable: boolean = false,
   ) {
-    super(message, context, retryable)
-    this.name = 'GovLstError'
+    super(message, context, retryable);
+    this.name = 'GovLstError';
   }
 }
 
@@ -296,19 +296,23 @@ export class RewardCalculationError extends GovLstError {
       `Failed to calculate rewards: ${error.message}`,
       context,
       true, // Most reward calculation errors are retryable
-    )
-    this.name = 'RewardCalculationError'
+    );
+    this.name = 'RewardCalculationError';
   }
 }
 
 export class ClaimExecutionError extends GovLstError {
-  constructor(depositId: string, error: Error, context: Record<string, unknown>) {
+  constructor(
+    depositId: string,
+    error: Error,
+    context: Record<string, unknown>,
+  ) {
     super(
       `Failed to execute claim for deposit ${depositId}: ${error.message}`,
       context,
       true, // Claim execution errors are generally retryable
-    )
-    this.name = 'ClaimExecutionError'
+    );
+    this.name = 'ClaimExecutionError';
   }
 }
 
@@ -318,8 +322,8 @@ export class BatchOptimizationError extends GovLstError {
       `Batch optimization failed: ${error.message}`,
       context,
       false, // Batch optimization errors are generally not retryable
-    )
-    this.name = 'BatchOptimizationError'
+    );
+    this.name = 'BatchOptimizationError';
   }
 }
 
@@ -342,7 +346,8 @@ export const ERROR_MESSAGES = {
   PROFITABILITY: {
     DEPOSIT_NOT_FOUND: (depositId: string) => `Deposit not found: ${depositId}`,
     INVALID_DEPOSIT_DATA: 'Invalid deposit data received',
-    GAS_ESTIMATION_FAILED: 'Gas estimation failed for profitability calculation',
+    GAS_ESTIMATION_FAILED:
+      'Gas estimation failed for profitability calculation',
     QUEUE_PROCESSING_ERROR: 'Queue processing error in profitability engine',
   },
   GOVLST: {
@@ -351,4 +356,4 @@ export const ERROR_MESSAGES = {
     BATCH_OPTIMIZATION_FAILED: 'Batch optimization failed',
     INSUFFICIENT_EARNING_POWER: `Earning power is below minimum threshold of ${GOVLST_CONSTANTS.MIN_QUALIFYING_EARNING_POWER_BIPS_CAP} bips`,
   },
-} as const
+} as const;

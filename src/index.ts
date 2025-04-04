@@ -34,7 +34,7 @@ const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
 const REWARD_CHECK_INTERVAL = 60 * 1000; // 1 minutes
 
 // Load staker ABI from configuration
-const loadStakerAbi = async (): Promise<any> => {
+const loadStakerAbi = async (): Promise<typeof stakerAbi> => {
   try {
     return stakerAbi;
   } catch (error) {
@@ -44,7 +44,9 @@ const loadStakerAbi = async (): Promise<any> => {
 };
 
 // Helper function to serialize objects with BigInt values
-function serializeBigInt<T>(value: T): any {
+function serializeBigInt<T>(
+  value: T,
+): string | Array<unknown> | Record<string, unknown> | T {
   if (typeof value === 'bigint') {
     return value.toString();
   }
@@ -54,10 +56,10 @@ function serializeBigInt<T>(value: T): any {
   }
 
   if (value && typeof value === 'object') {
-    const result: any = {};
+    const result: Record<string, unknown> = {};
     for (const key in value as object) {
       if (Object.prototype.hasOwnProperty.call(value, key)) {
-        const val = (value as any)[key];
+        const val = (value as Record<string, unknown>)[key];
         if (val !== undefined) {
           result[key] = serializeBigInt(val);
         }
@@ -70,7 +72,24 @@ function serializeBigInt<T>(value: T): any {
 }
 
 // Helper function to serialize profitability check objects
-function serializeProfitabilityCheck(check: GovLstProfitabilityCheck): any {
+function serializeProfitabilityCheck(check: GovLstProfitabilityCheck): {
+  is_profitable: boolean;
+  constraints: {
+    has_enough_shares: boolean;
+    meets_min_reward: boolean;
+    meets_min_profit: boolean;
+  };
+  estimates: {
+    expected_profit: string;
+    gas_estimate: string;
+    total_shares: string;
+    payout_amount: string;
+  };
+  deposit_details: Array<{
+    depositId: string;
+    rewards: string;
+  }>;
+} {
   return {
     is_profitable: check.is_profitable,
     constraints: {
@@ -79,14 +98,16 @@ function serializeProfitabilityCheck(check: GovLstProfitabilityCheck): any {
       meets_min_profit: check.constraints.meets_min_profit,
     },
     estimates: {
-      expected_profit: serializeBigInt(check.estimates.expected_profit),
-      gas_estimate: serializeBigInt(check.estimates.gas_estimate),
-      total_shares: serializeBigInt(check.estimates.total_shares),
-      payout_amount: serializeBigInt(check.estimates.payout_amount),
+      expected_profit: serializeBigInt(
+        check.estimates.expected_profit,
+      ).toString(),
+      gas_estimate: serializeBigInt(check.estimates.gas_estimate).toString(),
+      total_shares: serializeBigInt(check.estimates.total_shares).toString(),
+      payout_amount: serializeBigInt(check.estimates.payout_amount).toString(),
     },
     deposit_details: check.deposit_details.map((detail) => ({
-      depositId: serializeBigInt(detail.depositId),
-      rewards: serializeBigInt(detail.rewards),
+      depositId: serializeBigInt(detail.depositId).toString(),
+      rewards: serializeBigInt(detail.rewards).toString(),
     })),
   };
 }
@@ -94,7 +115,9 @@ function serializeProfitabilityCheck(check: GovLstProfitabilityCheck): any {
 // Create provider helper function
 function createProvider() {
   if (!CONFIG.monitor.rpcUrl) {
-    throw new Error('RPC URL is not configured. Please set RPC_URL environment variable.');
+    throw new Error(
+      'RPC URL is not configured. Please set RPC_URL environment variable.',
+    );
   }
   return new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
 }
@@ -158,9 +181,11 @@ async function shutdown(signal: string) {
 // Function to check for unclaimed rewards and process them
 async function checkAndProcessRewards(
   database: DatabaseWrapper,
-  stakerContract: ethers.Contract & { unclaimedReward(depositId: string): Promise<bigint> },
+  stakerContract: ethers.Contract & {
+    unclaimedReward(depositId: string): Promise<bigint>;
+  },
   executor: ExecutorWrapper,
-  logger: Logger
+  logger: Logger,
 ) {
   try {
     logger.info('Starting reward check cycle with components:', {
@@ -188,7 +213,9 @@ async function checkAndProcessRewards(
         if (!deposit.deposit_id) continue;
 
         // Get unclaimed rewards for this deposit
-        const unclaimedRewards = await stakerContract.unclaimedReward(deposit.deposit_id);
+        const unclaimedRewards = await stakerContract.unclaimedReward(
+          deposit.deposit_id,
+        );
 
         logger.info(`Unclaimed rewards for deposit ${deposit.deposit_id}:`, {
           depositId: deposit.deposit_id,
@@ -206,24 +233,29 @@ async function checkAndProcessRewards(
           });
         }
       } catch (error) {
-        logger.error(`Error checking rewards for deposit ${deposit.deposit_id}:`, { error });
+        logger.error(
+          `Error checking rewards for deposit ${deposit.deposit_id}:`,
+          { error },
+        );
         // Continue with other deposits
       }
     }
 
-    logger.info(`Found ${profitableDeposits.length} deposits with unclaimed rewards`);
+    logger.info(
+      `Found ${profitableDeposits.length} deposits with unclaimed rewards`,
+    );
 
     // Process profitable deposits if any found
     if (profitableDeposits.length > 0) {
       // Calculate total rewards and shares
       const totalRewards = depositDetails.reduce(
         (sum, detail) => sum + detail.rewards,
-        0n
+        0n,
       );
 
       const totalShares = profitableDeposits.reduce(
         (sum, deposit) => sum + BigInt(deposit.amount),
-        0n
+        0n,
       );
 
       // Get current gas price and estimate total gas cost
@@ -231,11 +263,12 @@ async function checkAndProcessRewards(
       const gasPrice = await provider.getFeeData();
       const gasEstimate = BigInt(300000); // Default gas estimate
       const gasBuffer = BigInt(CONFIG.govlst.gasPriceBuffer || 20); // 20% buffer by default
-      const totalGasCost = (gasEstimate * (gasPrice.gasPrice || 0n) * (100n + gasBuffer)) / 100n;
+      const totalGasCost =
+        (gasEstimate * (gasPrice.gasPrice || 0n) * (100n + gasBuffer)) / 100n;
 
       // Check if rewards exceed gas costs plus minimum profit margin
       const minProfitMargin = BigInt(CONFIG.govlst.minProfitMargin || 0n);
-      const isReallyProfitable = totalRewards > (totalGasCost + minProfitMargin);
+      const isReallyProfitable = totalRewards > totalGasCost + minProfitMargin;
 
       if (!isReallyProfitable) {
         logger.info('Skipping deposits - not profitable after gas costs:', {
@@ -267,21 +300,25 @@ async function checkAndProcessRewards(
         // First validate the transaction
         await executor.validateTransaction(
           profitableDeposits.map((d) => BigInt(d.deposit_id)),
-          profitabilityCheck
+          profitabilityCheck,
         );
 
         // If validation succeeds, create database entries
         // Update or create processing queue items
         for (const deposit of profitableDeposits) {
           // Check for existing queue item
-          const existingItem = await database.getProcessingQueueItem(deposit.deposit_id);
+          const existingItem = await database.getProcessingQueueItem(
+            deposit.deposit_id,
+          );
           if (existingItem) {
             // Update existing item
             await database.updateProcessingQueueItem(existingItem.id, {
               status: ProcessingQueueStatus.PENDING,
               delegatee: deposit.delegatee_address || '',
             });
-            logger.info(`Updated existing queue item for deposit ${deposit.deposit_id}`);
+            logger.info(
+              `Updated existing queue item for deposit ${deposit.deposit_id}`,
+            );
           } else {
             // Create new item
             await database.createProcessingQueueItem({
@@ -289,7 +326,9 @@ async function checkAndProcessRewards(
               status: ProcessingQueueStatus.PENDING,
               delegatee: deposit.delegatee_address || '',
             });
-            logger.info(`Created new queue item for deposit ${deposit.deposit_id}`);
+            logger.info(
+              `Created new queue item for deposit ${deposit.deposit_id}`,
+            );
           }
         }
 
@@ -313,7 +352,7 @@ async function checkAndProcessRewards(
             totalRewards: totalRewards.toString(),
             profitability: serializeProfitabilityCheck(profitabilityCheck),
             queueItemId: txQueueItem.id,
-          })
+          }),
         );
 
         logger.info('Transaction processing status:', {
@@ -322,7 +361,7 @@ async function checkAndProcessRewards(
           totalRewards: ethers.formatEther(totalRewards),
           gasEstimate: gasEstimate.toString(),
           executorStatus: await executor.getStatus(),
-          queueResult
+          queueResult,
         });
       } catch (error) {
         logger.error('Failed to validate/queue transaction:', { error });
@@ -334,14 +373,17 @@ async function checkAndProcessRewards(
   } catch (error) {
     logger.error('Error in reward check cycle:', {
       error,
-      message: 'Skipping current cycle and continuing to next one'
+      message: 'Skipping current cycle and continuing to next one',
     });
     // No need for cleanup since validation happens before database operations
   }
 }
 
 // Initialize and start the StakerMonitor
-async function initializeMonitor(database: DatabaseWrapper, logger: Logger): Promise<StakerMonitor> {
+async function initializeMonitor(
+  database: DatabaseWrapper,
+  logger: Logger,
+): Promise<StakerMonitor> {
   logger.info('Initializing staker monitor...');
 
   const provider = createProvider();
@@ -387,7 +429,6 @@ async function initializeMonitor(database: DatabaseWrapper, logger: Logger): Pro
 async function initializeExecutor(
   database: DatabaseWrapper,
   logger: Logger,
-  stakerAbi: any,
 ): Promise<ExecutorWrapper> {
   logger.info('Initializing transaction executor...');
 
@@ -395,12 +436,16 @@ async function initializeExecutor(
 
   // Validate staker address is configured
   if (!CONFIG.monitor.stakerAddress) {
-    throw new Error('Staker contract address is not configured. Please set STAKER_CONTRACT_ADDRESS environment variable.');
+    throw new Error(
+      'Staker contract address is not configured. Please set STAKER_CONTRACT_ADDRESS environment variable.',
+    );
   }
 
   // Validate LST address is configured
   if (!CONFIG.monitor.lstAddress) {
-    throw new Error('LST contract address is not configured. Please set LST_ADDRESS environment variable.');
+    throw new Error(
+      'LST contract address is not configured. Please set LST_ADDRESS environment variable.',
+    );
   }
 
   // Determine executor type from environment or configuration
@@ -408,14 +453,16 @@ async function initializeExecutor(
 
   // Validate executor type
   if (!['wallet', 'defender', 'relayer'].includes(executorType)) {
-    throw new Error(`Invalid executor type: ${executorType}. Must be 'wallet', 'defender', or 'relayer'`);
+    throw new Error(
+      `Invalid executor type: ${executorType}. Must be 'wallet', 'defender', or 'relayer'`,
+    );
   }
 
   // Create LST contract instance - important to use this for the executor
   const lstContract = new ethers.Contract(
     CONFIG.monitor.lstAddress,
     govlstAbi,
-    provider
+    provider,
   );
 
   logger.info('Creating executor with configuration:', {
@@ -423,36 +470,39 @@ async function initializeExecutor(
     lstAddress: CONFIG.monitor.lstAddress,
     tipReceiver: CONFIG.executor.tipReceiver,
     hasPrivateKey: !!CONFIG.executor.privateKey,
-    hasDefenderCredentials: !!CONFIG.defender.apiKey && !!CONFIG.defender.secretKey,
+    hasDefenderCredentials:
+      !!CONFIG.defender.apiKey && !!CONFIG.defender.secretKey,
   });
 
-  const executorConfig = executorType === 'defender' || executorType === 'relayer'
-    ? {
-        apiKey: CONFIG.defender.apiKey,
-        apiSecret: CONFIG.defender.secretKey,
-        address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
-        minBalance: CONFIG.defender.relayer.minBalance,
-        maxPendingTransactions: CONFIG.defender.relayer.maxPendingTransactions,
-        maxQueueSize: 100,
-        minConfirmations: CONFIG.monitor.confirmations,
-        maxRetries: CONFIG.monitor.maxRetries,
-        retryDelayMs: 5000,
-        transferOutThreshold: ethers.parseEther('0.5'),
-        gasBoostPercentage: 30,
-        concurrentTransactions: 3,
-        gasPolicy: CONFIG.defender.relayer.gasPolicy,
-      }
-    : {
-        wallet: {
-          privateKey: CONFIG.executor.privateKey,
-          minBalance: ethers.parseEther('0.01'),
-          maxPendingTransactions: 5,
-        },
-        defaultTipReceiver: CONFIG.executor.tipReceiver,
-      };
+  const executorConfig =
+    executorType === 'defender' || executorType === 'relayer'
+      ? {
+          apiKey: CONFIG.defender.apiKey,
+          apiSecret: CONFIG.defender.secretKey,
+          address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
+          minBalance: CONFIG.defender.relayer.minBalance,
+          maxPendingTransactions:
+            CONFIG.defender.relayer.maxPendingTransactions,
+          maxQueueSize: 100,
+          minConfirmations: CONFIG.monitor.confirmations,
+          maxRetries: CONFIG.monitor.maxRetries,
+          retryDelayMs: 5000,
+          transferOutThreshold: ethers.parseEther('0.5'),
+          gasBoostPercentage: 30,
+          concurrentTransactions: 3,
+          gasPolicy: CONFIG.defender.relayer.gasPolicy,
+        }
+      : {
+          wallet: {
+            privateKey: CONFIG.executor.privateKey,
+            minBalance: ethers.parseEther('0.01'),
+            maxPendingTransactions: 5,
+          },
+          defaultTipReceiver: CONFIG.executor.tipReceiver,
+        };
 
   const executor = new ExecutorWrapper(
-    lstContract, // Pass LST contract instead of Staker contract (important!)
+    lstContract,
     provider,
     executorType === 'defender' ? ExecutorType.DEFENDER : ExecutorType.WALLET,
     executorConfig,
@@ -485,7 +535,7 @@ async function initializeExecutor(
 async function initializeProfitabilityEngine(
   database: DatabaseWrapper,
   executor: IExecutor,
-  stakerAbi: any,
+  stakerAbi: ethers.InterfaceAbi,
   logger: Logger,
 ): Promise<GovLstProfitabilityEngineWrapper> {
   logger.info('Initializing profitability engine...');
@@ -495,12 +545,16 @@ async function initializeProfitabilityEngine(
   // Validate required addresses
   const govLstAddress = CONFIG.govlst.addresses?.[0];
   if (!govLstAddress) {
-    throw new Error('No GovLst contract address configured. Please set GOVLST_ADDRESSES environment variable.');
+    throw new Error(
+      'No GovLst contract address configured. Please set GOVLST_ADDRESSES environment variable.',
+    );
   }
 
   const stakerAddress = CONFIG.monitor.stakerAddress;
   if (!stakerAddress) {
-    throw new Error('No staker contract address configured. Please set STAKER_CONTRACT_ADDRESS environment variable.');
+    throw new Error(
+      'No staker contract address configured. Please set STAKER_CONTRACT_ADDRESS environment variable.',
+    );
   }
 
   // Create contract instances
@@ -580,7 +634,9 @@ async function main() {
     });
 
     // Parse components to run
-    const rawComponents = process.env.COMPONENTS?.split(',').map(c => c.trim().toLowerCase()) || ['all'];
+    const rawComponents = process.env.COMPONENTS?.split(',').map((c) =>
+      c.trim().toLowerCase(),
+    ) || ['all'];
     const componentsToRun = rawComponents.includes('all')
       ? ['monitor', 'executor', 'profitability']
       : rawComponents;
@@ -591,28 +647,40 @@ async function main() {
     // 1. First initialize monitor if enabled
     if (componentsToRun.includes('monitor')) {
       mainLogger.info('Initializing monitor...');
-      runningComponents.monitor = await initializeMonitor(database, monitorLogger);
+      runningComponents.monitor = await initializeMonitor(
+        database,
+        monitorLogger,
+      );
     }
 
     // 2. Initialize executor if enabled (required for profitability engine)
-    if (componentsToRun.includes('executor') || componentsToRun.includes('profitability')) {
+    if (
+      componentsToRun.includes('executor') ||
+      componentsToRun.includes('profitability')
+    ) {
       mainLogger.info('Initializing executor...');
-      runningComponents.executor = await initializeExecutor(database, executorLogger, govlstAbi);
+      runningComponents.executor = await initializeExecutor(
+        database,
+        executorLogger,
+      );
     }
 
     // 3. Initialize profitability engine if enabled
     if (componentsToRun.includes('profitability')) {
       mainLogger.info('Initializing profitability engine...');
       if (!runningComponents.executor) {
-        throw new Error('Executor must be initialized before profitability engine');
+        throw new Error(
+          'Executor must be initialized before profitability engine',
+        );
       }
 
-      runningComponents.profitabilityEngine = await initializeProfitabilityEngine(
-        database,
-        runningComponents.executor as IExecutor,
-        stakerAbi,
-        profitabilityLogger,
-      );
+      runningComponents.profitabilityEngine =
+        await initializeProfitabilityEngine(
+          database,
+          runningComponents.executor as IExecutor,
+          stakerAbi,
+          profitabilityLogger,
+        );
 
       // Create staker contract with unclaimedReward method for reward checking
       const stakerContract = new ethers.Contract(
@@ -624,17 +692,20 @@ async function main() {
       };
 
       // Set up periodic reward checking interval
-      mainLogger.info(`Setting up reward checking interval (${REWARD_CHECK_INTERVAL/1000/60} minutes)`);
+      mainLogger.info(
+        `Setting up reward checking interval (${REWARD_CHECK_INTERVAL / 1000 / 60} minutes)`,
+      );
 
       // Then set up the interval for future checks
       runningComponents.rewardCheckInterval = setInterval(
-        () => checkAndProcessRewards(
-          database,
-          stakerContract,
-          runningComponents.executor!,
-          profitabilityLogger,
-        ),
-        REWARD_CHECK_INTERVAL
+        () =>
+          checkAndProcessRewards(
+            database,
+            stakerContract,
+            runningComponents.executor!,
+            profitabilityLogger,
+          ),
+        REWARD_CHECK_INTERVAL,
       );
     }
 
@@ -665,11 +736,17 @@ main().catch(async (error) => {
 
 // Add global error handlers to prevent crashes
 process.on('uncaughtException', async (error) => {
-  await logError(error, 'UNCAUGHT EXCEPTION: Application will continue running');
+  await logError(
+    error,
+    'UNCAUGHT EXCEPTION: Application will continue running',
+  );
   // Don't exit the process - allow the application to continue running
 });
 
 process.on('unhandledRejection', async (reason) => {
-  await logError(reason, 'UNHANDLED PROMISE REJECTION: Application will continue running');
+  await logError(
+    reason,
+    'UNHANDLED PROMISE REJECTION: Application will continue running',
+  );
   // Don't exit the process - allow the application to continue running
 });

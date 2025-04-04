@@ -16,14 +16,17 @@ import {
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { IExecutor } from './interfaces/IExecutor';
 import { DatabaseWrapper } from '@/database';
-import { ExecutorError, TransactionValidationError } from '@/configuration/errors';
+import {
+  ExecutorError,
+  TransactionValidationError,
+} from '@/configuration/errors';
 
 /**
  * Supported executor types
  */
 export enum ExecutorType {
   WALLET = 'wallet',
-  DEFENDER = 'defender'
+  DEFENDER = 'defender',
 }
 
 /**
@@ -116,7 +119,9 @@ export class ExecutorWrapper {
     const checkpoint = await this.db?.getCheckpoint('executor');
     if (checkpoint) {
       this.lastProcessedBlock = checkpoint.last_block_number;
-      this.logger.info('Executor resuming from checkpoint', { lastProcessedBlock: this.lastProcessedBlock });
+      this.logger.info('Executor resuming from checkpoint', {
+        lastProcessedBlock: this.lastProcessedBlock,
+      });
     } else {
       // Initialize checkpoint if none exists
       const currentBlock = await this.provider.getBlockNumber();
@@ -192,7 +197,10 @@ export class ExecutorWrapper {
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
     try {
-      const { isValid, error } = await this.executor.validateTransaction(depositIds, profitability);
+      const { isValid, error } = await this.executor.validateTransaction(
+        depositIds,
+        profitability,
+      );
       if (!isValid) {
         throw error;
       }
@@ -251,8 +259,8 @@ export class ExecutorWrapper {
   ): Promise<QueuedTransaction | null> {
     if (!this.isRunning) {
       throw new ExecutorError('Executor is not running', {
-        depositIds: depositIds.map(id => id.toString()),
-        profitability
+        depositIds: depositIds.map((id) => id.toString()),
+        profitability,
       });
     }
     try {

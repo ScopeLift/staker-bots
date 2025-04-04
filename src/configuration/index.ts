@@ -1,20 +1,20 @@
-import { config } from 'dotenv'
-import { ethers } from 'ethers'
+import { config } from 'dotenv';
+import { ethers } from 'ethers';
 
 // Load environment variables
-config()
+config();
 
 // Required environment variables
 const REQUIRED_ENV_VARS = [
   'RPC_URL',
   'STAKER_CONTRACT_ADDRESS',
   'CHAIN_ID',
-] as const
+] as const;
 
 // Validate required environment variables
 for (const envVar of REQUIRED_ENV_VARS) {
   if (!process.env[envVar]) {
-    throw new Error(`Missing required environment variable: ${envVar}`)
+    throw new Error(`Missing required environment variable: ${envVar}`);
   }
 }
 
@@ -102,17 +102,17 @@ export const CONFIG = {
     gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer
     minEarningPower: BigInt(process.env.GOVLST_MIN_EARNING_POWER || 10000), // Minimum earning power threshold
   },
-} as const
+} as const;
 
 // Helper to create provider
 export function createProvider() {
   return new ethers.JsonRpcProvider(
     CONFIG.monitor.rpcUrl,
     CONFIG.monitor.chainId,
-  )
+  );
 }
 
 // Re-export everything from constants and abis
-export * from './constants'
-export * from './abis'
-export * from './errors'
+export * from './constants';
+export * from './abis';
+export * from './errors';

@@ -8,7 +8,10 @@ import {
 } from './types';
 import { Logger } from './logging';
 import { EVENT_TYPES } from './constants';
-import { EventProcessingError, DepositNotFoundError } from '@/configuration/errors';
+import {
+  EventProcessingError,
+  DepositNotFoundError,
+} from '@/configuration/errors';
 
 /**
  * Processes blockchain events related to staking operations.

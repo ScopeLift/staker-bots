@@ -21,7 +21,7 @@ import { ProcessingQueueStatus } from '@/database/interfaces/types';
 // Add component type constant
 const PROFITABILITY_COMPONENT = {
   TYPE: 'profitability-engine',
-  INITIAL_BLOCK_HASH: ethers.ZeroHash
+  INITIAL_BLOCK_HASH: ethers.ZeroHash,
 };
 
 interface DatabaseDeposit {
@@ -60,10 +60,13 @@ export class GovLstProfitabilityEngineWrapper
   private lastProcessedBlock = 0;
   private static readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private profitableTransactions: ProfitableTransaction[] = [];
-  private readonly profitabilityCache = new Map<string, {
-    check: GovLstProfitabilityCheck;
-    timestamp: number;
-  }>();
+  private readonly profitabilityCache = new Map<
+    string,
+    {
+      check: GovLstProfitabilityCheck;
+      timestamp: number;
+    }
+  >();
   private readonly provider: ethers.Provider;
 
   constructor(
@@ -104,22 +107,21 @@ export class GovLstProfitabilityEngineWrapper
 
   private serializeProfitabilityCheck(deposits: GovLstDeposit[]): string {
     return deposits
-      .map(d => `${d.deposit_id}-${d.delegatee_address}-${d.amount}`)
+      .map((d) => `${d.deposit_id}-${d.delegatee_address}-${d.amount}`)
       .sort()
       .join('|');
   }
-
-  private serializeBigInts(obj: any): any {
+  private serializeBigInts(obj: unknown): unknown {
     if (typeof obj === 'bigint') {
       return obj.toString();
     }
 
     if (Array.isArray(obj)) {
-      return obj.map(item => this.serializeBigInts(item));
+      return obj.map((item) => this.serializeBigInts(item));
     }
 
     if (obj !== null && typeof obj === 'object') {
-      const result: any = {};
+      const result: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(obj)) {
         result[key] = this.serializeBigInts(value);
       }
@@ -145,7 +147,9 @@ export class GovLstProfitabilityEngineWrapper
     const check = await this.engine.checkGroupProfitability(deposits);
 
     // Serialize BigInt values before caching
-    const serializedCheck = this.serializeBigInts(check);
+    const serializedCheck = this.serializeBigInts(
+      check,
+    ) as GovLstProfitabilityCheck;
 
     this.profitabilityCache.set(cacheKey, {
       check: serializedCheck,
@@ -167,10 +171,14 @@ export class GovLstProfitabilityEngineWrapper
     if (this.isRunning) return;
 
     // Load last checkpoint
-    const checkpoint = await this.db.getCheckpoint(PROFITABILITY_COMPONENT.TYPE);
+    const checkpoint = await this.db.getCheckpoint(
+      PROFITABILITY_COMPONENT.TYPE,
+    );
     if (checkpoint) {
       this.lastProcessedBlock = checkpoint.last_block_number;
-      this.logger.info('Resuming from checkpoint', { lastProcessedBlock: this.lastProcessedBlock });
+      this.logger.info('Resuming from checkpoint', {
+        lastProcessedBlock: this.lastProcessedBlock,
+      });
     } else {
       // Initialize checkpoint if none exists
       const currentBlock = await this.provider.getBlockNumber();
@@ -302,25 +310,26 @@ export class GovLstProfitabilityEngineWrapper
         totalGroups: analysis.deposit_groups.length,
         totalProfit: analysis.total_expected_profit.toString(),
         lastProcessedBlock: this.lastProcessedBlock,
-        depositCount: deposits.length
+        depositCount: deposits.length,
       });
 
       // Update processing queue items to completed
       for (const deposit of deposits) {
-        const processingItem = await this.db.getProcessingQueueItemByDepositId(deposit.deposit_id.toString());
+        const processingItem = await this.db.getProcessingQueueItemByDepositId(
+          deposit.deposit_id.toString(),
+        );
         if (processingItem) {
           await this.db.updateProcessingQueueItem(processingItem.id, {
             status: ProcessingQueueStatus.COMPLETED,
           });
         }
       }
-
     } catch (error) {
       // Log the specific error details
       this.logger.error('Queue processing error:', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
-        queueSize: this.processingQueue.size
+        queueSize: this.processingQueue.size,
       });
 
       // Re-add failed items back to the queue for retry
@@ -329,17 +338,18 @@ export class GovLstProfitabilityEngineWrapper
 
       for (const id of failedIds) {
         try {
-          const processingItem = await this.db.getProcessingQueueItemByDepositId(id);
+          const processingItem =
+            await this.db.getProcessingQueueItemByDepositId(id);
           if (processingItem) {
             await this.db.updateProcessingQueueItem(processingItem.id, {
               status: ProcessingQueueStatus.FAILED,
-              error: error instanceof Error ? error.message : String(error)
+              error: error instanceof Error ? error.message : String(error),
             });
           }
         } catch (dbError) {
           this.logger.error('Failed to update processing queue item:', {
             error: dbError instanceof Error ? dbError.message : String(dbError),
-            depositId: id
+            depositId: id,
           });
         }
       }

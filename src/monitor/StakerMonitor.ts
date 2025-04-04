@@ -22,7 +22,11 @@ import {
   PROCESSING_COMPONENT,
   EVENT_TYPES,
 } from './constants';
-import { EventProcessingError, DatabaseError, MonitorError } from '@/configuration/errors';
+import {
+  EventProcessingError,
+  DatabaseError,
+  MonitorError,
+} from '@/configuration/errors';
 import { stakerAbi } from '@/configuration/abis';
 
 /**
