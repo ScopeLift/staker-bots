@@ -2,244 +2,206 @@
 
 A service that monitors staking deposits, executes profitable earning power bump transactions, and claims GovLst rewards.
 
-## Setup
+## Table of Contents
 
-1. Install dependencies:
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Environment Setup](#environment-setup)
+- [Component Architecture](#component-architecture)
+- [Configuration Guide](#configuration-guide)
+- [Running the Service](#running-the-service)
+- [Monitoring and Maintenance](#monitoring-and-maintenance)
+- [Troubleshooting](#troubleshooting)
+
+## Prerequisites
+
+Before setting up the service, ensure you have:
+
+1. Node.js v18+ installed
+2. PNPM package manager installed (`npm install -g pnpm`)
+3. Access to an Ethereum RPC endpoint (e.g., Alchemy, Infura)
+4. A wallet with sufficient funds for gas fees
+5. (Optional) OpenZeppelin Defender account for production deployments
+
+## Installation
+
+1. Clone the repository:
+
+```bash
+git clone <repository-url>
+cd staker-bots
+```
+
+2. Install dependencies:
 
 ```bash
 pnpm install
 ```
 
-2. Configure environment variables:
-   Copy `.env.example` to `.env` and fill in the required values:
-
-- `RPC_URL`: Your Ethereum RPC URL (e.g. from Alchemy or Infura)
-- `STAKER_CONTRACT_ADDRESS`: The address of the Staker contract
-- `PRIVATE_KEY`: Your wallet's private key (without 0x prefix)
-- `GOVLST_ADDRESSES`: Comma-separated list of GovLst contract addresses
-
-## Configuration Guide
-
-The application uses a comprehensive configuration system defined in `config.ts` that loads from environment variables. Here's a detailed breakdown of each configuration section:
-
-### RPC Configuration
-
-```typescript
-{
-  rpcUrl: string; // Ethereum RPC endpoint
-  chainId: number; // Chain ID (1 for mainnet, 11155111 for sepolia)
-  networkName: string; // Network name (mainnet, sepolia, etc.)
-}
-```
-
-### Contract Configuration
-
-```typescript
-{
-  stakerAddress: string;         // Required: Staker contract address
-  lstAddress: string;           // Required: LST token contract address
-  obolTokenAddress?: string;    // Optional: OBOL token address
-  rewardNotifierAddress?: string; // Optional: Reward notifier address
-  defaultDelegatee?: string;    // Optional: Default delegatee address
-}
-```
-
-### Monitor Configuration
-
-```typescript
-{
-  startBlock: number; // Block to start monitoring from
-  logLevel: 'debug' | 'info' | 'warn' | 'error';
-  pollInterval: number; // Seconds between blockchain polls
-  maxBlockRange: number; // Maximum block range per query
-  maxRetries: number; // Maximum retry attempts
-  reorgDepth: number; // Reorg detection depth
-  confirmations: number; // Required block confirmations
-  healthCheckInterval: number; // Health check frequency in seconds
-}
-```
-
-### Database Configuration
-
-```typescript
-{
-  type: 'json' | 'supabase';   // Database type
-  supabase?: {
-    url: string;              // Supabase URL (required if using Supabase)
-    key: string;             // Supabase API key
-  }
-}
-```
-
-### Executor Configuration
-
-```typescript
-{
-  executorType: 'wallet' | 'defender' | 'relayer';
-  privateKey?: string;        // Required for wallet executor
-  tipReceiver?: string;       // Optional tip receiver address
-  minBalance: bigint;         // Minimum wallet balance
-  maxPendingTransactions: number;
-}
-```
-
-### Defender Configuration (for Defender executor)
-
-```typescript
-{
-  apiKey: string;            // OpenZeppelin Defender API key
-  secretKey: string;         // OpenZeppelin Defender secret key
-  address: string;           // Defender relayer address
-  relayer: {
-    minBalance: bigint;      // Minimum relayer balance
-    maxPendingTransactions: number;
-    gasPolicy: {
-      maxFeePerGas?: bigint;
-      maxPriorityFeePerGas?: bigint;
-    }
-  }
-}
-```
-
-### Price Feed Configuration
-
-```typescript
-{
-  coinmarketcap: {
-    apiKey: string; // CoinMarketCap API key
-    baseUrl: string; // API base URL
-    timeout: number; // Request timeout in ms
-    retries: number; // Number of retry attempts
-  }
-}
-```
-
-### GovLst Configuration
-
-```typescript
-{
-  addresses: string[];       // GovLst contract addresses
-  payoutAmount: bigint;     // Reward payout amount
-  minProfitMargin: bigint;  // Minimum profit required
-  maxBatchSize: number;     // Maximum batch size
-  claimInterval: number;    // Seconds between claim checks
-  gasPriceBuffer: number;   // Gas price buffer percentage
-  minEarningPower: bigint;  // Minimum earning power threshold
-}
-```
-
-### Component Selection
-
-The application supports running specific components through the `COMPONENTS` environment variable:
-
-- `monitor`: Blockchain event monitoring
-- `profitability`: Profitability calculations
-- `executor`: Transaction execution
-- `govlst`: GovLst reward claiming
-
-Example:
+3. Create environment configuration:
 
 ```bash
-COMPONENTS=monitor,profitability,executor,govlst
+cp .env.example .env
 ```
 
-## Production Configuration
+## Environment Setup
 
-The application includes production-optimized settings in `PRODUCTION_CONFIG`:
+The service requires careful configuration of environment variables. Here's a detailed guide for each section:
 
-### Profitability Settings
+### 1. Basic Network Configuration
 
-- Check interval: 5 minutes
-- Maximum batch size: 50
-- Minimum profit margin: 15%
-- Gas price buffer: 20%
-- Retry delay: 1 minute
-- Maximum retries: 3
+```env
+# Required: RPC endpoint URL
+RPC_URL=https://eth-mainnet.g.alchemy.com/v2/your-api-key
 
-### Monitor Settings
+# Required: Chain ID (1 for mainnet, 11155111 for sepolia)
+CHAIN_ID=1
 
-- Required confirmations: 12
-- Maximum block range: 5000
-- Poll interval: 13 seconds
-- Health check interval: 1 minute
-- Maximum reorg depth: 100
+# Required: Network name
+NETWORK_NAME=mainnet
 
-### Executor Settings
-
-- Queue poll interval: 60 seconds
-- Minimum executor balance: 0.1 ETH
-- Maximum pending transactions: 10
-- Gas limit buffer: 30%
-- Maximum batch size: 50
-
-### Database Settings
-
-- Batch timeout: 1 hour
-- Maximum queue size: 1000
-- Prune interval: 24 hours
-- Maximum archive age: 7 days
-
-### Circuit Breaker Settings
-
-- Maximum failed transactions: 3
-- Cooldown period: 30 minutes
-- Minimum success rate: 80%
-
-## Error Handling
-
-The service implements a comprehensive error handling system:
-
-### Component-Specific Error Classes
-
-Each component has dedicated error classes that provide:
-
-- Detailed error context
-- Retry status indicators
-- Type-safe error handling
-- Automatic error logging
-
-Example using the executor component:
-
-```typescript
-try {
-  await executor.queueTransaction(depositIds, profitability);
-} catch (error) {
-  if (error instanceof ExecutorError) {
-    console.error('Executor error:', {
-      message: error.message,
-      context: error.context,
-      isRetryable: error.isRetryable,
-    });
-
-    if (error.isRetryable) {
-      // Handle retryable errors
-    }
-  }
-}
+# Optional: Starting block number (defaults to latest if not set)
+START_BLOCK=0
 ```
 
-### Error Categories
+### 2. Contract Configuration
 
-- **Validation Errors**: Non-retryable errors from invalid inputs or states
-- **Network Errors**: Retryable errors from RPC or network issues
-- **Contract Errors**: Method-specific errors from contract interactions
-- **Resource Errors**: Balance or gas-related errors
-- **Queue Errors**: Transaction queue management errors
+```env
+# Required: Staker contract address
+STAKER_CONTRACT_ADDRESS=0x...
 
-### Error Logging
+# Required: LST token contract address
+LST_ADDRESS=0x...
 
-All errors are logged with:
+# Required: GovLst contract addresses (comma-separated)
+GOVLST_ADDRESSES=0x...,0x...
 
-- Error type and message
-- Full error context
-- Stack trace (when available)
-- Component-specific details
-- Retry status
+# Optional: Default delegatee address
+DEFAULT_DELEGATEE=0x...
 
-Logs are written to:
+# Optional: Tip receiver address
+TIP_RECEIVER=0x...
+```
 
-- `output.log`: General operation logs
-- `errors.log`: Detailed error logs with context
+### 3. Executor Configuration
+
+Choose ONE of these execution methods:
+
+#### A. Local Wallet Executor
+
+```env
+EXECUTOR_TYPE=wallet
+EXECUTOR_PRIVATE_KEY=your_private_key_without_0x
+```
+
+#### B. Defender Relayer
+
+```env
+EXECUTOR_TYPE=defender
+DEFENDER_API_KEY=your_defender_api_key
+DEFENDER_SECRET_KEY=your_defender_secret_key
+PUBLIC_ADDRESS_DEFENDER=0x...
+```
+
+### 4. Database Configuration
+
+Choose ONE storage option:
+
+#### A. JSON Storage (Default, recommended for testing)
+
+```env
+DATABASE_TYPE=json
+```
+
+#### B. Supabase (Recommended for production)
+
+```env
+DATABASE_TYPE=supabase
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+```
+
+### 5. Component Selection
+
+```env
+# Choose which components to run (all by default)
+COMPONENTS=monitor,profitability,executor
+```
+
+### 6. Performance Tuning
+
+```env
+# Polling and Intervals
+POLL_INTERVAL=15
+HEALTH_CHECK_INTERVAL=60
+GOVLST_CLAIM_INTERVAL=1800
+
+# Block Processing
+MAX_BLOCK_RANGE=2000
+CONFIRMATIONS=20
+REORG_DEPTH=64
+
+# Transaction Management
+GOVLST_MAX_BATCH_SIZE=5
+GOVLST_GAS_PRICE_BUFFER=30
+GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
+```
+
+## Component Architecture
+
+The service consists of four main components that can be run independently or together:
+
+### 1. Monitor Component
+
+- **Purpose**: Tracks on-chain events related to staking activities
+- **Key Features**:
+  - Polls blockchain for new events
+  - Processes stake deposits/withdrawals
+  - Maintains processing checkpoints
+  - Handles network reorgs
+- **Configuration Focus**:
+  - `POLL_INTERVAL`: How often to check for new blocks
+  - `MAX_BLOCK_RANGE`: Maximum blocks to process at once
+  - `CONFIRMATIONS`: Required block confirmations
+
+### 2. Profitability Engine
+
+- **Purpose**: Analyzes deposits for profitable actions
+- **Key Features**:
+  - Calculates potential rewards
+  - Estimates gas costs
+  - Determines profitability
+  - Queues profitable transactions
+- **Configuration Focus**:
+  - `GOVLST_MIN_PROFIT_MARGIN_PERCENT`: Minimum profit threshold
+  - `GOVLST_GAS_PRICE_BUFFER`: Gas price safety margin
+  - `PROFITABILITY_CHECK_INTERVAL`: Analysis frequency
+
+### 3. Executor Component
+
+- **Purpose**: Executes on-chain transactions
+- **Key Features**:
+  - Manages transaction queue
+  - Handles gas optimization
+  - Supports multiple execution strategies
+  - Implements retry logic
+- **Configuration Focus**:
+  - `EXECUTOR_TYPE`: Wallet or Defender
+  - `EXECUTOR_MIN_BALANCE`: Minimum balance threshold
+  - `EXECUTOR_MAX_PENDING_TXS`: Concurrent transaction limit
+
+### 4. GovLst Component
+
+- **Purpose**: Manages GovLst reward claiming
+- **Key Features**:
+  - Monitors unclaimed rewards
+  - Batches claim transactions
+  - Optimizes claim timing
+  - Tracks claim history
+- **Configuration Focus**:
+  - `GOVLST_ADDRESSES`: Contract addresses to monitor
+  - `GOVLST_CLAIM_INTERVAL`: Check frequency
+  - `GOVLST_MAX_BATCH_SIZE`: Maximum claims per transaction
 
 ## Running the Service
 
@@ -249,52 +211,353 @@ Logs are written to:
 pnpm run build
 ```
 
-2. Start the service:
+2. Start all components:
 
 ```bash
 pnpm run prod
 ```
 
-The service will:
-
-- Monitor deposits in the database
-- Analyze profitability of earning power bumps
-- Monitor and claim GovLst rewards
-- Execute profitable transactions automatically
-- Log all activities to the console
-
-To stop the service gracefully, press Ctrl+C.
-
-## Running Tests
-
-The project includes comprehensive tests for all components and their integrations.
-
-### Running All Tests
-
-To run all tests sequentially:
+Or run specific components:
 
 ```bash
-npm test
+# Set COMPONENTS in .env first
+COMPONENTS=monitor,profitability pnpm run prod
 ```
 
-### Running Individual Component Tests
+## Monitoring and Maintenance
+
+### Health Checks
+
+The service implements automatic health checks for each component:
+
+```typescript
+// Health check output format
+{
+  monitor: {
+    isRunning: boolean,
+    lastBlock: number,
+    processingLag: number
+  },
+  profitability: {
+    isRunning: boolean,
+    queueSize: number,
+    lastCheck: string
+  },
+  executor: {
+    isRunning: boolean,
+    pendingTx: number,
+    balance: string
+  }
+}
+```
+
+### Logging
+
+- All activities are logged to `output.log`
+- Errors are logged to `errors.log`
+- Log level can be configured via `LOG_LEVEL`
+
+### Database Maintenance
+
+For Supabase users:
+
+1. Regular pruning is automatic
+2. Manual cleanup can be triggered:
 
 ```bash
-npm run test:monitor       # Test monitor component
-npm run test:govlst        # Test GovLst claimer component
-npm run test:profitability # Test profitability engine
-npm run test:executor      # Test executor component
+pnpm run db:cleanup
 ```
 
-### Running Integration Tests
+## Troubleshooting
+
+### Common Issues
+
+1. **RPC Connection Issues**
 
 ```bash
-npm run test:monitor-govlst                # Test monitor + GovLst integration
-npm run test:monitor-govlst-profitability  # Test monitor + GovLst + profitability
-npm run test:full                          # Test full integration of all components
+# Check RPC connection
+curl -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' $RPC_URL
 ```
 
-All test results are logged to `output.log` and errors to `errors.log`.
+2. **Insufficient Balance**
+
+```bash
+# Check executor balance
+pnpm run check-balance
+```
+
+3. **Transaction Failures**
+
+- Check gas price settings
+- Verify contract allowances
+- Review profitability thresholds
+
+### Debug Mode
+
+Enable detailed logging:
+
+```env
+LOG_LEVEL=debug
+```
+
+### Support and Resources
+
+- Report issues on GitHub
+- Check logs in `errors.log`
+- Review transaction history in database
+
+## Configuration Guide
+
+### Detailed Configuration Examples
+
+#### 1. Development Environment (Local Testing)
+
+```env
+# Network
+RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
+CHAIN_ID=11155111
+NETWORK_NAME=sepolia
+
+# Contracts
+STAKER_CONTRACT_ADDRESS=0x8C97699cBEAB273e4b469E863721522c04349057
+LST_ADDRESS=0xDfdEB974D0A564d7C25610e568c1D309220236BB
+GOVLST_ADDRESSES=0x2D0020Fc5BAA1c2fe02058c2E1eefA38e0e58519,0x8C97699cBEAB273e4b469E863721522c04349057
+
+# Executor (Local Wallet)
+EXECUTOR_TYPE=wallet
+EXECUTOR_PRIVATE_KEY=your_private_key_here
+TIP_RECEIVER=0x...
+
+# Database
+DATABASE_TYPE=json
+
+# Components
+COMPONENTS=monitor,profitability,executor,govlst
+
+# Performance (Development Settings)
+POLL_INTERVAL=15
+MAX_BLOCK_RANGE=500
+CONFIRMATIONS=1
+GOVLST_MAX_BATCH_SIZE=2
+GOVLST_MIN_PROFIT_MARGIN_PERCENT=5
+LOG_LEVEL=debug
+```
+
+#### 2. Production Environment
+
+```env
+# Network
+RPC_URL=https://eth-mainnet.g.alchemy.com/v2/your-api-key
+CHAIN_ID=1
+NETWORK_NAME=mainnet
+
+# Contracts
+STAKER_CONTRACT_ADDRESS=0x...
+LST_ADDRESS=0x...
+GOVLST_ADDRESSES=0x...,0x...
+
+# Executor (Defender)
+EXECUTOR_TYPE=defender
+DEFENDER_API_KEY=your_api_key
+DEFENDER_SECRET_KEY=your_secret_key
+PUBLIC_ADDRESS_DEFENDER=0x...
+TIP_RECEIVER=0x...
+
+# Database
+DATABASE_TYPE=supabase
+SUPABASE_URL=your_url
+SUPABASE_KEY=your_key
+
+# Components
+COMPONENTS=monitor,profitability,executor,govlst
+
+# Performance (Production Settings)
+POLL_INTERVAL=13
+MAX_BLOCK_RANGE=2000
+CONFIRMATIONS=20
+REORG_DEPTH=64
+GOVLST_MAX_BATCH_SIZE=5
+GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
+GOVLST_GAS_PRICE_BUFFER=30
+LOG_LEVEL=info
+```
+
+### Advanced Configuration
+
+#### 1. Gas Optimization
+
+Fine-tune gas settings for better transaction efficiency:
+
+```env
+# Gas Price Management
+GOVLST_GAS_PRICE_BUFFER=30
+DEFENDER_MAX_FEE=100000000000
+DEFENDER_PRIORITY_FEE=2000000000
+
+# Batch Processing
+GOVLST_MAX_BATCH_SIZE=5
+EXECUTOR_MAX_PENDING_TXS=10
+```
+
+#### 2. Health Monitoring
+
+Configure health checks and monitoring:
+
+```env
+# Health Check Settings
+HEALTH_CHECK_INTERVAL=60
+CIRCUIT_BREAKER_MAX_FAILED_TXS=3
+CIRCUIT_BREAKER_COOLDOWN_PERIOD=1800
+CIRCUIT_BREAKER_MIN_SUCCESS_RATE=0.8
+
+# Monitoring Thresholds
+EXECUTOR_MIN_BALANCE=0.1
+DEFENDER_MIN_BALANCE=0.01
+```
+
+#### 3. Database Optimization
+
+Optimize database performance:
+
+```env
+# Database Performance
+DATABASE_BATCH_TIMEOUT=3600
+DATABASE_MAX_QUEUE_SIZE=1000
+DATABASE_PRUNE_INTERVAL=86400
+DATABASE_MAX_ARCHIVE_AGE=604800
+```
+
+### Component-Specific Configuration
+
+#### 1. Monitor Component
+
+```env
+# Block Processing
+START_BLOCK=0
+MAX_BLOCK_RANGE=2000
+CONFIRMATIONS=20
+REORG_DEPTH=64
+
+# Polling
+POLL_INTERVAL=13
+MONITOR_HEALTH_CHECK_INTERVAL=60
+```
+
+#### 2. Profitability Engine
+
+```env
+# Profitability Thresholds
+GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
+PROFITABILITY_CHECK_INTERVAL=300
+PROFITABILITY_MAX_BATCH_SIZE=50
+
+# Price Feed
+COINMARKETCAP_API_KEY=your_api_key
+```
+
+#### 3. Executor Component
+
+```env
+# Wallet Configuration
+EXECUTOR_MIN_BALANCE=0.1
+EXECUTOR_MAX_PENDING_TXS=10
+EXECUTOR_GAS_LIMIT_BUFFER=1.3
+
+# Transaction Management
+EXECUTOR_QUEUE_POLL_INTERVAL=60
+EXECUTOR_RETRY_DELAY=60
+EXECUTOR_MAX_RETRIES=3
+```
+
+#### 4. GovLst Component
+
+```env
+# Reward Claiming
+GOVLST_CLAIM_INTERVAL=1800
+GOVLST_MAX_BATCH_SIZE=5
+GOVLST_PAYOUT_AMOUNT=1000000000000000000
+
+# Profitability
+GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
+GOVLST_GAS_PRICE_BUFFER=30
+```
+
+### Security Considerations
+
+1. **Private Key Management**
+
+   - Never commit private keys to version control
+   - Use environment variables or secure key management
+   - Consider using OpenZeppelin Defender for production
+
+2. **RPC Security**
+
+   - Use authenticated RPC endpoints
+   - Implement rate limiting
+   - Monitor for suspicious activity
+
+3. **Database Security**
+   - Use strong Supabase API keys
+   - Implement proper access controls
+   - Regular backup procedures
+
+### Deployment Checklist
+
+1. **Pre-deployment**
+
+   - [ ] Verify all contract addresses
+   - [ ] Test RPC connection
+   - [ ] Check executor balance
+   - [ ] Validate database connection
+   - [ ] Set appropriate gas limits
+
+2. **Deployment**
+
+   - [ ] Set production environment variables
+   - [ ] Enable health monitoring
+   - [ ] Configure logging
+   - [ ] Set up alerts
+
+3. **Post-deployment**
+   - [ ] Monitor initial transactions
+   - [ ] Verify profitability calculations
+   - [ ] Check component health status
+   - [ ] Review logs for errors
+
+### Maintenance Procedures
+
+1. **Regular Checks**
+
+   ```bash
+   # Check component health
+   pnpm run health-check
+
+   # Verify database state
+   pnpm run db:status
+
+   # Monitor gas usage
+   pnpm run gas-report
+   ```
+
+2. **Database Maintenance**
+
+   ```bash
+   # Prune old data
+   pnpm run db:cleanup
+
+   # Backup database
+   pnpm run db:backup
+   ```
+
+3. **Performance Optimization**
+
+   ```bash
+   # Analyze transaction history
+   pnpm run analyze-tx
+
+   # Optimize gas settings
+   pnpm run optimize-gas
+   ```
 
 ## Configuration
 

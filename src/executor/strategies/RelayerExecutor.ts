@@ -29,6 +29,7 @@ import {
   TransactionValidationError,
   createExecutorError,
 } from '@/configuration/errors';
+import { CONFIG } from '@/configuration';
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -258,7 +259,11 @@ export class RelayerExecutor implements IExecutor {
     // TODO: WE NEED TO COMPARE GAS PRICE TO TOKEN PRICE TO GET A REAL ESTIMATE OF PROFITABILITY
     if (
       profitability.estimates.expected_profit <
-      payoutAmount + estimatedGasCost
+      payoutAmount +
+        estimatedGasCost +
+        ((payoutAmount + estimatedGasCost) *
+          BigInt(CONFIG.profitability.minProfitMargin)) /
+          100n
     ) {
       return {
         isValid: false,

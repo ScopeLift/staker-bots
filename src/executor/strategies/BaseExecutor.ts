@@ -26,6 +26,7 @@ import {
   createExecutorError,
 } from '@/configuration/errors';
 import { ProcessingQueueStatus } from '@/database/interfaces/types';
+import { CONFIG } from '@/configuration';
 
 interface GovLstContract extends BaseContract {
   estimateGas: {
@@ -162,36 +163,6 @@ export class BaseExecutor implements IExecutor {
     };
   }
 
-  /**
-   * Queues a transaction for execution
-   * @param depositIds - Array of deposit IDs to claim rewards for
-   * @param profitability - Profitability check results
-   * @param txData - Optional transaction data
-   * @returns Queued transaction object
-   */
-  private serializeProfitabilityCheck(
-    check: GovLstProfitabilityCheck,
-  ): GovLstProfitabilityCheck {
-    const serializeBigInt = (value: bigint | string): bigint => {
-      return typeof value === 'string' ? BigInt(value) : value;
-    };
-
-    return {
-      ...check,
-      estimates: {
-        expected_profit: serializeBigInt(check.estimates.expected_profit),
-        gas_estimate: serializeBigInt(check.estimates.gas_estimate),
-        total_shares: serializeBigInt(check.estimates.total_shares),
-        payout_amount: serializeBigInt(check.estimates.payout_amount),
-      },
-      deposit_details: check.deposit_details.map((detail) => ({
-        ...detail,
-        depositId: serializeBigInt(detail.depositId),
-        rewards: serializeBigInt(detail.rewards),
-      })),
-    };
-  }
-
   async queueTransaction(
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
@@ -321,7 +292,11 @@ export class BaseExecutor implements IExecutor {
     // Validate that expected reward is sufficient
     if (
       profitability.estimates.expected_profit <
-      payoutAmount + estimatedGasCost
+      payoutAmount +
+        estimatedGasCost +
+        ((payoutAmount + estimatedGasCost) *
+          BigInt(CONFIG.profitability.minProfitMargin)) /
+          100n
     ) {
       throw new TransactionValidationError(
         'Expected reward is less than payout amount plus gas cost',
