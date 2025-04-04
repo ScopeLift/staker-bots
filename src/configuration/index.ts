@@ -83,6 +83,9 @@ export const CONFIG = {
     },
   },
   profitability: {
+    rewardCheckInterval: parseInt(
+      process.env.GOVLST_REWARD_CHECK_INTERVAL || '60000',
+    ), // 1 minute
     minProfitMargin: process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || 10,
     gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,

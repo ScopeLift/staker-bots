@@ -612,24 +612,21 @@ export class RelayerExecutor implements IExecutor {
           allowance: allowance.toString(),
         });
 
-        // Determine approval amount - with fallback for contracts without payoutAmount/maxOverrideTip
+        // Determine approval amount - with fallback for contracts without payoutAmount
         let approvalAmount: bigint;
 
         try {
           // Try to verify LST contract methods and get values from contract
-          if (
-            typeof this.lstContract.payoutAmount === 'function' &&
-            typeof this.lstContract.maxOverrideTip === 'function'
-          ) {
-            // Get payout amount and max tip from contract
+          if (typeof this.lstContract.payoutAmount === 'function') {
+            // Get payout amount from contract
             const payoutAmount = await this.lstContract.payoutAmount();
-            const maxTip = await this.lstContract.maxOverrideTip();
-            approvalAmount = payoutAmount;
+            // Set approval amount to payout amount * 10 to allow for multiple claims
+            approvalAmount = payoutAmount * 10n;
 
             this.logger.info('Token approval requirements from contract', {
               payoutAmount: payoutAmount.toString(),
-              maxTip: maxTip.toString(),
-              totalApprovalNeeded: approvalAmount.toString(),
+              approvalAmount: approvalAmount.toString(),
+              approvalAmountInEth: ethers.formatEther(approvalAmount),
             });
           } else {
             throw new Error('Contract does not have required methods');
@@ -676,9 +673,9 @@ export class RelayerExecutor implements IExecutor {
             this.logger.info('Waiting for approval transaction...');
             let receipt;
             try {
-              receipt = await approveTx.wait(3);
+              receipt = await this.pollForReceipt(approveTx.hash, 3);
             } catch (confirmError: unknown) {
-              // If the standard wait fails, just log the error without attempting to poll
+              // If polling fails, just log the error
               this.logger.warn('Standard wait for approval failed', {
                 error:
                   confirmError instanceof Error
@@ -708,7 +705,7 @@ export class RelayerExecutor implements IExecutor {
 
             this.logger.info('Approval transaction confirmed', {
               hash: approveTx.hash,
-              blockNumber: receipt!.blockNumber,
+              blockNumber: receipt?.blockNumber,
             });
           } catch (waitError) {
             this.logger.error('Failed waiting for approval transaction', {
@@ -939,6 +936,9 @@ export class RelayerExecutor implements IExecutor {
             blockNumber: receipt.blockNumber,
             gasUsed: receipt.gasUsed.toString(),
           });
+
+          // Remove from in-memory queue after successful execution
+          this.queue.delete(tx.id);
         } else {
           // No receipt available, but we'll continue with optimistic status
           this.logger.info(
@@ -952,6 +952,9 @@ export class RelayerExecutor implements IExecutor {
           tx.status = TransactionStatus.CONFIRMED;
           tx.hash = response.hash;
           tx.executedAt = new Date();
+
+          // Remove from in-memory queue after successful execution
+          this.queue.delete(tx.id);
         }
       } catch (waitError) {
         this.logger.error('Failed waiting for transaction confirmation', {

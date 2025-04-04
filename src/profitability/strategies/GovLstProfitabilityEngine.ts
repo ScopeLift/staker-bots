@@ -23,8 +23,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private isRunning: boolean;
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
-  private readonly rewardTokenAddress: string;
   private gasPriceCache: { price: bigint; timestamp: number } | null = null;
+  public readonly config: ProfitabilityConfig;
 
   /**
    * Creates a new GovLstProfitabilityEngine instance
@@ -53,13 +53,13 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       unclaimedReward(depositId: bigint): Promise<bigint>;
     },
     private readonly provider: ethers.Provider,
-    private readonly config: ProfitabilityConfig,
+    config: ProfitabilityConfig,
   ) {
     this.logger = new ConsoleLogger('info');
     this.isRunning = false;
     this.lastGasPrice = BigInt(0);
     this.lastUpdateTimestamp = 0;
-    this.rewardTokenAddress = config.rewardTokenAddress;
+    this.config = config;
   }
 
   /**

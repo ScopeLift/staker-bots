@@ -1,6 +1,9 @@
 import { ethers } from 'ethers';
 import { Logger } from '@/monitor/logging';
-import { IGovLstProfitabilityEngine } from './interfaces/IProfitabilityEngine';
+import {
+  IGovLstProfitabilityEngine,
+  ProfitabilityEngineConfig,
+} from './interfaces/IProfitabilityEngine';
 import { GovLstProfitabilityEngine } from './strategies/GovLstProfitabilityEngine';
 import {
   GovLstDeposit,
@@ -8,6 +11,7 @@ import {
   GovLstBatchAnalysis,
   ProfitabilityConfig,
 } from './interfaces/types';
+import { CONFIG } from '@/configuration';
 import { QUEUE_CONSTANTS, EVENTS } from './constants';
 import {
   DepositNotFoundError,
@@ -16,7 +20,10 @@ import {
 } from '@/configuration/errors';
 import { IExecutor } from '@/executor/interfaces/IExecutor';
 import { DatabaseWrapper } from '@/database';
-import { ProcessingQueueStatus } from '@/database/interfaces/types';
+import {
+  ProcessingQueueStatus,
+  TransactionQueueStatus,
+} from '@/database/interfaces/types';
 
 // Add component type constant
 const PROFITABILITY_COMPONENT = {
@@ -56,9 +63,12 @@ export class GovLstProfitabilityEngineWrapper
   private readonly processingQueue: Set<string> = new Set();
   private readonly depositCache: Map<string, DepositCache> = new Map();
   private queueProcessorInterval: NodeJS.Timeout | null = null;
+  private rewardCheckInterval: NodeJS.Timeout | null = null;
   private isRunning = false;
   private lastProcessedBlock = 0;
   private static readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  private static readonly REWARD_CHECK_INTERVAL =
+    CONFIG.profitability.rewardCheckInterval;
   private profitableTransactions: ProfitableTransaction[] = [];
   private readonly profitabilityCache = new Map<
     string,
@@ -194,6 +204,7 @@ export class GovLstProfitabilityEngineWrapper
     await this.engine.start();
     this.isRunning = true;
     this.startQueueProcessor();
+    this.startRewardChecker();
     await this.requeuePendingItems();
     this.logger.info(EVENTS.ENGINE_STARTED);
   }
@@ -204,6 +215,7 @@ export class GovLstProfitabilityEngineWrapper
     await this.engine.stop();
     this.isRunning = false;
     this.stopQueueProcessor();
+    this.stopRewardChecker();
 
     // Log profitable transactions before stopping
     if (this.profitableTransactions.length > 0) {
@@ -252,6 +264,20 @@ export class GovLstProfitabilityEngineWrapper
     if (!this.queueProcessorInterval) return;
     clearInterval(this.queueProcessorInterval);
     this.queueProcessorInterval = null;
+  }
+
+  private startRewardChecker(): void {
+    if (this.rewardCheckInterval) return;
+    this.rewardCheckInterval = setInterval(
+      () => this.checkAndProcessRewards(),
+      GovLstProfitabilityEngineWrapper.REWARD_CHECK_INTERVAL,
+    );
+  }
+
+  private stopRewardChecker(): void {
+    if (!this.rewardCheckInterval) return;
+    clearInterval(this.rewardCheckInterval);
+    this.rewardCheckInterval = null;
   }
 
   private async requeuePendingItems(): Promise<void> {
@@ -410,5 +436,215 @@ export class GovLstProfitabilityEngineWrapper
       created_at: deposit.created_at || new Date().toISOString(),
       updated_at: deposit.updated_at || new Date().toISOString(),
     };
+  }
+
+  /**
+   * Checks for unclaimed rewards and processes profitable deposits
+   * This method runs periodically to identify and process deposits with unclaimed rewards
+   */
+  private async checkAndProcessRewards(): Promise<void> {
+    try {
+      this.logger.info('Starting reward check cycle with components:', {
+        isRunning: this.isRunning,
+        queueSize: this.processingQueue.size,
+      });
+
+      // Get all deposits from database
+      const deposits = await this.db.getAllDeposits();
+      this.logger.info(
+        `Found ${deposits.length} deposits to check for rewards`,
+      );
+
+      if (deposits.length === 0) {
+        this.logger.info('No deposits found to check');
+        return;
+      }
+
+      // Check each deposit for unclaimed rewards
+      const profitableDeposits: DatabaseDeposit[] = [];
+      const depositDetails: Array<{ depositId: bigint; rewards: bigint }> = [];
+
+      for (const deposit of deposits) {
+        try {
+          // Skip deposits with no ID
+          if (!deposit.deposit_id) continue;
+
+          // Get unclaimed rewards for this deposit
+          const unclaimedRewards = await (
+            this.engine as IGovLstProfitabilityEngine & {
+              stakerContract: {
+                unclaimedReward: (depositId: string) => Promise<bigint>;
+              };
+            }
+          ).stakerContract.unclaimedReward(deposit.deposit_id);
+
+          this.logger.info(
+            `Unclaimed rewards for deposit ${deposit.deposit_id}:`,
+            {
+              depositId: deposit.deposit_id,
+              rewards: unclaimedRewards.toString(),
+              owner: deposit.owner_address,
+              amount: deposit.amount,
+            },
+          );
+
+          // Add deposits with non-zero rewards to the profitable list
+          if (unclaimedRewards > 0n) {
+            profitableDeposits.push(deposit);
+            depositDetails.push({
+              depositId: BigInt(deposit.deposit_id),
+              rewards: unclaimedRewards,
+            });
+          }
+        } catch (error) {
+          this.logger.error(
+            `Error checking rewards for deposit ${deposit.deposit_id}:`,
+            { error },
+          );
+          // Continue with other deposits
+        }
+      }
+
+      this.logger.info(
+        `Found ${profitableDeposits.length} deposits with unclaimed rewards`,
+      );
+
+      // Process profitable deposits if any found
+      if (profitableDeposits.length > 0) {
+        // Calculate total rewards and shares
+        const totalRewards = depositDetails.reduce(
+          (sum, detail) => sum + detail.rewards,
+          0n,
+        );
+
+        const totalShares = profitableDeposits.reduce(
+          (sum, deposit) => sum + BigInt(deposit.amount),
+          0n,
+        );
+
+        // Get current gas price and estimate total gas cost
+        const gasPrice = await this.provider.getFeeData();
+        const gasEstimate = BigInt(300000);
+        const gasBuffer = BigInt(this.engine.config.gasPriceBuffer);
+        const totalGasCost =
+          (gasEstimate * (gasPrice.gasPrice || 0n) * (100n + gasBuffer)) / 100n;
+
+        const minProfitMargin = this.engine.config.minProfitMargin;
+        const isReallyProfitable =
+          totalRewards > totalGasCost + minProfitMargin;
+
+        if (!isReallyProfitable) {
+          this.logger.info(
+            'Skipping deposits - not profitable after gas costs:',
+            {
+              totalRewards: ethers.formatEther(totalRewards),
+              estimatedGasCost: ethers.formatEther(totalGasCost),
+              minProfitMargin: ethers.formatEther(minProfitMargin),
+            },
+          );
+          return;
+        }
+
+        // Create profitability check object for all deposits
+        const profitabilityCheck: GovLstProfitabilityCheck = {
+          is_profitable: true,
+          constraints: {
+            has_enough_shares: true,
+            meets_min_reward: true,
+            meets_min_profit: true,
+          },
+          estimates: {
+            expected_profit: totalRewards - totalGasCost,
+            gas_estimate: gasEstimate,
+            total_shares: totalShares,
+            payout_amount: totalRewards,
+          },
+          deposit_details: depositDetails,
+        };
+
+        try {
+          // First validate the transaction
+          await this.executor.validateTransaction(
+            profitableDeposits.map((d) => BigInt(d.deposit_id)),
+            profitabilityCheck,
+          );
+
+          // If validation succeeds, create database entries
+          // Update or create processing queue items
+          for (const deposit of profitableDeposits) {
+            // Check for existing queue item
+            const existingItem = await this.db.getProcessingQueueItem(
+              deposit.deposit_id,
+            );
+            if (existingItem) {
+              // Update existing item
+              await this.db.updateProcessingQueueItem(existingItem.id, {
+                status: ProcessingQueueStatus.PENDING,
+                delegatee: deposit.delegatee_address || '',
+              });
+              this.logger.info(
+                `Updated existing queue item for deposit ${deposit.deposit_id}`,
+              );
+            } else {
+              // Create new item
+              await this.db.createProcessingQueueItem({
+                deposit_id: deposit.deposit_id,
+                status: ProcessingQueueStatus.PENDING,
+                delegatee: deposit.delegatee_address || '',
+              });
+              this.logger.info(
+                `Created new queue item for deposit ${deposit.deposit_id}`,
+              );
+            }
+          }
+
+          // Create a single transaction queue item for all deposits
+          const txQueueItem = await this.db.createTransactionQueueItem({
+            deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
+            status: TransactionQueueStatus.PENDING,
+            tx_data: JSON.stringify({
+              depositIds: profitableDeposits.map((d) => d.deposit_id),
+              totalRewards: totalRewards.toString(),
+              profitability: this.serializeBigInts(profitabilityCheck),
+            }),
+          });
+
+          // Queue the transaction with the executor
+          const queueResult = await this.executor.queueTransaction(
+            profitableDeposits.map((d) => BigInt(d.deposit_id)),
+            profitabilityCheck,
+            JSON.stringify({
+              depositIds: profitableDeposits.map((d) => d.deposit_id),
+              totalRewards: totalRewards.toString(),
+              profitability: this.serializeBigInts(profitabilityCheck),
+              queueItemId: txQueueItem.id,
+            }),
+          );
+
+          this.logger.info('Transaction processing status:', {
+            queueItemId: txQueueItem.id,
+            depositIds: profitableDeposits.map((d) => d.deposit_id),
+            totalRewards: ethers.formatEther(totalRewards),
+            gasEstimate: gasEstimate.toString(),
+            executorStatus: await this.executor.getStatus(),
+            queueResult,
+          });
+        } catch (error) {
+          this.logger.error('Failed to validate/queue transaction:', { error });
+          throw error; // No cleanup needed since we validate before creating database entries
+        }
+      } else {
+        this.logger.info('No profitable deposits found in this check cycle');
+      }
+    } catch (error) {
+      this.logger.error('Error in reward check cycle:', {
+        error,
+        message: 'Skipping current cycle and continuing to next one',
+      });
+    }
+  }
+
+  get config(): ProfitabilityEngineConfig {
+    return this.engine.config;
   }
 }

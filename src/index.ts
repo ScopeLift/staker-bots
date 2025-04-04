@@ -10,8 +10,6 @@ import { GovLstProfitabilityEngineWrapper } from './profitability';
 import { ethers } from 'ethers';
 import { govlstAbi } from './configuration/abis';
 import fs from 'fs/promises';
-import { GovLstProfitabilityCheck } from './profitability';
-import { ProcessingQueueStatus, TransactionQueueStatus } from './database';
 import path from 'path';
 // Initialize component-specific loggers with colors for better visual distinction
 const mainLogger = new ConsoleLogger('info');
@@ -30,8 +28,6 @@ const executorLogger = new ConsoleLogger('info', {
 
 // Set up error logging path
 const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
-// Reward check interval (in milliseconds)
-const REWARD_CHECK_INTERVAL = 60 * 1000; // 1 minutes
 
 // Load staker ABI from configuration
 const loadStakerAbi = async (): Promise<typeof stakerAbi> => {
@@ -42,75 +38,6 @@ const loadStakerAbi = async (): Promise<typeof stakerAbi> => {
     throw error;
   }
 };
-
-// Helper function to serialize objects with BigInt values
-function serializeBigInt<T>(
-  value: T,
-): string | Array<unknown> | Record<string, unknown> | T {
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => serializeBigInt(item));
-  }
-
-  if (value && typeof value === 'object') {
-    const result: Record<string, unknown> = {};
-    for (const key in value as object) {
-      if (Object.prototype.hasOwnProperty.call(value, key)) {
-        const val = (value as Record<string, unknown>)[key];
-        if (val !== undefined) {
-          result[key] = serializeBigInt(val);
-        }
-      }
-    }
-    return result;
-  }
-
-  return value;
-}
-
-// Helper function to serialize profitability check objects
-function serializeProfitabilityCheck(check: GovLstProfitabilityCheck): {
-  is_profitable: boolean;
-  constraints: {
-    has_enough_shares: boolean;
-    meets_min_reward: boolean;
-    meets_min_profit: boolean;
-  };
-  estimates: {
-    expected_profit: string;
-    gas_estimate: string;
-    total_shares: string;
-    payout_amount: string;
-  };
-  deposit_details: Array<{
-    depositId: string;
-    rewards: string;
-  }>;
-} {
-  return {
-    is_profitable: check.is_profitable,
-    constraints: {
-      has_enough_shares: check.constraints.has_enough_shares,
-      meets_min_reward: check.constraints.meets_min_reward,
-      meets_min_profit: check.constraints.meets_min_profit,
-    },
-    estimates: {
-      expected_profit: serializeBigInt(
-        check.estimates.expected_profit,
-      ).toString(),
-      gas_estimate: serializeBigInt(check.estimates.gas_estimate).toString(),
-      total_shares: serializeBigInt(check.estimates.total_shares).toString(),
-      payout_amount: serializeBigInt(check.estimates.payout_amount).toString(),
-    },
-    deposit_details: check.deposit_details.map((detail) => ({
-      depositId: serializeBigInt(detail.depositId).toString(),
-      rewards: serializeBigInt(detail.rewards).toString(),
-    })),
-  };
-}
 
 // Create provider helper function
 function createProvider() {
@@ -141,19 +68,12 @@ const runningComponents: {
   monitor?: StakerMonitor;
   profitabilityEngine?: GovLstProfitabilityEngineWrapper;
   executor?: ExecutorWrapper;
-  rewardCheckInterval?: NodeJS.Timeout;
 } = {};
 
 // Graceful shutdown handler
 async function shutdown(signal: string) {
   mainLogger.info(`Received ${signal}. Starting graceful shutdown...`);
   try {
-    // Clear any running intervals
-    if (runningComponents.rewardCheckInterval) {
-      clearInterval(runningComponents.rewardCheckInterval);
-      runningComponents.rewardCheckInterval = undefined;
-    }
-
     // Stop components in reverse order of initialization
     if (runningComponents.profitabilityEngine) {
       mainLogger.info('Stopping profitability engine...');
@@ -175,207 +95,6 @@ async function shutdown(signal: string) {
   } catch (error) {
     await logError(error, 'Error during shutdown');
     process.exit(1);
-  }
-}
-
-// Function to check for unclaimed rewards and process them
-async function checkAndProcessRewards(
-  database: DatabaseWrapper,
-  stakerContract: ethers.Contract & {
-    unclaimedReward(depositId: string): Promise<bigint>;
-  },
-  executor: ExecutorWrapper,
-  logger: Logger,
-) {
-  try {
-    logger.info('Starting reward check cycle with components:', {
-      monitor: !!runningComponents.monitor?.getMonitorStatus(),
-      profitability: !!runningComponents.profitabilityEngine?.getStatus(),
-      executor: !!runningComponents.executor?.getStatus(),
-    });
-
-    // Get all deposits from database
-    const deposits = await database.getAllDeposits();
-    logger.info(`Found ${deposits.length} deposits to check for rewards`);
-
-    if (deposits.length === 0) {
-      logger.info('No deposits found to check');
-      return;
-    }
-
-    // Check each deposit for unclaimed rewards
-    const profitableDeposits = [];
-    const depositDetails = [];
-
-    for (const deposit of deposits) {
-      try {
-        // Skip deposits with no ID
-        if (!deposit.deposit_id) continue;
-
-        // Get unclaimed rewards for this deposit
-        const unclaimedRewards = await stakerContract.unclaimedReward(
-          deposit.deposit_id,
-        );
-
-        logger.info(`Unclaimed rewards for deposit ${deposit.deposit_id}:`, {
-          depositId: deposit.deposit_id,
-          rewards: unclaimedRewards.toString(),
-          owner: deposit.owner_address,
-          amount: deposit.amount,
-        });
-
-        // Add deposits with non-zero rewards to the profitable list
-        if (unclaimedRewards > 0n) {
-          profitableDeposits.push(deposit);
-          depositDetails.push({
-            depositId: BigInt(deposit.deposit_id),
-            rewards: unclaimedRewards,
-          });
-        }
-      } catch (error) {
-        logger.error(
-          `Error checking rewards for deposit ${deposit.deposit_id}:`,
-          { error },
-        );
-        // Continue with other deposits
-      }
-    }
-
-    logger.info(
-      `Found ${profitableDeposits.length} deposits with unclaimed rewards`,
-    );
-
-    // Process profitable deposits if any found
-    if (profitableDeposits.length > 0) {
-      // Calculate total rewards and shares
-      const totalRewards = depositDetails.reduce(
-        (sum, detail) => sum + detail.rewards,
-        0n,
-      );
-
-      const totalShares = profitableDeposits.reduce(
-        (sum, deposit) => sum + BigInt(deposit.amount),
-        0n,
-      );
-
-      // Get current gas price and estimate total gas cost
-      const provider = createProvider();
-      const gasPrice = await provider.getFeeData();
-      const gasEstimate = BigInt(300000); // Default gas estimate
-      const gasBuffer = BigInt(CONFIG.govlst.gasPriceBuffer || 20); // 20% buffer by default
-      const totalGasCost =
-        (gasEstimate * (gasPrice.gasPrice || 0n) * (100n + gasBuffer)) / 100n;
-
-      // Check if rewards exceed gas costs plus minimum profit margin
-      const minProfitMargin = BigInt(CONFIG.govlst.minProfitMargin || 0n);
-      const isReallyProfitable = totalRewards > totalGasCost + minProfitMargin;
-
-      if (!isReallyProfitable) {
-        logger.info('Skipping deposits - not profitable after gas costs:', {
-          totalRewards: ethers.formatEther(totalRewards),
-          estimatedGasCost: ethers.formatEther(totalGasCost),
-          minProfitMargin: ethers.formatEther(minProfitMargin),
-        });
-        return;
-      }
-
-      // Create profitability check object for all deposits
-      const profitabilityCheck: GovLstProfitabilityCheck = {
-        is_profitable: true,
-        constraints: {
-          has_enough_shares: true,
-          meets_min_reward: true,
-          meets_min_profit: true,
-        },
-        estimates: {
-          expected_profit: totalRewards - totalGasCost,
-          gas_estimate: gasEstimate,
-          total_shares: totalShares,
-          payout_amount: totalRewards,
-        },
-        deposit_details: depositDetails,
-      };
-
-      try {
-        // First validate the transaction
-        await executor.validateTransaction(
-          profitableDeposits.map((d) => BigInt(d.deposit_id)),
-          profitabilityCheck,
-        );
-
-        // If validation succeeds, create database entries
-        // Update or create processing queue items
-        for (const deposit of profitableDeposits) {
-          // Check for existing queue item
-          const existingItem = await database.getProcessingQueueItem(
-            deposit.deposit_id,
-          );
-          if (existingItem) {
-            // Update existing item
-            await database.updateProcessingQueueItem(existingItem.id, {
-              status: ProcessingQueueStatus.PENDING,
-              delegatee: deposit.delegatee_address || '',
-            });
-            logger.info(
-              `Updated existing queue item for deposit ${deposit.deposit_id}`,
-            );
-          } else {
-            // Create new item
-            await database.createProcessingQueueItem({
-              deposit_id: deposit.deposit_id,
-              status: ProcessingQueueStatus.PENDING,
-              delegatee: deposit.delegatee_address || '',
-            });
-            logger.info(
-              `Created new queue item for deposit ${deposit.deposit_id}`,
-            );
-          }
-        }
-
-        // Create a single transaction queue item for all deposits
-        const txQueueItem = await database.createTransactionQueueItem({
-          deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
-          status: TransactionQueueStatus.PENDING,
-          tx_data: JSON.stringify({
-            depositIds: profitableDeposits.map((d) => d.deposit_id),
-            totalRewards: totalRewards.toString(),
-            profitability: serializeProfitabilityCheck(profitabilityCheck),
-          }),
-        });
-
-        // Queue the transaction with the executor
-        const queueResult = await executor.queueTransaction(
-          profitableDeposits.map((d) => BigInt(d.deposit_id)),
-          profitabilityCheck,
-          JSON.stringify({
-            depositIds: profitableDeposits.map((d) => d.deposit_id),
-            totalRewards: totalRewards.toString(),
-            profitability: serializeProfitabilityCheck(profitabilityCheck),
-            queueItemId: txQueueItem.id,
-          }),
-        );
-
-        logger.info('Transaction processing status:', {
-          queueItemId: txQueueItem.id,
-          depositIds: profitableDeposits.map((d) => d.deposit_id),
-          totalRewards: ethers.formatEther(totalRewards),
-          gasEstimate: gasEstimate.toString(),
-          executorStatus: await executor.getStatus(),
-          queueResult,
-        });
-      } catch (error) {
-        logger.error('Failed to validate/queue transaction:', { error });
-        throw error; // No cleanup needed since we validate before creating database entries
-      }
-    } else {
-      logger.info('No profitable deposits found in this check cycle');
-    }
-  } catch (error) {
-    logger.error('Error in reward check cycle:', {
-      error,
-      message: 'Skipping current cycle and continuing to next one',
-    });
-    // No need for cleanup since validation happens before database operations
   }
 }
 
@@ -681,32 +400,6 @@ async function main() {
           stakerAbi,
           profitabilityLogger,
         );
-
-      // Create staker contract with unclaimedReward method for reward checking
-      const stakerContract = new ethers.Contract(
-        CONFIG.monitor.stakerAddress,
-        stakerAbi,
-        createProvider(),
-      ) as ethers.Contract & {
-        unclaimedReward(depositId: string): Promise<bigint>;
-      };
-
-      // Set up periodic reward checking interval
-      mainLogger.info(
-        `Setting up reward checking interval (${REWARD_CHECK_INTERVAL / 1000 / 60} minutes)`,
-      );
-
-      // Then set up the interval for future checks
-      runningComponents.rewardCheckInterval = setInterval(
-        () =>
-          checkAndProcessRewards(
-            database,
-            stakerContract,
-            runningComponents.executor!,
-            profitabilityLogger,
-          ),
-        REWARD_CHECK_INTERVAL,
-      );
     }
 
     // Log final status
@@ -714,7 +407,6 @@ async function main() {
       monitor: !!runningComponents.monitor,
       executor: !!runningComponents.executor,
       profitabilityEngine: !!runningComponents.profitabilityEngine,
-      rewardCheckInterval: !!runningComponents.rewardCheckInterval,
     });
 
     mainLogger.info('Application is now running. Press Ctrl+C to stop.');
