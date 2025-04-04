@@ -1,7 +1,6 @@
 import { ethers } from 'ethers';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { IGovLstProfitabilityEngine } from '../interfaces/IProfitabilityEngine';
-import { IPriceFeed } from '@/shared/price-feeds/interfaces';
 import {
   GovLstDeposit,
   GovLstProfitabilityCheck,
@@ -10,7 +9,10 @@ import {
   ProfitabilityConfig,
 } from '../interfaces/types';
 import { GAS_CONSTANTS, CONTRACT_CONSTANTS, EVENTS } from '../constants';
-import { GasEstimationError, QueueProcessingError } from '../errors';
+import {
+  GasEstimationError,
+  QueueProcessingError,
+} from '@/configuration/errors';
 
 /**
  * GovLstProfitabilityEngine - Analyzes and determines profitability of GovLst deposits
@@ -21,8 +23,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private isRunning: boolean;
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
-  private readonly rewardTokenAddress: string;
   private gasPriceCache: { price: bigint; timestamp: number } | null = null;
+  public readonly config: ProfitabilityConfig;
 
   /**
    * Creates a new GovLstProfitabilityEngine instance
@@ -51,14 +53,13 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       unclaimedReward(depositId: bigint): Promise<bigint>;
     },
     private readonly provider: ethers.Provider,
-    private readonly config: ProfitabilityConfig,
-    private readonly priceFeed: IPriceFeed,
+    config: ProfitabilityConfig,
   ) {
     this.logger = new ConsoleLogger('info');
     this.isRunning = false;
     this.lastGasPrice = BigInt(0);
     this.lastUpdateTimestamp = 0;
-    this.rewardTokenAddress = config.rewardTokenAddress;
+    this.config = config;
   }
 
   /**
@@ -392,19 +393,66 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     let currentGroup: GovLstDeposit[] = [];
     let currentTotalShares = BigInt(0);
 
+    this.logger.info('Starting profitable group creation:', {
+      totalDeposits: deposits.length,
+      payoutAmount: payoutAmount.toString(),
+    });
+
     try {
       for (const deposit of deposits) {
+        // Get current shares for this deposit
         const shares = await this.stakerContract.balanceOf(
           deposit.owner_address,
         );
-        if (shares <= BigInt(0)) continue;
 
+        this.logger.info('Checking deposit shares:', {
+          depositId: deposit.deposit_id,
+          owner: deposit.owner_address,
+          shares: shares.toString(),
+        });
+
+        // Skip deposits with no shares (could be withdrawn or never staked)
+        if (shares <= BigInt(0)) {
+          this.logger.info('Skipping deposit with no shares:', {
+            depositId: deposit.deposit_id,
+            owner: deposit.owner_address,
+          });
+          continue;
+        }
+
+        // Add deposit to current group
         currentGroup.push({ ...deposit, shares_of: shares });
         currentTotalShares += shares;
 
-        if (currentTotalShares > payoutAmount) {
+        this.logger.info('Added deposit to current group:', {
+          depositId: deposit.deposit_id,
+          groupSize: currentGroup.length,
+          currentTotalShares: currentTotalShares.toString(),
+          payoutThreshold: payoutAmount.toString(),
+        });
+
+        // Check if current group exceeds payout amount or max batch size
+        const isOverPayout = currentTotalShares > payoutAmount;
+        const isMaxBatchSize = currentGroup.length >= this.config.maxBatchSize;
+
+        if (isOverPayout || isMaxBatchSize) {
+          this.logger.info('Group threshold reached:', {
+            reason: isOverPayout ? 'payout exceeded' : 'max batch size',
+            groupSize: currentGroup.length,
+            totalShares: currentTotalShares.toString(),
+          });
+
+          // Check profitability of current group
           const profitability =
             await this.checkGroupProfitability(currentGroup);
+
+          this.logger.info('Group profitability check:', {
+            isProfitable: profitability.is_profitable,
+            expectedProfit: profitability.estimates.expected_profit.toString(),
+            gasEstimate: profitability.estimates.gas_estimate.toString(),
+            depositCount: currentGroup.length,
+          });
+
           if (profitability.is_profitable) {
             groups.push({
               deposit_ids: currentGroup.map((d) => d.deposit_id),
@@ -413,14 +461,60 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
               expected_profit: profitability.estimates.expected_profit,
               gas_estimate: profitability.estimates.gas_estimate,
             });
+
+            this.logger.info('Added profitable group:', {
+              groupIndex: groups.length - 1,
+              depositIds: currentGroup.map((d) => d.deposit_id),
+              expectedProfit:
+                profitability.estimates.expected_profit.toString(),
+            });
           }
+
+          // Reset for next group
           currentGroup = [];
           currentTotalShares = BigInt(0);
         }
       }
 
+      // Check final group if not empty
+      if (currentGroup.length > 0) {
+        this.logger.info('Checking final group:', {
+          size: currentGroup.length,
+          totalShares: currentTotalShares.toString(),
+        });
+
+        const profitability = await this.checkGroupProfitability(currentGroup);
+        if (profitability.is_profitable) {
+          groups.push({
+            deposit_ids: currentGroup.map((d) => d.deposit_id),
+            total_shares: profitability.estimates.total_shares,
+            total_payout: profitability.estimates.payout_amount,
+            expected_profit: profitability.estimates.expected_profit,
+            gas_estimate: profitability.estimates.gas_estimate,
+          });
+
+          this.logger.info('Added final profitable group:', {
+            groupIndex: groups.length - 1,
+            depositIds: currentGroup.map((d) => d.deposit_id),
+            expectedProfit: profitability.estimates.expected_profit.toString(),
+          });
+        }
+      }
+
+      this.logger.info('Profitable group creation complete:', {
+        totalGroups: groups.length,
+        totalDepositsProcessed: deposits.length,
+        groupSizes: groups.map((g) => g.deposit_ids.length),
+      });
+
       return groups;
     } catch (error) {
+      this.logger.error('Error creating profitable groups:', {
+        error: error instanceof Error ? error.message : String(error),
+        depositCount: deposits.length,
+        currentGroupSize: currentGroup.length,
+      });
+
       throw new QueueProcessingError(error as Error, {
         depositCount: deposits.length,
         currentGroupSize: currentGroup.length,

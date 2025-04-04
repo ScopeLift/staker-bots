@@ -3,11 +3,10 @@ import { DatabaseWrapper } from '@/database';
 import { ConsoleLogger } from '@/monitor/logging';
 import { GovLstProfitabilityEngineWrapper } from '@/profitability';
 import { ExecutorWrapper, ExecutorType } from '@/executor';
-import { CONFIG } from '@/config';
-import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
+import { CONFIG } from '@/configuration';
 import { IExecutor } from '@/executor/interfaces/IExecutor';
-import { govlst } from '@/constants';
-import stakerAbi from '../abis/staker.json';
+import { govlstAbi, stakerAbi } from '@/configuration/abis';
+
 import {
   TransactionQueueStatus,
   ProcessingQueueStatus,
@@ -71,8 +70,9 @@ function serializeProfitabilityCheck(
 
 async function main() {
   const logger = new ConsoleLogger('info');
+
   logger.info('Starting profitability-executor integration test...', {
-    executorType: process.env.EXECUTOR_TYPE,
+    executorType: CONFIG.executor.executorType || 'wallet',
   });
 
   // Initialize database
@@ -81,7 +81,7 @@ async function main() {
   });
   logger.info('Using database at', {
     path: process.cwd() + '/staker-monitor-db.json',
-    executorType: process.env.EXECUTOR_TYPE,
+    executorType: CONFIG.executor.executorType || 'wallet',
   });
 
   // Initialize provider
@@ -110,7 +110,7 @@ async function main() {
   logger.info('Initializing GovLst contract...');
   const govLstContract = new ethers.Contract(
     '0x6fbb31f8c459d773a8d0f67c8c055a70d943c1f1',
-    govlst,
+    govlstAbi,
     provider,
   );
   logger.info('GovLst contract initialized at:', {
@@ -121,14 +121,14 @@ async function main() {
   logger.info('Initializing LST contract...');
   const lstContract = new ethers.Contract(
     CONFIG.monitor.lstAddress,
-    govlst,
+    govlstAbi,
     provider,
   );
   logger.info('LST contract initialized at:', { address: lstContract.target });
 
   // Initialize executor
   logger.info('Initializing executor...');
-  const executorType = process.env.EXECUTOR_TYPE?.toLowerCase() || 'wallet';
+  const executorType = CONFIG.executor.executorType || 'wallet';
 
   if (!['wallet', 'relayer'].includes(executorType)) {
     throw new Error(
@@ -168,21 +168,13 @@ async function main() {
   const executor = new ExecutorWrapper(
     lstContract, // Pass LST contract instead of Staker contract
     provider,
-    executorType === 'relayer' ? ExecutorType.RELAYER : ExecutorType.WALLET,
+    executorType === 'relayer' ? ExecutorType.DEFENDER : ExecutorType.WALLET,
     executorConfig,
     database,
   );
 
   // Initialize profitability engine
   logger.info('Initializing profitability engine...');
-  const priceFeed = new CoinMarketCapFeed(
-    {
-      apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
-      baseUrl: CONFIG.priceFeed.coinmarketcap.baseUrl,
-      timeout: CONFIG.priceFeed.coinmarketcap.timeout,
-    },
-    new ConsoleLogger('info'),
-  );
 
   const profitabilityEngine = new GovLstProfitabilityEngineWrapper(
     database,
@@ -190,7 +182,6 @@ async function main() {
     stakerContract,
     provider,
     new ConsoleLogger('info'),
-    priceFeed,
     {
       minProfitMargin: CONFIG.govlst.minProfitMargin,
       gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,
@@ -260,6 +251,8 @@ async function main() {
       depositor_address: deposit.depositor_address,
       delegatee_address: deposit.delegatee_address,
       amount: deposit.amount.toString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
   }
 

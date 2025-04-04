@@ -4,23 +4,25 @@ import { ethers } from 'ethers';
 // Load environment variables
 config();
 
-// Validate required environment variables
-const requiredEnvVars = [
+// Required environment variables
+const REQUIRED_ENV_VARS = [
   'RPC_URL',
   'STAKER_CONTRACT_ADDRESS',
   'CHAIN_ID',
 ] as const;
 
-for (const envVar of requiredEnvVars) {
+// Validate required environment variables
+for (const envVar of REQUIRED_ENV_VARS) {
   if (!process.env[envVar]) {
     throw new Error(`Missing required environment variable: ${envVar}`);
   }
 }
 
+// Configuration object
 export const CONFIG = {
   supabase: {
-    url: process.env.SUPABASE_URL,
-    key: process.env.SUPABASE_KEY,
+    url: process.env.SUPABASE_URL || '',
+    key: process.env.SUPABASE_KEY || '',
   },
   monitor: {
     defaultDelegatee: process.env.DEFAULT_DELEGATEE || '',
@@ -46,6 +48,7 @@ export const CONFIG = {
     healthCheckInterval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '60'),
   },
   executor: {
+    executorType: process.env.EXECUTOR_TYPE || '',
     privateKey: process.env.PRIVATE_KEY || '',
     tipReceiver:
       process.env.TIP_RECEIVER || '0x0000000000000000000000000000000000000000',
@@ -53,10 +56,11 @@ export const CONFIG = {
   defender: {
     apiKey: process.env.DEFENDER_API_KEY || '',
     secretKey: process.env.DEFENDER_SECRET_KEY || '',
+    address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
     relayer: {
       minBalance: process.env.DEFENDER_MIN_BALANCE
         ? BigInt(process.env.DEFENDER_MIN_BALANCE)
-        : ethers.parseEther('0.1'),
+        : ethers.parseEther('0.01'),
       maxPendingTransactions: parseInt(
         process.env.DEFENDER_MAX_PENDING_TXS || '5',
       ),
@@ -79,8 +83,11 @@ export const CONFIG = {
     },
   },
   profitability: {
-    minProfitMargin: ethers.parseEther('0'), // 0 tokens minimum profit
-    gasPriceBuffer: 50, // 50% buffer for gas price volatility (increased from 20%)
+    rewardCheckInterval: parseInt(
+      process.env.GOVLST_REWARD_CHECK_INTERVAL || '60000',
+    ), // 1 minute
+    minProfitMargin: process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || 10,
+    gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,
     defaultTipReceiver: process.env.TIP_RECEIVER_ADDRESS || '',
     rewardTokenAddress: process.env.REWARD_TOKEN_ADDRESS || '',
@@ -91,22 +98,24 @@ export const CONFIG = {
   },
   govlst: {
     addresses: process.env.GOVLST_ADDRESSES?.split(',') || [],
-    payoutAmount: process.env.GOVLST_PAYOUT_AMOUNT
-      ? BigInt(process.env.GOVLST_PAYOUT_AMOUNT)
-      : BigInt(0),
-    minProfitMargin: process.env.GOVLST_MIN_PROFIT_MARGIN
-      ? BigInt(process.env.GOVLST_MIN_PROFIT_MARGIN)
-      : BigInt(0),
-    maxBatchSize: parseInt(process.env.GOVLST_MAX_BATCH_SIZE || '10'),
-    claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600'),
-    gasPriceBuffer: parseInt(process.env.GOVLST_GAS_PRICE_BUFFER || '20'),
+    payoutAmount: BigInt(process.env.GOVLST_PAYOUT_AMOUNT || 0),
+    minProfitMargin: BigInt(process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || 10), // 10% minimum profit margin
+    maxBatchSize: parseInt(process.env.GOVLST_MAX_BATCH_SIZE || '10', 10),
+    claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600', 10), // 1 hour default
+    gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer
+    minEarningPower: BigInt(process.env.GOVLST_MIN_EARNING_POWER || 10000), // Minimum earning power threshold
   },
 } as const;
 
 // Helper to create provider
-export const createProvider = () => {
+export function createProvider() {
   return new ethers.JsonRpcProvider(
     CONFIG.monitor.rpcUrl,
     CONFIG.monitor.chainId,
   );
-};
+}
+
+// Re-export everything from constants and abis
+export * from './constants';
+export * from './abis';
+export * from './errors';

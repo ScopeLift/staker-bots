@@ -4,7 +4,13 @@ import {
   GovLstBatchAnalysis,
 } from './types';
 
+export interface ProfitabilityEngineConfig {
+  gasPriceBuffer: number;
+  minProfitMargin: bigint;
+}
+
 export interface IGovLstProfitabilityEngine {
+  config: ProfitabilityEngineConfig;
   /**
    * Start the profitability engine
    */

@@ -1,11 +1,13 @@
 export interface Deposit {
+  id?: string;
   deposit_id: string;
   owner_address: string;
-  depositor_address: string;
+  depositor_address?: string;
   amount: string;
-  delegatee_address: string | null;
-  created_at?: string;
-  updated_at?: string;
+  delegatee_address: string;
+  earning_power?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export type ProcessingCheckpoint = {

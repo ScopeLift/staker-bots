@@ -1,5 +1,6 @@
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { QueuedTransaction, QueueStats, TransactionReceipt } from './types';
+import { TransactionValidationError } from '@/configuration/errors';
 import { DatabaseWrapper } from '@/database';
 
 export interface IExecutor {
@@ -27,6 +28,15 @@ export interface IExecutor {
     pendingTransactions: number;
     queueSize: number;
   }>;
+
+  /**
+   * Validate a transaction before queueing
+   * Returns true if the transaction is valid, throws TransactionValidationError otherwise
+   */
+  validateTransaction(
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
+  ): Promise<{ isValid: boolean; error: TransactionValidationError | null }>;
 
   /**
    * Queue a transaction for execution

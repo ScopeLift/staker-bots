@@ -17,13 +17,17 @@ import {
   DepositUpdatedEvent,
 } from './types';
 import {
-  STAKER_ABI,
   DEFAULT_DELEGATEE_ADDRESS,
   MONITOR_EVENTS,
   PROCESSING_COMPONENT,
   EVENT_TYPES,
 } from './constants';
-import { EventProcessingError, DatabaseError, MonitorError } from './errors';
+import {
+  EventProcessingError,
+  DatabaseError,
+  MonitorError,
+} from '@/configuration/errors';
+import { stakerAbi } from '@/configuration/abis';
 
 /**
  * StakerMonitor is responsible for monitoring staking events on the blockchain.
@@ -49,12 +53,12 @@ export class StakerMonitor extends EventEmitter {
     this.provider = config.provider;
     this.contract = new ethers.Contract(
       config.stakerAddress,
-      STAKER_ABI,
+      stakerAbi,
       config.provider,
     );
     this.lstContract = new ethers.Contract(
       config.lstAddress,
-      STAKER_ABI,
+      stakerAbi,
       config.provider,
     );
     this.logger = new ConsoleLogger(config.logLevel);

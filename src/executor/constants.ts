@@ -14,13 +14,13 @@ export const EXECUTOR_EVENTS = {
 export const GAS_CONSTANTS = {
   GAS_PRICE_UPDATE_INTERVAL: 60_000, // 1 minute
   GAS_PRICE_BUFFER_PERCENT: 30, // 30%
-  MIN_GAS_LIMIT: 150_000n, // Minimum gas limit for reward claims
-  MAX_GAS_LIMIT: 500_000n, // Maximum gas limit for reward claims
-  GAS_LIMIT_BUFFER: 1.2, // 20% buffer on gas estimates
+  MIN_GAS_LIMIT: 300_000n, // Minimum gas limit for reward claims
+  MAX_GAS_LIMIT: 1_000_000n, // Maximum gas limit for reward claims
+  GAS_LIMIT_BUFFER: 1.5, // 50% buffer on gas estimates
 } as const;
 
 export const QUEUE_CONSTANTS = {
-  QUEUE_PROCESSOR_INTERVAL: 15000, // 15 seconds
+  QUEUE_PROCESSOR_INTERVAL: 60000, // 1 minute
   MAX_BATCH_SIZE: 100, // Maximum number of deposits per batch
   MIN_BATCH_SIZE: 1, // Minimum number of deposits per batch
   MAX_RETRIES: 3, // Maximum number of retries per transaction

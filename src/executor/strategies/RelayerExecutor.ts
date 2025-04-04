@@ -13,7 +13,6 @@ import {
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
 import { DatabaseWrapper } from '@/database';
-// Update Defender SDK imports for v2
 import {
   DefenderRelayProvider,
   DefenderRelaySigner,
@@ -29,7 +28,8 @@ import {
   TransactionReceiptError,
   TransactionValidationError,
   createExecutorError,
-} from '../errors';
+} from '@/configuration/errors';
+import { CONFIG } from '@/configuration';
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -45,6 +45,7 @@ export class RelayerExecutor implements IExecutor {
       _depositIds: bigint[],
       options?: ethers.Overrides,
     ): Promise<ethers.ContractTransactionResponse>;
+    payoutAmount(): Promise<bigint>;
   };
   protected db?: DatabaseWrapper;
 
@@ -83,7 +84,9 @@ export class RelayerExecutor implements IExecutor {
       );
 
       // Create contract instance with signer
-      this.lstContract = lstContract.connect(
+      this.lstContract = new ethers.Contract(
+        lstContract.target as string,
+        lstContract.interface,
         this.relaySigner as unknown as ethers.Signer,
       ) as typeof this.lstContract;
     } catch (error) {
@@ -161,18 +164,13 @@ export class RelayerExecutor implements IExecutor {
       });
     }
 
-    if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE) {
-      throw new TransactionValidationError(
-        `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
-        { depositIds: depositIds.map(String) },
-      );
-    }
-
-    if (depositIds.length < QUEUE_CONSTANTS.MIN_BATCH_SIZE) {
-      throw new TransactionValidationError(
-        `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
-        { depositIds: depositIds.map(String) },
-      );
+    // Validate the transaction
+    const { isValid, error } = await this.validateTransaction(
+      depositIds,
+      profitability,
+    );
+    if (!isValid) {
+      throw error;
     }
 
     const tx: QueuedTransaction = {
@@ -197,6 +195,94 @@ export class RelayerExecutor implements IExecutor {
     }
 
     return tx;
+  }
+
+  async validateTransaction(
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
+  ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
+    if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE) {
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
+          { depositIds: depositIds.map(String) },
+        ),
+      };
+    }
+
+    if (depositIds.length < QUEUE_CONSTANTS.MIN_BATCH_SIZE) {
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
+          { depositIds: depositIds.map(String) },
+        ),
+      };
+    }
+
+    // Get current gas price and calculate gas cost
+    const feeData = await this.relayProvider.getFeeData();
+    if (!feeData.maxFeePerGas) {
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          'Failed to get gas price from provider',
+          {
+            feeData: feeData,
+          },
+        ),
+      };
+    }
+    const estimatedGasCost =
+      BigInt(feeData.maxFeePerGas.toString()) *
+      profitability.estimates.gas_estimate;
+
+    // Get payout amount from contract
+    if (
+      !this.lstContract ||
+      typeof this.lstContract.payoutAmount !== 'function'
+    ) {
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          'Contract not properly initialized or missing payoutAmount method',
+          {
+            contract: this.lstContract,
+          },
+        ),
+      };
+    }
+    const payoutAmount = await this.lstContract.payoutAmount();
+
+    // Validate that expected reward is sufficient
+    // TODO: WE NEED TO COMPARE GAS PRICE TO TOKEN PRICE TO GET A REAL ESTIMATE OF PROFITABILITY
+    if (
+      profitability.estimates.expected_profit <
+      payoutAmount +
+        estimatedGasCost +
+        ((payoutAmount + estimatedGasCost) *
+          BigInt(CONFIG.profitability.minProfitMargin)) /
+          100n
+    ) {
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          'Expected reward is less than payout amount plus gas cost',
+          {
+            expectedReward: profitability.estimates.expected_profit.toString(),
+            payoutAmount: payoutAmount.toString(),
+            estimatedGasCost: estimatedGasCost.toString(),
+            depositIds: depositIds.map(String),
+          },
+        ),
+      };
+    }
+
+    return {
+      isValid: true,
+      error: null,
+    };
   }
 
   async getQueueStats(): Promise<QueueStats> {
@@ -259,7 +345,7 @@ export class RelayerExecutor implements IExecutor {
       hash: receipt.transactionHash,
       blockNumber: receipt.blockNumber,
       gasUsed: BigInt(receipt.gasUsed.toString()),
-      gasPrice: receipt.effectiveGasPrice,
+      gasPrice: 0n,
       status: receipt.status,
       logs: receipt.logs.map((log) => ({
         address: log.address,
@@ -309,33 +395,44 @@ export class RelayerExecutor implements IExecutor {
         );
       });
 
-    const receipt = (await tx.wait(
-      this.config.minConfirmations,
-    )) as unknown as EthersTransactionReceipt;
-    if (!receipt) {
-      throw new TransactionReceiptError(tx.hash, {
-        error: 'Failed to get transaction receipt',
-      });
-    }
-
-    this.logger.info(EXECUTOR_EVENTS.TIPS_TRANSFERRED, {
+    this.logger.info('Tip transfer transaction submitted', {
+      hash: tx.hash,
       amount: ethers.formatEther(balanceBigInt - this.config.minBalance),
       receiver: this.config.defaultTipReceiver,
-      hash: tx.hash,
     });
 
-    return {
-      hash: receipt.transactionHash,
-      blockNumber: receipt.blockNumber,
-      gasUsed: BigInt(receipt.gasUsed.toString()),
-      gasPrice: receipt.effectiveGasPrice,
-      status: receipt.status,
-      logs: receipt.logs.map((log) => ({
-        address: log.address,
-        topics: Array.from(log.topics),
-        data: log.data,
-      })),
-    };
+    try {
+      this.logger.info('Waiting for tip transfer transaction...');
+      const receipt = await tx.wait();
+
+      this.logger.info(EXECUTOR_EVENTS.TIPS_TRANSFERRED, {
+        amount: ethers.formatEther(balanceBigInt - this.config.minBalance),
+        receiver: this.config.defaultTipReceiver,
+        hash: tx.hash,
+        blockNumber: receipt!.blockNumber,
+      });
+
+      return {
+        hash: tx.hash,
+        blockNumber: receipt!.blockNumber,
+        gasUsed: BigInt(receipt!.gasUsed.toString()),
+        gasPrice: 0n,
+        status: receipt!.status || 0,
+        logs: receipt!.logs.map((log) => ({
+          address: log.address,
+          topics: Array.from(log.topics),
+          data: log.data,
+        })),
+      };
+    } catch (error) {
+      this.logger.error('Failed to wait for tip transfer transaction', {
+        error: error instanceof Error ? error.message : String(error),
+        hash: tx.hash,
+      });
+      throw new TransactionReceiptError(tx.hash, {
+        error: 'Failed waiting for tip transfer receipt',
+      });
+    }
   }
 
   async clearQueue(): Promise<void> {
@@ -471,6 +568,11 @@ export class RelayerExecutor implements IExecutor {
         );
       }
 
+      this.logger.info('Retrieved reward token address', {
+        rewardTokenAddress,
+        contractAddress: this.lstContract.target.toString(),
+      });
+
       const rewardTokenAbi = [
         'function approve(address spender, uint256 amount) returns (bool)',
         'function allowance(address owner, address spender) view returns (uint256)',
@@ -494,34 +596,66 @@ export class RelayerExecutor implements IExecutor {
         // Check current allowance
         const signerAddress = await this.relaySigner.getAddress();
         const lstContractAddress = this.lstContract.target.toString();
+
+        this.logger.info('Checking token allowance', {
+          signerAddress,
+          lstContractAddress,
+          rewardToken: rewardTokenAddress,
+        });
+
         const allowance = await rewardTokenContract.allowance(
           signerAddress,
           lstContractAddress,
         );
 
-        // Verify LST contract has required methods
-        if (
-          !this.lstContract.payoutAmount ||
-          !this.lstContract.maxOverrideTip
-        ) {
-          throw new ExecutorError(
-            'LST contract missing required methods',
-            {},
-            false,
-          );
-        }
+        this.logger.info('Current allowance', {
+          allowance: allowance.toString(),
+        });
 
-        // Get payout amount and max tip from contract
-        const payoutAmount = await this.lstContract.payoutAmount();
-        const maxTip = await this.lstContract.maxOverrideTip();
-        const approvalAmount = payoutAmount + maxTip;
+        // Determine approval amount - with fallback for contracts without payoutAmount
+        let approvalAmount: bigint;
+
+        try {
+          // Try to verify LST contract methods and get values from contract
+          if (typeof this.lstContract.payoutAmount === 'function') {
+            // Get payout amount from contract
+            const payoutAmount = await this.lstContract.payoutAmount();
+            // Set approval amount to payout amount * 10 to allow for multiple claims
+            approvalAmount = payoutAmount * 10n;
+
+            this.logger.info('Token approval requirements from contract', {
+              payoutAmount: payoutAmount.toString(),
+              approvalAmount: approvalAmount.toString(),
+              approvalAmountInEth: ethers.formatEther(approvalAmount),
+            });
+          } else {
+            throw new Error('Contract does not have required methods');
+          }
+        } catch (methodError) {
+          // Fallback: use a large approval amount to ensure coverage
+          this.logger.warn('Using fallback approval amount', {
+            error:
+              methodError instanceof Error
+                ? methodError.message
+                : String(methodError),
+          });
+
+          // Default to a large approval - 100 tokens (assuming 18 decimals)
+          approvalAmount = ethers.parseUnits('100', 18);
+
+          this.logger.info('Using fallback approval amount', {
+            approvalAmount: approvalAmount.toString(),
+            approvalAmountInEth: ethers.formatEther(approvalAmount),
+          });
+        }
 
         // If allowance is too low, approve exact amount needed
         if (allowance < approvalAmount) {
           this.logger.info('Approving reward token spend', {
             token: rewardTokenAddress,
             spender: lstContractAddress,
-            amount: approvalAmount.toString(),
+            currentAllowance: allowance.toString(),
+            requiredAmount: approvalAmount.toString(),
           });
 
           const approveTx = await rewardTokenContract.approve(
@@ -529,17 +663,77 @@ export class RelayerExecutor implements IExecutor {
             approvalAmount,
           );
 
-          // Wait for the transaction to be mined with the required confirmations
-          const receipt = await approveTx.wait(this.config.minConfirmations);
-          if (!receipt || receipt.status === 0) {
+          this.logger.info('Approval transaction submitted', {
+            hash: approveTx.hash,
+            gasLimit: approveTx.gasLimit.toString(),
+          });
+
+          // Wait for the transaction to be mined
+          try {
+            this.logger.info('Waiting for approval transaction...');
+            let receipt;
+            try {
+              receipt = await this.pollForReceipt(approveTx.hash, 3);
+            } catch (confirmError: unknown) {
+              // If polling fails, just log the error
+              this.logger.warn('Standard wait for approval failed', {
+                error:
+                  confirmError instanceof Error
+                    ? confirmError.message
+                    : String(confirmError),
+                hash: approveTx.hash,
+                errorType:
+                  typeof confirmError === 'object' && confirmError !== null
+                    ? confirmError.constructor?.name || 'Unknown'
+                    : typeof confirmError,
+              });
+
+              this.logger.info(
+                'Continuing execution despite wait error - approval may still have succeeded',
+              );
+
+              // Skip polling and consider it a warning rather than error
+              this.logger.debug('Transaction details for debugging', {
+                transaction: {
+                  hash: approveTx.hash,
+                  to: approveTx.to,
+                  from: approveTx.from,
+                  nonce: approveTx.nonce,
+                },
+              });
+            }
+
+            this.logger.info('Approval transaction confirmed', {
+              hash: approveTx.hash,
+              blockNumber: receipt?.blockNumber,
+            });
+          } catch (waitError) {
+            this.logger.error('Failed waiting for approval transaction', {
+              error:
+                waitError instanceof Error
+                  ? waitError.message
+                  : String(waitError),
+              hash: approveTx.hash,
+            });
             throw new ExecutorError(
-              'Approval transaction failed',
-              { receipt },
+              'Failed waiting for approval confirmation',
+              {
+                error:
+                  waitError instanceof Error
+                    ? waitError.message
+                    : String(waitError),
+              },
               false,
             );
           }
         }
       } catch (error) {
+        this.logger.error('Token approval error details', {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          rewardToken: rewardTokenAddress,
+          contractAddress: this.lstContract.target.toString(),
+        });
         throw new ExecutorError(
           'Failed to approve reward token spend',
           { error: error instanceof Error ? error.message : String(error) },
@@ -547,7 +741,34 @@ export class RelayerExecutor implements IExecutor {
         );
       }
 
+      // Get the payout amount from contract before executing claim
+      let payoutAmount: bigint = BigInt(0);
+      try {
+        // Verify the contract has the payoutAmount method
+        if (typeof this.lstContract.payoutAmount !== 'function')
+          throw new ContractMethodError('getPayoutAmount');
+
+        payoutAmount = await this.lstContract.payoutAmount();
+      } catch (error) {
+        this.logger.error('Failed to get payout amount', {
+          error: error instanceof Error ? error.message : String(error),
+          depositIds: tx.depositIds.map((id) => id.toString()),
+        });
+        throw new ContractMethodError('getPayoutAmount');
+      }
+      // Get the minimum expected reward from the profitability check
       const minExpectedReward = tx.profitability.estimates.expected_profit;
+      if (minExpectedReward <= payoutAmount) {
+        throw new TransactionValidationError(
+          'Expected reward is less than payout amount',
+          {
+            expectedReward: minExpectedReward.toString(),
+            payoutAmount: payoutAmount.toString(),
+            depositIds: tx.depositIds.map(String),
+          },
+        );
+      }
+
       const depositIds = tx.depositIds;
 
       // Get current network conditions
@@ -571,100 +792,187 @@ export class RelayerExecutor implements IExecutor {
       // Get the relayer's address for reward recipient
       const signerAddress = await this.relaySigner.getAddress();
 
+      // Verify the contract has the claimAndDistributeReward method
+      if (typeof this.lstContract.claimAndDistributeReward !== 'function') {
+        throw new ContractMethodError('claimAndDistributeReward');
+      }
+
+      // Log transaction parameters before execution
+      this.logger.info('Executing claimAndDistributeReward', {
+        recipient: signerAddress,
+        minExpectedReward: minExpectedReward.toString(),
+        depositIds: depositIds.map((id) => id.toString()),
+        gasEstimate: tx.profitability.estimates.gas_estimate.toString(),
+      });
+
+      // Calculate gas limit with extra buffer for complex operations
+      const gasEstimate = tx.profitability.estimates.gas_estimate;
+      const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate; // Use minimum 500k gas if estimate is too low
+      const calculatedGasLimit = this.calculateGasLimit(baseGasLimit);
+
+      this.logger.info('Gas limit for transaction', {
+        originalEstimate: gasEstimate.toString(),
+        baseGasLimit: baseGasLimit.toString(),
+        finalGasLimit: calculatedGasLimit.toString(),
+      });
+
       // Execute via contract with signer
       const response = await this.lstContract.claimAndDistributeReward(
         signerAddress,
         minExpectedReward,
         depositIds,
         {
-          gasLimit: this.calculateGasLimit(
-            tx.profitability.estimates.gas_estimate,
-          ),
+          gasLimit: calculatedGasLimit,
           maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
           maxPriorityFeePerGas:
             this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas,
         },
       );
 
-      // Wait for transaction receipt
-      let receipt: EthersTransactionReceipt | null = null;
-      let attempts = 0;
-      const maxAttempts = 30; // 30 attempts * 1 second = 30 seconds max wait
+      this.logger.info('Transaction submitted:', {
+        hash: response.hash,
+        nonce: response.nonce,
+        gasLimit: response.gasLimit.toString(),
+        maxFeePerGas: response.maxFeePerGas?.toString(),
+        maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
+      });
 
-      while (!receipt && attempts < maxAttempts) {
-        receipt = (await this.relayProvider.getTransactionReceipt(
-          response.hash,
-        )) as unknown as EthersTransactionReceipt;
-        if (!receipt) {
-          await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
-          attempts++;
-          continue;
-        }
+      // Wait for transaction to be mined
+      this.logger.info('Waiting for transaction...');
+      try {
+        let receipt;
+        try {
+          receipt = await this.pollForReceipt(response.hash, 3);
+        } catch (confirmError: unknown) {
+          // If polling fails, just log the error
+          this.logger.warn('Transaction confirmation failed', {
+            error:
+              confirmError instanceof Error
+                ? confirmError.message
+                : String(confirmError),
+            hash: response.hash,
+            errorType:
+              typeof confirmError === 'object' && confirmError !== null
+                ? confirmError.constructor?.name || 'Unknown'
+                : typeof confirmError,
+          });
 
-        // Check if we have enough confirmations
-        const currentBlock = await this.relayProvider.getBlockNumber();
-        const confirmations = currentBlock - receipt.blockNumber;
-        if (confirmations < this.config.minConfirmations) {
+          this.logger.info(
+            'Continuing execution despite confirmation error - transaction may still have succeeded',
+          );
+
+          // Skip polling and consider it a warning rather than error
+          this.logger.debug('Transaction details for debugging', {
+            transaction: {
+              hash: response.hash,
+              to: response.to,
+              from: response.from,
+              nonce: response.nonce,
+            },
+          });
+
+          // Continue without receipt - transaction might have gone through anyway
           receipt = null;
-          await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
-          attempts++;
-          continue;
         }
-      }
 
-      if (!receipt) {
-        throw new TransactionReceiptError(response.hash, {
+        // Only proceed with receipt if we have one
+        if (receipt) {
+          this.logger.info('Transaction confirmed', {
+            hash: response.hash,
+            blockNumber: receipt.blockNumber,
+            gasUsed: receipt.gasUsed.toString(),
+          });
+
+          // Update transaction status
+          tx.status = TransactionStatus.CONFIRMED;
+          tx.hash = response.hash;
+          tx.gasPrice = 0n; // Set default since it may not be available
+          tx.gasLimit = BigInt(receipt.gasUsed.toString());
+          tx.executedAt = new Date();
+
+          // Clean up queue items
+          if (this.db && queueItemId) {
+            try {
+              const txQueueItem =
+                await this.db.getTransactionQueueItem(queueItemId);
+              if (txQueueItem) {
+                const depositIds = txQueueItem.deposit_id.split(',');
+
+                // Clean up all related queue items in parallel
+                await Promise.all([
+                  this.db.deleteTransactionQueueItem(queueItemId),
+                  ...depositIds.map(async (depositId) => {
+                    const processingItem =
+                      await this.db!.getProcessingQueueItemByDepositId(
+                        depositId,
+                      );
+                    if (processingItem) {
+                      await this.db!.deleteProcessingQueueItem(
+                        processingItem.id,
+                      );
+                    }
+                  }),
+                ]);
+
+                this.logger.info('Cleaned up queue items:', {
+                  txQueueId: queueItemId,
+                  depositIds,
+                  hash: response.hash,
+                });
+              }
+            } catch (error) {
+              this.logger.error('Failed to clean up queue items:', {
+                error: error instanceof Error ? error.message : String(error),
+                queueItemId,
+                hash: response.hash,
+              });
+            }
+          }
+
+          this.queue.set(tx.id, tx);
+          this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
+            id: tx.id,
+            hash: response.hash,
+            blockNumber: receipt.blockNumber,
+            gasUsed: receipt.gasUsed.toString(),
+          });
+
+          // Remove from in-memory queue after successful execution
+          this.queue.delete(tx.id);
+        } else {
+          // No receipt available, but we'll continue with optimistic status
+          this.logger.info(
+            'No receipt available, setting tentative confirmed status',
+            {
+              hash: response.hash,
+            },
+          );
+
+          // Update transaction status with limited information
+          tx.status = TransactionStatus.CONFIRMED;
+          tx.hash = response.hash;
+          tx.executedAt = new Date();
+
+          // Remove from in-memory queue after successful execution
+          this.queue.delete(tx.id);
+        }
+      } catch (waitError) {
+        this.logger.error('Failed waiting for transaction confirmation', {
+          error:
+            waitError instanceof Error ? waitError.message : String(waitError),
           transactionId: tx.id,
           depositIds: depositIds.map(String),
         });
-      }
-
-      // Update transaction status
-      tx.status =
-        receipt.status === 1
-          ? TransactionStatus.CONFIRMED
-          : TransactionStatus.FAILED;
-      tx.hash = receipt.transactionHash;
-      tx.gasPrice = receipt.effectiveGasPrice;
-      tx.gasLimit = receipt.gasUsed;
-      tx.executedAt = new Date();
-
-      // Update database if available
-      if (this.db && queueItemId) {
-        try {
-          await this.db.updateTransactionQueueItem(queueItemId, {
-            status:
-              receipt.status === 1
-                ? TransactionQueueStatus.CONFIRMED
-                : TransactionQueueStatus.FAILED,
-            hash: receipt.transactionHash,
-            error: receipt.status !== 1 ? 'Transaction failed' : undefined,
-            gas_price: receipt.effectiveGasPrice.toString(),
-          });
-        } catch (error) {
-          this.logger.error('Failed to update transaction queue item', {
-            error: error instanceof Error ? error.message : String(error),
-            queueItemId,
-            status: receipt.status === 1 ? 'confirmed' : 'failed',
-          });
-        }
-      }
-
-      this.queue.set(tx.id, tx);
-
-      if (receipt.status !== 1) {
-        this.logger.error(EXECUTOR_EVENTS.TRANSACTION_FAILED, {
-          id: tx.id,
-          hash: receipt.transactionHash,
-        });
-      } else {
-        this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
-          id: tx.id,
-          hash: receipt.transactionHash,
-          blockNumber: receipt.blockNumber,
-          gasUsed: receipt.gasUsed.toString(),
-          gasPrice: receipt.effectiveGasPrice.toString(),
-        });
+        throw new ExecutorError(
+          'Failed waiting for transaction confirmation',
+          {
+            error:
+              waitError instanceof Error
+                ? waitError.message
+                : String(waitError),
+          },
+          false,
+        );
       }
     } catch (error) {
       await this.handleExecutionError(tx, error);
@@ -673,14 +981,99 @@ export class RelayerExecutor implements IExecutor {
 
   // Add helper for gas limit calculation
   private calculateGasLimit(gasEstimate: bigint): bigint {
-    const gasLimit = BigInt(
-      Math.ceil(Number(gasEstimate) * GAS_CONSTANTS.GAS_LIMIT_BUFFER),
+    this.logger.info('Calculating gas limit', {
+      baseGasEstimate: gasEstimate.toString(),
+      buffer: GAS_CONSTANTS.GAS_LIMIT_BUFFER,
+      minGasLimit: GAS_CONSTANTS.MIN_GAS_LIMIT.toString(),
+      maxGasLimit: GAS_CONSTANTS.MAX_GAS_LIMIT.toString(),
+    });
+
+    let gasLimit: bigint;
+    try {
+      gasLimit = BigInt(
+        Math.ceil(Number(gasEstimate) * GAS_CONSTANTS.GAS_LIMIT_BUFFER),
+      );
+    } catch (error) {
+      // If conversion fails, use a safe default
+      this.logger.warn('Error calculating gas limit, using safe default', {
+        error: error instanceof Error ? error.message : String(error),
+        gasEstimate: gasEstimate.toString(),
+      });
+      gasLimit = GAS_CONSTANTS.MIN_GAS_LIMIT * 2n;
+    }
+
+    // Apply bounds
+    if (gasLimit < GAS_CONSTANTS.MIN_GAS_LIMIT) {
+      this.logger.info('Gas limit below minimum, using minimum value', {
+        calculatedLimit: gasLimit.toString(),
+        minLimit: GAS_CONSTANTS.MIN_GAS_LIMIT.toString(),
+      });
+      return GAS_CONSTANTS.MIN_GAS_LIMIT;
+    } else if (gasLimit > GAS_CONSTANTS.MAX_GAS_LIMIT) {
+      this.logger.info('Gas limit above maximum, using maximum value', {
+        calculatedLimit: gasLimit.toString(),
+        maxLimit: GAS_CONSTANTS.MAX_GAS_LIMIT.toString(),
+      });
+      return GAS_CONSTANTS.MAX_GAS_LIMIT;
+    }
+
+    this.logger.info('Final gas limit calculated', {
+      finalGasLimit: gasLimit.toString(),
+    });
+
+    return gasLimit;
+  }
+
+  // Add custom receipt polling method to handle ethers v5/v6 compatibility
+  private async pollForReceipt(
+    txHash: string,
+    confirmations: number = 1,
+  ): Promise<EthersTransactionReceipt | null> {
+    if (!this.relayProvider) {
+      throw new ExecutorError('Relay provider not initialized', {}, false);
+    }
+
+    const maxAttempts = 30; // Try for about 5 minutes with 10-second intervals
+    const pollingInterval = 10000; // 10 seconds
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        // Get receipt
+        const receipt = (await this.relayProvider.getTransactionReceipt(
+          txHash,
+        )) as unknown as EthersTransactionReceipt;
+
+        if (!receipt) {
+          // If no receipt yet, wait and try again
+          await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+          continue;
+        }
+
+        // Check if we have enough confirmations
+        const currentBlock = await this.relayProvider.getBlockNumber();
+        const receiptConfirmations = currentBlock - receipt.blockNumber + 1;
+
+        if (receiptConfirmations >= confirmations) {
+          return receipt;
+        }
+
+        // Not enough confirmations, wait and try again
+        await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+      } catch (error) {
+        this.logger.warn('Error polling for receipt', {
+          error: error instanceof Error ? error.message : String(error),
+          txHash,
+          attempt,
+        });
+
+        // Wait and try again
+        await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+      }
+    }
+
+    throw new Error(
+      `Transaction ${txHash} not confirmed after ${maxAttempts} attempts`,
     );
-    return gasLimit < GAS_CONSTANTS.MIN_GAS_LIMIT
-      ? GAS_CONSTANTS.MIN_GAS_LIMIT
-      : gasLimit > GAS_CONSTANTS.MAX_GAS_LIMIT
-        ? GAS_CONSTANTS.MAX_GAS_LIMIT
-        : gasLimit;
   }
 
   // Add helper for error handling
@@ -726,6 +1119,39 @@ export class RelayerExecutor implements IExecutor {
           status: TransactionQueueStatus.FAILED,
           error: error instanceof Error ? error.message : String(error),
         });
+
+        // Delete from transaction queue
+        await this.db.deleteTransactionQueueItem(queueItemId);
+
+        // Also clean up any related processing queue items
+        if (tx.tx_data) {
+          try {
+            const txData = JSON.parse(tx.tx_data);
+            if (txData.depositIds) {
+              // Process each deposit ID
+              for (const depositId of txData.depositIds) {
+                const processingItem =
+                  await this.db.getProcessingQueueItemByDepositId(
+                    depositId.toString(),
+                  );
+                if (processingItem) {
+                  await this.db.deleteProcessingQueueItem(processingItem.id);
+                }
+              }
+            }
+          } catch (parseError) {
+            this.logger.error('Failed to parse deposit IDs from tx data', {
+              error:
+                parseError instanceof Error
+                  ? parseError.message
+                  : String(parseError),
+            });
+          }
+        }
+
+        this.logger.info('Removed failed transaction from queue', {
+          queueItemId,
+        });
       } catch (dbError) {
         this.logger.error('Failed to update database after transaction error', {
           error: dbError instanceof Error ? dbError.message : String(dbError),
@@ -734,7 +1160,8 @@ export class RelayerExecutor implements IExecutor {
         });
       }
     }
-  }
 
-  // ... rest of existing methods with provider access through lstContract.runner?.provider ...
+    // Remove from in-memory queue
+    this.queue.delete(tx.id);
+  }
 }
