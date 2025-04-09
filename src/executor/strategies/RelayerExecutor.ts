@@ -808,12 +808,13 @@ export class RelayerExecutor implements IExecutor {
       // Calculate gas limit with extra buffer for complex operations
       const gasEstimate = tx.profitability.estimates.gas_estimate;
       const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate; // Use minimum 500k gas if estimate is too low
-      const calculatedGasLimit = this.calculateGasLimit(baseGasLimit);
+      const calculatedGasLimit = this.calculateGasLimit(baseGasLimit, depositIds.length);
 
       this.logger.info('Gas limit for transaction', {
         originalEstimate: gasEstimate.toString(),
         baseGasLimit: baseGasLimit.toString(),
         finalGasLimit: calculatedGasLimit.toString(),
+        depositCount: depositIds.length,
       });
 
       // Execute via contract with signer
@@ -980,9 +981,10 @@ export class RelayerExecutor implements IExecutor {
   }
 
   // Add helper for gas limit calculation
-  private calculateGasLimit(gasEstimate: bigint): bigint {
+  private calculateGasLimit(gasEstimate: bigint, depositCount: number = 1): bigint {
     this.logger.info('Calculating gas limit', {
       baseGasEstimate: gasEstimate.toString(),
+      depositCount,
       buffer: GAS_CONSTANTS.GAS_LIMIT_BUFFER,
       minGasLimit: GAS_CONSTANTS.MIN_GAS_LIMIT.toString(),
       maxGasLimit: GAS_CONSTANTS.MAX_GAS_LIMIT.toString(),
@@ -990,16 +992,20 @@ export class RelayerExecutor implements IExecutor {
 
     let gasLimit: bigint;
     try {
-      gasLimit = BigInt(
-        Math.ceil(Number(gasEstimate) * GAS_CONSTANTS.GAS_LIMIT_BUFFER),
-      );
+      // Scale gas limit based on deposit count
+      // Base + additional gas per item beyond the first one
+      const baseGas = Number(gasEstimate) * GAS_CONSTANTS.GAS_LIMIT_BUFFER;
+      const additionalGas = Math.max(0, depositCount - 1) * 30000; // 30k gas per additional deposit
+      gasLimit = BigInt(Math.ceil(baseGas + additionalGas));
     } catch (error) {
       // If conversion fails, use a safe default
       this.logger.warn('Error calculating gas limit, using safe default', {
         error: error instanceof Error ? error.message : String(error),
         gasEstimate: gasEstimate.toString(),
+        depositCount,
       });
-      gasLimit = GAS_CONSTANTS.MIN_GAS_LIMIT * 2n;
+      // Scale the safe default based on deposit count
+      gasLimit = GAS_CONSTANTS.MIN_GAS_LIMIT * 2n + BigInt(Math.max(0, depositCount - 1) * 30000);
     }
 
     // Apply bounds
@@ -1019,6 +1025,7 @@ export class RelayerExecutor implements IExecutor {
 
     this.logger.info('Final gas limit calculated', {
       finalGasLimit: gasLimit.toString(),
+      depositCount,
     });
 
     return gasLimit;
