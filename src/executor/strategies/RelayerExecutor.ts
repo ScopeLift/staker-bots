@@ -808,7 +808,10 @@ export class RelayerExecutor implements IExecutor {
       // Calculate gas limit with extra buffer for complex operations
       const gasEstimate = tx.profitability.estimates.gas_estimate;
       const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate; // Use minimum 500k gas if estimate is too low
-      const calculatedGasLimit = this.calculateGasLimit(baseGasLimit, depositIds.length);
+      const calculatedGasLimit = this.calculateGasLimit(
+        baseGasLimit,
+        depositIds.length,
+      );
 
       this.logger.info('Gas limit for transaction', {
         originalEstimate: gasEstimate.toString(),
@@ -981,7 +984,10 @@ export class RelayerExecutor implements IExecutor {
   }
 
   // Add helper for gas limit calculation
-  private calculateGasLimit(gasEstimate: bigint, depositCount: number = 1): bigint {
+  private calculateGasLimit(
+    gasEstimate: bigint,
+    depositCount: number = 1,
+  ): bigint {
     this.logger.info('Calculating gas limit', {
       baseGasEstimate: gasEstimate.toString(),
       depositCount,
@@ -1005,7 +1011,9 @@ export class RelayerExecutor implements IExecutor {
         depositCount,
       });
       // Scale the safe default based on deposit count
-      gasLimit = GAS_CONSTANTS.MIN_GAS_LIMIT * 2n + BigInt(Math.max(0, depositCount - 1) * 30000);
+      gasLimit =
+        GAS_CONSTANTS.MIN_GAS_LIMIT * 2n +
+        BigInt(Math.max(0, depositCount - 1) * 30000);
     }
 
     // Apply bounds
