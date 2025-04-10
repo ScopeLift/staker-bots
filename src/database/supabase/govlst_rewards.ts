@@ -46,7 +46,8 @@ export async function getGovLstDeposit(
     .from('govlst_deposits')
     .select('*')
     .eq('deposit_id', depositId)
-    .single();
+    .maybeSingle();
+
   if (error) throw error;
   return data;
 }
@@ -109,7 +110,8 @@ export async function getGovLstClaimHistory(
     .from('govlst_claim_history')
     .select('*')
     .eq('id', id)
-    .single();
+    .maybeSingle();
+
   if (error) throw error;
   return data;
 }

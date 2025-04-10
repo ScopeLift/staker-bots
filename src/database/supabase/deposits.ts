@@ -40,7 +40,8 @@ export async function getDeposit(depositId: string): Promise<Deposit | null> {
     .from('deposits')
     .select('*')
     .eq('deposit_id', depositId)
-    .single();
+    .maybeSingle();
+
   if (error) throw error;
   return data;
 }

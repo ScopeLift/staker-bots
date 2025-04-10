@@ -2,6 +2,7 @@ import { supabase } from './client';
 import fs from 'fs';
 import path from 'path';
 import { ConsoleLogger } from '@/monitor/logging';
+import { fileURLToPath } from 'url';
 
 const SUPABASE_NOT_CONFIGURED_ERROR =
   'Supabase client is not available. Make sure SUPABASE_URL and SUPABASE_KEY are configured in your environment or config file.';
@@ -16,14 +17,18 @@ async function runMigrations() {
   try {
     // Migration files in order of application
     const migrationFiles = [
-      'schema.sql',
-      'depositor_address.sql',
-      'score_events.sql',
-      'queue_tables.sql',
-      'govlst_tables.sql',
+      '01_core_tables.sql',
+      '02_monitor_tables.sql',
+      '03_queue_tables.sql',
+      '04_govlst_tables.sql',
+      '05_checkpoints_view.sql',
     ];
 
     logger.info('Starting database migrations...');
+
+    // Get the directory path of the current file
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
 
     for (const filename of migrationFiles) {
       const filePath = path.join(__dirname, 'migrations', filename);
@@ -51,6 +56,7 @@ async function runMigrations() {
 
           if (error) {
             logger.error(`Error executing statement in ${filename}:`, {
+              statement: statement.substring(0, 200),
               error,
             });
             // Continue with other statements instead of failing completely
@@ -71,17 +77,12 @@ async function runMigrations() {
   }
 }
 
-// Run migrations if executed directly
-if (require.main === module) {
-  runMigrations()
-    .then(() => {
-      logger.info('Migration script completed');
-      process.exit(0);
-    })
-    .catch((error) => {
-      logger.error('Migration script failed:', { error });
-      process.exit(1);
-    });
+// Run migrations if file is executed directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runMigrations().catch((error) => {
+    console.error('Failed to run migrations:', error);
+    process.exit(1);
+  });
 }
 
 export { runMigrations };

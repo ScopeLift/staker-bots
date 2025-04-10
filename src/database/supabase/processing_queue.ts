@@ -23,14 +23,20 @@ export async function createProcessingQueueItem(
     throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
   }
 
-  const { data, error } = await client
-    .from('processing_queue')
-    .insert([newItem])
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await client
+      .from('processing_queue')
+      .insert([newItem])
+      .select('*')
+      .single();
 
-  if (error) throw error;
-  return data;
+    if (error) throw error;
+    if (!data) throw new Error('Failed to create processing queue item');
+    return data;
+  } catch (error) {
+    console.error('Error creating processing queue item:', error);
+    throw error;
+  }
 }
 
 export async function updateProcessingQueueItem(
@@ -60,17 +66,22 @@ export async function getProcessingQueueItem(
     throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
   }
 
+  // Check if id is a valid UUID
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    // Not a valid UUID, likely a deposit_id is being used
+    console.warn(`Invalid UUID format for processing queue item: ${id}`);
+    return null;
+  }
+
   const { data, error } = await client
     .from('processing_queue')
     .select('*')
     .eq('id', id)
-    .single();
+    .maybeSingle();
 
-  if (error) {
-    if (error.code === 'PGRST116') return null; // No rows returned
-    throw error;
-  }
-
+  if (error) throw error;
   return data;
 }
 
@@ -103,15 +114,9 @@ export async function getProcessingQueueItemByDepositId(
     .from('processing_queue')
     .select('*')
     .eq('deposit_id', depositId)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .single();
+    .maybeSingle();
 
-  if (error) {
-    if (error.code === 'PGRST116') return null; // No rows returned
-    throw error;
-  }
-
+  if (error) throw error;
   return data;
 }
 

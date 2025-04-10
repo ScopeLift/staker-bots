@@ -21,7 +21,8 @@
     "prod:monitor": "NODE_ENV=production EXECUTOR_TYPE=defender COMPONENTS=monitor tsx src/index.ts",
     "prod:executor": "NODE_ENV=production COMPONENTS=executor tsx src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate": "tsx src/database/supabase/migrate.ts"
   },
   "keywords": [],
   "author": "",

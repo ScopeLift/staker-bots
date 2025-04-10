@@ -612,10 +612,40 @@ export class StakerMonitor extends EventEmitter {
     event: DepositInitializedEvent,
   ): Promise<void> {
     await this.withRetry(async () => {
-      // Update GovLst deposit mapping
-      await this.updateGovLstDeposit(event.depositId, event.delegatee);
+      try {
+        // Check if deposit exists
+        const existingDeposit = await this.db.getDeposit(event.depositId);
 
-      this.emit(MONITOR_EVENTS.DEPOSIT_INITIALIZED, event);
+        // If deposit doesn't exist, create a basic entry
+        if (!existingDeposit) {
+          await this.db.createDeposit({
+            deposit_id: event.depositId,
+            owner_address: event.delegatee,
+            depositor_address: event.delegatee,
+            delegatee_address: event.delegatee,
+            amount: '0', // Initial amount is 0
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+
+          this.logger.info('Created new deposit for initialization', {
+            depositId: event.depositId,
+            delegatee: event.delegatee,
+          });
+        }
+
+        // Now update GovLst deposit mapping
+        await this.updateGovLstDeposit(event.depositId, event.delegatee);
+
+        this.emit(MONITOR_EVENTS.DEPOSIT_INITIALIZED, event);
+      } catch (error) {
+        if (error instanceof MonitorError) throw error;
+        throw new EventProcessingError(
+          EVENT_TYPES.DEPOSIT_INITIALIZED,
+          error as Error,
+          { event },
+        );
+      }
     }, 'process DepositInitialized event');
   }
 

@@ -23,14 +23,20 @@ export async function createTransactionQueueItem(
     throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
   }
 
-  const { data, error } = await client
-    .from('transaction_queue')
-    .insert([newItem])
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await client
+      .from('transaction_queue')
+      .insert([newItem])
+      .select('*')
+      .single();
 
-  if (error) throw error;
-  return data;
+    if (error) throw error;
+    if (!data) throw new Error('Failed to create transaction queue item');
+    return data;
+  } catch (error) {
+    console.error('Error creating transaction queue item:', error);
+    throw error;
+  }
 }
 
 export async function updateTransactionQueueItem(
@@ -60,17 +66,22 @@ export async function getTransactionQueueItem(
     throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
   }
 
+  // Check if id is a valid UUID
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    // Not a valid UUID, likely a deposit_id is being used
+    console.warn(`Invalid UUID format for transaction queue item: ${id}`);
+    return null;
+  }
+
   const { data, error } = await client
     .from('transaction_queue')
     .select('*')
     .eq('id', id)
-    .single();
+    .maybeSingle();
 
-  if (error) {
-    if (error.code === 'PGRST116') return null; // No rows returned
-    throw error;
-  }
-
+  if (error) throw error;
   return data;
 }
 
@@ -99,20 +110,49 @@ export async function getTransactionQueueItemByDepositId(
     throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
   }
 
+  // First, try to find a direct match on deposit_id
   const { data, error } = await client
     .from('transaction_queue')
     .select('*')
     .eq('deposit_id', depositId)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .single();
+    .maybeSingle();
 
-  if (error) {
-    if (error.code === 'PGRST116') return null; // No rows returned
-    throw error;
+  if (error) throw error;
+
+  // If found, return it
+  if (data) return data;
+
+  // If not found directly, search inside tx_data for matches
+  try {
+    // Get all transaction queue items
+    const { data: allData, error: allError } = await client
+      .from('transaction_queue')
+      .select('*');
+
+    if (allError) throw allError;
+    if (!allData) return null;
+
+    // Search through tx_data for depositIds that include our target
+    for (const item of allData) {
+      if (item.tx_data) {
+        try {
+          const txData = JSON.parse(item.tx_data);
+          if (
+            Array.isArray(txData.depositIds) &&
+            txData.depositIds.some((id: string) => id === depositId)
+          ) {
+            return item;
+          }
+        } catch (e) {
+          // Ignore JSON parse errors
+        }
+      }
+    }
+  } catch (searchError) {
+    console.error('Error searching tx_data for deposit ID:', searchError);
   }
 
-  return data;
+  return null;
 }
 
 export async function getTransactionQueueItemsByHash(

@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS govlst_deposits (
 CREATE TABLE IF NOT EXISTS govlst_claim_history (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   govlst_address TEXT NOT NULL,
-  deposit_ids TEXT[] NOT NULL,
+  deposit_ids JSONB NOT NULL,
   claimed_reward TEXT NOT NULL,
   payout_amount TEXT NOT NULL,
   profit TEXT NOT NULL,
@@ -39,4 +39,4 @@ DROP TRIGGER IF EXISTS update_govlst_claim_history_updated_at ON govlst_claim_hi
 CREATE TRIGGER update_govlst_claim_history_updated_at
   BEFORE UPDATE ON govlst_claim_history
   FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+  EXECUTE FUNCTION update_updated_at_column(); 
