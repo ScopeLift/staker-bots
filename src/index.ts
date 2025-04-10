@@ -63,6 +63,62 @@ async function logError(error: unknown, context: string) {
   mainLogger.error(context, { error });
 }
 
+// Ensure checkpoints are not lower than START_BLOCK
+async function ensureCheckpointsAtStartBlock(
+  database: DatabaseWrapper,
+  logger: Logger,
+) {
+  logger.info('Checking checkpoint blocks against configured START_BLOCK...');
+
+  // Get START_BLOCK from config
+  const startBlock = CONFIG.monitor.startBlock;
+  if (!startBlock) {
+    logger.info('No START_BLOCK configured, skipping checkpoint check');
+    return;
+  }
+
+  logger.info(`Using START_BLOCK: ${startBlock}`);
+
+  // List of components to check
+  const componentTypes = ['staker-monitor', 'executor', 'profitability-engine'];
+
+  for (const componentType of componentTypes) {
+    const checkpoint = await database.getCheckpoint(componentType);
+
+    if (!checkpoint) {
+      logger.info(
+        `No checkpoint found for ${componentType}, creating with START_BLOCK`,
+      );
+      await database.updateCheckpoint({
+        component_type: componentType,
+        last_block_number: startBlock,
+        block_hash:
+          '0x0000000000000000000000000000000000000000000000000000000000000000',
+        last_update: new Date().toISOString(),
+      });
+      continue;
+    }
+
+    if (checkpoint.last_block_number < startBlock) {
+      logger.info(
+        `Updating ${componentType} checkpoint from block ${checkpoint.last_block_number} to START_BLOCK ${startBlock}`,
+      );
+      await database.updateCheckpoint({
+        component_type: componentType,
+        last_block_number: startBlock,
+        block_hash: checkpoint.block_hash,
+        last_update: new Date().toISOString(),
+      });
+    } else {
+      logger.info(
+        `Checkpoint for ${componentType} (${checkpoint.last_block_number}) is already >= START_BLOCK (${startBlock})`,
+      );
+    }
+  }
+
+  logger.info('Checkpoint verification completed');
+}
+
 // Keep track of running components for graceful shutdown
 const runningComponents: {
   monitor?: StakerMonitor;
@@ -351,6 +407,9 @@ async function main() {
       type: CONFIG.monitor.databaseType as 'json' | 'supabase',
       fallbackToJson: true,
     });
+
+    // Check and update checkpoints if needed
+    await ensureCheckpointsAtStartBlock(database, mainLogger);
 
     // Parse components to run
     const rawComponents = process.env.COMPONENTS?.split(',').map((c) =>

@@ -444,27 +444,43 @@ export class GovLstProfitabilityEngineWrapper
    */
   private async checkAndProcessRewards(): Promise<void> {
     try {
+      // Get executor status first
+      const executorStatus = await this.executor.getStatus();
       this.logger.info('Starting reward check cycle with components:', {
-        isRunning: this.isRunning,
-        queueSize: this.processingQueue.size,
+        isRunning: executorStatus.isRunning,
+        queueSize: executorStatus.queueSize,
       });
 
-      // Get all deposits from database
+      // Get all deposits to check
       const deposits = await this.db.getAllDeposits();
       this.logger.info(
         `Found ${deposits.length} deposits to check for rewards`,
       );
 
-      if (deposits.length === 0) {
-        this.logger.info('No deposits found to check');
-        return;
+      // Filter out deposits that are already in a transaction queue
+      const depositsToCheck = [];
+      for (const deposit of deposits) {
+        // Check if deposit is already in a transaction queue
+        const existingTxQueueItem =
+          await this.db.getTransactionQueueItemByDepositId(deposit.deposit_id);
+        if (
+          existingTxQueueItem &&
+          (existingTxQueueItem.status === TransactionQueueStatus.PENDING ||
+            existingTxQueueItem.status === TransactionQueueStatus.SUBMITTED)
+        ) {
+          this.logger.info(
+            `Skipping deposit ${deposit.deposit_id} - already in transaction queue`,
+          );
+          continue;
+        }
+        depositsToCheck.push(deposit);
       }
 
-      // Check each deposit for unclaimed rewards
-      const profitableDeposits: DatabaseDeposit[] = [];
-      const depositDetails: Array<{ depositId: bigint; rewards: bigint }> = [];
+      // Process only deposits that aren't already queued
+      const profitableDeposits = [];
+      const depositDetails = [];
 
-      for (const deposit of deposits) {
+      for (const deposit of depositsToCheck) {
         try {
           // Skip deposits with no ID
           if (!deposit.deposit_id) continue;
@@ -572,10 +588,11 @@ export class GovLstProfitabilityEngineWrapper
           // If validation succeeds, create database entries
           // Update or create processing queue items
           for (const deposit of profitableDeposits) {
-            // Check for existing queue item
-            const existingItem = await this.db.getProcessingQueueItem(
-              deposit.deposit_id,
-            );
+            // Check for existing queue item by deposit ID
+            const existingItem =
+              await this.db.getProcessingQueueItemByDepositId(
+                deposit.deposit_id,
+              );
             if (existingItem) {
               // Update existing item
               await this.db.updateProcessingQueueItem(existingItem.id, {
@@ -598,37 +615,85 @@ export class GovLstProfitabilityEngineWrapper
             }
           }
 
-          // Create a single transaction queue item for all deposits
-          const txQueueItem = await this.db.createTransactionQueueItem({
-            deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
-            status: TransactionQueueStatus.PENDING,
-            tx_data: JSON.stringify({
-              depositIds: profitableDeposits.map((d) => d.deposit_id),
-              totalRewards: totalRewards.toString(),
-              profitability: this.serializeBigInts(profitabilityCheck),
-            }),
-          });
+          try {
+            // Create a single transaction queue item for all deposits
+            if (profitableDeposits.length === 0) {
+              throw new Error('No profitable deposits to queue');
+            }
 
-          // Queue the transaction with the executor
-          const queueResult = await this.executor.queueTransaction(
-            profitableDeposits.map((d) => BigInt(d.deposit_id)),
-            profitabilityCheck,
-            JSON.stringify({
-              depositIds: profitableDeposits.map((d) => d.deposit_id),
-              totalRewards: totalRewards.toString(),
-              profitability: this.serializeBigInts(profitabilityCheck),
-              queueItemId: txQueueItem.id,
-            }),
-          );
+            // Ensure the first deposit has a valid deposit_id
+            const firstDeposit = profitableDeposits[0];
+            if (!firstDeposit || typeof firstDeposit.deposit_id !== 'string') {
+              throw new Error('Invalid deposit data - missing deposit_id');
+            }
 
-          this.logger.info('Transaction processing status:', {
-            queueItemId: txQueueItem.id,
-            depositIds: profitableDeposits.map((d) => d.deposit_id),
-            totalRewards: ethers.formatEther(totalRewards),
-            gasEstimate: gasEstimate.toString(),
-            executorStatus: await this.executor.getStatus(),
-            queueResult,
-          });
+            // Use the first deposit ID to satisfy foreign key constraint
+            const txQueueItem = await this.db.createTransactionQueueItem({
+              deposit_id: firstDeposit.deposit_id,
+              status: TransactionQueueStatus.PENDING,
+              tx_data: JSON.stringify({
+                depositIds: profitableDeposits.map((d) => d.deposit_id),
+                totalRewards: totalRewards.toString(),
+                profitability: this.serializeBigInts(profitabilityCheck),
+              }),
+            });
+
+            this.logger.info('Created transaction queue item:', {
+              id: txQueueItem.id,
+              primaryDepositId: firstDeposit.deposit_id,
+              allDepositIds: profitableDeposits.map((d) => d.deposit_id),
+            });
+
+            try {
+              // Queue the transaction with the executor
+              const queueResult = await this.executor.queueTransaction(
+                profitableDeposits.map((d) => BigInt(d.deposit_id)),
+                profitabilityCheck,
+                JSON.stringify({
+                  depositIds: profitableDeposits.map((d) => d.deposit_id),
+                  totalRewards: totalRewards.toString(),
+                  profitability: this.serializeBigInts(profitabilityCheck),
+                  queueItemId: txQueueItem.id,
+                }),
+              );
+
+              this.logger.info('Transaction processing status:', {
+                queueItemId: txQueueItem.id,
+                depositIds: profitableDeposits.map((d) => d.deposit_id),
+                totalRewards: ethers.formatEther(totalRewards),
+                gasEstimate: gasEstimate.toString(),
+                executorStatus: await this.executor.getStatus(),
+                queueResult,
+              });
+            } catch (queueError) {
+              this.logger.error('Failed to queue transaction with executor:', {
+                queueError,
+              });
+
+              // Clean up transaction queue item if executor queueing fails
+              try {
+                await this.db.updateTransactionQueueItem(txQueueItem.id, {
+                  status: TransactionQueueStatus.FAILED,
+                  error:
+                    queueError instanceof Error
+                      ? queueError.message
+                      : String(queueError),
+                });
+              } catch (cleanupError) {
+                this.logger.error(
+                  'Failed to update transaction queue item after error:',
+                  { cleanupError },
+                );
+              }
+
+              throw queueError;
+            }
+          } catch (txQueueError) {
+            this.logger.error('Failed to create transaction queue item:', {
+              txQueueError,
+            });
+            throw txQueueError;
+          }
         } catch (error) {
           this.logger.error('Failed to validate/queue transaction:', { error });
           throw error; // No cleanup needed since we validate before creating database entries

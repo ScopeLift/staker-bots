@@ -211,6 +211,36 @@ export class BaseExecutor implements IExecutor {
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
+    // Check for existing transactions with the same deposit IDs
+    const transactions = Array.from(this.queue.values());
+    const depositIdsStrings = depositIds.map(String);
+    const existingTransaction = transactions.find((tx) => {
+      // Check both queued and pending transactions
+      if (
+        tx.status !== TransactionStatus.QUEUED &&
+        tx.status !== TransactionStatus.PENDING
+      )
+        return false;
+      // Check if any of the deposit IDs overlap
+      return tx.depositIds.some((id) =>
+        depositIdsStrings.includes(id.toString()),
+      );
+    });
+
+    if (existingTransaction) {
+      return {
+        isValid: false,
+        error: new TransactionValidationError(
+          'One or more deposits are already in a pending transaction',
+          {
+            depositIds: depositIdsStrings,
+            existingTxId: existingTransaction.id,
+            existingTxStatus: existingTransaction.status,
+          },
+        ),
+      };
+    }
+
     // Validate batch size
     if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE)
       return {
@@ -616,6 +646,28 @@ export class BaseExecutor implements IExecutor {
 
       const depositIds = tx.depositIds;
 
+      // Store queue-related metadata in transaction
+      let queueItemId: string | undefined;
+      let queueDepositIds: string[] = [];
+      if (tx.tx_data) {
+        try {
+          const txData = JSON.parse(tx.tx_data);
+          queueItemId = txData.queueItemId;
+          queueDepositIds = depositIds.map(String);
+        } catch (error) {
+          this.logger.error('Failed to parse txData', {
+            error: error instanceof Error ? error.message : String(error),
+            txData: tx.tx_data,
+          });
+        }
+      }
+
+      // Store for later cleanup
+      tx.metadata = {
+        queueItemId,
+        depositIds: queueDepositIds,
+      };
+
       this.logger.info('Estimating gas for transaction', {
         id: tx.id,
         depositCount: depositIds.length,
@@ -664,6 +716,7 @@ export class BaseExecutor implements IExecutor {
         gasPrice: ethers.formatUnits(txResponse.gasPrice || 0n, 'gwei'),
       });
 
+      // Process the transaction receipt
       await this.processTransactionReceipt(tx, txResponse);
     } catch (error) {
       this.logger.error('Transaction execution failed', {
@@ -822,89 +875,60 @@ export class BaseExecutor implements IExecutor {
         nonce: txResponse.nonce,
       });
 
-      const receipt = await txResponse.wait(1); // Just wait for 1 confirmation
+      let receipt;
+      let isSuccess = false;
 
-      this.logger.info('Transaction confirmed', {
+      try {
+        receipt = await txResponse.wait(1); // Just wait for 1 confirmation
+        isSuccess = receipt?.status === 1;
+      } catch (waitError) {
+        this.logger.warn('Transaction confirmation failed', {
+          error:
+            waitError instanceof Error ? waitError.message : String(waitError),
+          hash: txResponse.hash,
+        });
+        // Continue processing with failed status
+      }
+
+      this.logger.info('Transaction confirmation complete', {
         hash: txResponse.hash,
-        status: receipt!.status,
-        blockNumber: receipt!.blockNumber,
-        gasUsed: receipt!.gasUsed.toString(),
+        status: isSuccess ? 'SUCCESS' : 'FAILED',
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString(),
       });
 
       // Update transaction status
-      tx.status =
-        receipt!.status === 1
-          ? TransactionStatus.CONFIRMED
-          : TransactionStatus.FAILED;
+      tx.status = isSuccess
+        ? TransactionStatus.CONFIRMED
+        : TransactionStatus.FAILED;
       tx.hash = txResponse.hash;
-      tx.gasPrice = 0n; // Set default since it may not be available
-      tx.gasLimit = receipt!.gasUsed;
+      tx.gasPrice = txResponse.gasPrice || 0n;
+      tx.gasLimit = receipt?.gasUsed || 0n;
       tx.executedAt = new Date();
 
-      if (receipt!.status !== 1) {
+      // Log appropriate event
+      if (isSuccess) {
+        this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
+          id: tx.id,
+          hash: txResponse.hash,
+          blockNumber: receipt?.blockNumber,
+          gasUsed: receipt?.gasUsed.toString(),
+        });
+      } else {
         this.logger.error(EXECUTOR_EVENTS.TRANSACTION_FAILED, {
           id: tx.id,
           hash: txResponse.hash,
         });
-
-        // Remove from in-memory queue if failed
-        if (tx.status === TransactionStatus.FAILED) {
-          this.queue.delete(tx.id);
-        }
-
-        return;
       }
 
-      this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
-        id: tx.id,
-        hash: txResponse.hash,
-        blockNumber: receipt!.blockNumber,
-        gasUsed: receipt!.gasUsed.toString(),
-      });
+      // Clean up queue items regardless of success or failure
+      await this.cleanupQueueItems(tx, txResponse.hash);
 
-      // Update database status and clear queues
-      if (this.db) {
-        try {
-          // Get transaction queue item to find deposit IDs
-          const txQueueItem = await this.db.getTransactionQueueItem(tx.id);
-          if (txQueueItem) {
-            // Parse deposit IDs from the transaction queue item
-            const depositIds = txQueueItem.deposit_id.split(',');
-
-            // Update transaction queue status and clear processing queue items
-            await Promise.all([
-              // Update transaction queue status
-              this.db.updateTransactionQueueItem(tx.id, {
-                status: TransactionQueueStatus.CONFIRMED,
-                hash: txResponse.hash,
-                error: undefined,
-              }),
-              // Delete transaction queue item
-              this.db.deleteTransactionQueueItem(tx.id),
-              // Update and delete processing queue items for each deposit
-              ...depositIds.map(async (depositId) => {
-                const processingItem =
-                  await this.db!.getProcessingQueueItemByDepositId(depositId);
-                if (processingItem) {
-                  // First update status to completed
-                  await this.db!.updateProcessingQueueItem(processingItem.id, {
-                    status: ProcessingQueueStatus.COMPLETED,
-                  });
-                  // Then delete the item
-                  await this.db!.deleteProcessingQueueItem(processingItem.id);
-                }
-              }),
-            ]);
-          }
-        } catch (error) {
-          this.logger.error('Failed to update queue items', {
-            error: error instanceof Error ? error.message : String(error),
-            transactionId: tx.id,
-          });
-        }
-      }
-
+      // Update in-memory queue
       this.queue.set(tx.id, tx);
+
+      // Remove from in-memory queue
+      this.queue.delete(tx.id);
     } catch (error) {
       this.logger.error('Failed to process transaction receipt', {
         error: error instanceof Error ? error.message : String(error),
@@ -940,88 +964,158 @@ export class BaseExecutor implements IExecutor {
       ...executorError.context,
     });
 
-    // Update database status
-    if (this.db) {
-      try {
-        // First try to get the transaction queue item ID from tx_data
-        let queueItemId: string | undefined;
-        if (tx.tx_data) {
-          try {
-            const txData = JSON.parse(tx.tx_data);
-            queueItemId = txData.queueItemId;
-          } catch (parseError) {
-            this.logger.error('Failed to parse txData for queue item ID', {
-              error:
-                parseError instanceof Error
-                  ? parseError.message
-                  : String(parseError),
-              txData: tx.tx_data,
-            });
-          }
-        }
-
-        if (queueItemId) {
-          // Update and delete the transaction queue item
-          await this.db.updateTransactionQueueItem(queueItemId, {
-            status: TransactionQueueStatus.FAILED,
-            error: executorError.message,
-          });
-
-          // Delete the transaction queue item
-          await this.db.deleteTransactionQueueItem(queueItemId);
-
-          // Clean up related processing queue items
-          if (tx.tx_data) {
-            try {
-              const txData = JSON.parse(tx.tx_data);
-              if (txData.depositIds) {
-                for (const depositId of txData.depositIds) {
-                  const processingItem =
-                    await this.db.getProcessingQueueItemByDepositId(
-                      depositId.toString(),
-                    );
-                  if (processingItem) {
-                    await this.db.deleteProcessingQueueItem(processingItem.id);
-                  }
-                }
-              }
-            } catch (parseError) {
-              this.logger.error('Failed to parse deposit IDs from tx data', {
-                error:
-                  parseError instanceof Error
-                    ? parseError.message
-                    : String(parseError),
-              });
-            }
-          }
-
-          this.logger.info('Removed failed transaction from queue', {
-            queueItemId,
-          });
-        } else {
-          // Fall back to updating by deposit IDs if no queue item ID found
-          await Promise.all(
-            tx.depositIds.map((depositId) =>
-              this.db!.updateTransactionQueueItem(depositId.toString(), {
-                status: TransactionQueueStatus.FAILED,
-                error: executorError.message,
-              }).then(() =>
-                this.db!.deleteTransactionQueueItem(depositId.toString()),
-              ),
-            ),
-          );
-        }
-      } catch (dbError) {
-        this.logger.error('Failed to update database after transaction error', {
-          error: dbError instanceof Error ? dbError.message : String(dbError),
-          originalError: executorError.message,
-          depositIds: tx.depositIds.map(String),
-        });
-      }
-    }
+    // Clean up queue items
+    await this.cleanupQueueItems(tx, tx.hash || '');
 
     // Remove from in-memory queue
     this.queue.delete(tx.id);
+  }
+
+  /**
+   * Cleans up queue items after transaction completion (success or failure)
+   * @param tx - Transaction that completed
+   * @param txHash - Transaction hash
+   */
+  private async cleanupQueueItems(
+    tx: QueuedTransaction,
+    txHash: string,
+  ): Promise<void> {
+    if (!this.db) return;
+
+    try {
+      // Get queueItemId and depositIds from tx metadata or try to parse from tx_data
+      let queueItemId = tx.metadata?.queueItemId;
+      let depositIdStrings = tx.metadata?.depositIds || [];
+
+      if (!queueItemId && tx.tx_data) {
+        try {
+          const txData = JSON.parse(tx.tx_data);
+          queueItemId = txData.queueItemId;
+          depositIdStrings =
+            txData.depositIds?.map(String) || tx.depositIds.map(String);
+        } catch (error) {
+          this.logger.error('Failed to parse txData for queue cleanup', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      // If still no deposit IDs, use the ones from transaction object
+      if (depositIdStrings.length === 0) {
+        depositIdStrings = tx.depositIds.map(String);
+      }
+
+      // If we have a specific queue item ID
+      if (queueItemId) {
+        // First try to get additional deposit IDs from the database if needed
+        if (depositIdStrings.length === 0) {
+          const queueItem = await this.db.getTransactionQueueItem(queueItemId);
+          if (queueItem) {
+            // Try to extract deposit IDs from the tx_data JSON
+            if (queueItem.tx_data) {
+              try {
+                const txData = JSON.parse(queueItem.tx_data);
+                if (Array.isArray(txData.depositIds)) {
+                  depositIdStrings = txData.depositIds.map(String);
+                  this.logger.info('Found deposit IDs in tx_data:', {
+                    depositIds: depositIdStrings,
+                  });
+                }
+              } catch (parseError) {
+                this.logger.error('Failed to parse tx_data JSON:', {
+                  error:
+                    parseError instanceof Error
+                      ? parseError.message
+                      : String(parseError),
+                });
+              }
+            }
+
+            // If we still have no deposit IDs, check if deposit_id field has a single ID
+            if (depositIdStrings.length === 0 && queueItem.deposit_id) {
+              // Use the deposit_id directly (will be a single ID in Supabase case)
+              depositIdStrings = [queueItem.deposit_id];
+              this.logger.info('Using single deposit ID from queue item:', {
+                depositId: queueItem.deposit_id,
+              });
+            }
+          }
+        }
+
+        // Update transaction queue item status first
+        await this.db.updateTransactionQueueItem(queueItemId, {
+          status:
+            tx.status === TransactionStatus.CONFIRMED
+              ? TransactionQueueStatus.CONFIRMED
+              : TransactionQueueStatus.FAILED,
+          hash: txHash,
+          error:
+            tx.status === TransactionStatus.FAILED
+              ? tx.error?.message || 'Transaction failed'
+              : undefined,
+        });
+
+        // Delete transaction queue item
+        await this.db.deleteTransactionQueueItem(queueItemId);
+
+        this.logger.info('Deleted transaction queue item', {
+          queueItemId,
+          txHash,
+        });
+      }
+
+      // Clean up processing queue items for all deposit IDs
+      if (depositIdStrings.length > 0) {
+        for (const depositId of depositIdStrings) {
+          try {
+            const processingItem =
+              await this.db.getProcessingQueueItemByDepositId(depositId);
+            if (processingItem) {
+              // Update status before deletion for record keeping
+              await this.db.updateProcessingQueueItem(processingItem.id, {
+                status:
+                  tx.status === TransactionStatus.CONFIRMED
+                    ? ProcessingQueueStatus.COMPLETED
+                    : ProcessingQueueStatus.FAILED,
+                error:
+                  tx.status === TransactionStatus.FAILED
+                    ? tx.error?.message || 'Transaction failed'
+                    : undefined,
+              });
+
+              // Then delete
+              await this.db.deleteProcessingQueueItem(processingItem.id);
+
+              this.logger.info('Deleted processing queue item', {
+                processingItemId: processingItem.id,
+                depositId,
+                txHash,
+              });
+            }
+          } catch (error) {
+            this.logger.error('Failed to clean up processing queue item', {
+              error: error instanceof Error ? error.message : String(error),
+              depositId,
+              txHash,
+            });
+          }
+        }
+      }
+
+      // If we couldn't find specific items, log a warning
+      if (!queueItemId && depositIdStrings.length === 0) {
+        this.logger.warn('Unable to identify queue items to clean up', {
+          txId: tx.id,
+          txHash,
+        });
+      }
+    } catch (error) {
+      this.logger.error('Failed to clean up queue items', {
+        error: error instanceof Error ? error.message : String(error),
+        txId: tx.id,
+        txHash,
+      });
+    }
   }
 
   /**

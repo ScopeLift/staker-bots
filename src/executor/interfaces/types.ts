@@ -31,6 +31,11 @@ export interface QueuedTransaction {
   gasLimit?: bigint;
   error?: Error;
   tx_data?: string;
+  metadata?: {
+    queueItemId?: string;
+    depositIds?: string[];
+    [key: string]: string | string[] | undefined;
+  };
 }
 
 export enum TransactionStatus {

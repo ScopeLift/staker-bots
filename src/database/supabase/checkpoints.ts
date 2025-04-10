@@ -33,7 +33,7 @@ export async function getCheckpoint(
     .from('processing_checkpoints')
     .select('*')
     .eq('component_type', componentType)
-    .single();
+    .maybeSingle();
 
   if (error) throw error;
   return data;
