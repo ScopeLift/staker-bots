@@ -180,21 +180,16 @@ export class ExecutorWrapper {
     queueSize: number;
   }> {
     try {
-      // Ensure Defender credentials might be refreshed if needed
-      await this.ensureDefenderCredentialsValid();
       return await this.executor.getStatus();
     } catch (error) {
-      // Check if it's a 403 error specifically for Defender
       if (this.type === ExecutorType.DEFENDER && error instanceof Error && error.message.includes('403')) {
-         this.logger.error('CRITICAL: Received 403 from Defender on getStatus. Exiting process.', { error: error.message });
-         // Exit the process. PM2 should be configured to restart it automatically.
+         this.logger.error('CRITICAL: Received 403 from Defender. Exiting process.', { error: error.message });
          process.exit(1);
       }
-      // For other errors, wrap and rethrow
       throw new ExecutorError(
         'Failed to get executor status',
         { error: error instanceof Error ? error.message : String(error) },
-        true, // Assume other errors might be retryable
+        true,
       );
     }
   }
@@ -313,9 +308,6 @@ export class ExecutorWrapper {
       });
     }
     try {
-      // Ensure Defender credentials might be refreshed if needed
-      await this.ensureDefenderCredentialsValid();
-
       // Parse txData if it's a string and contains profitability data
       let processedProfitability = profitability;
       if (txData) {
@@ -326,18 +318,15 @@ export class ExecutorWrapper {
               parsedData.profitability,
             );
           }
-        } catch (parseError) { // Renamed error variable
+        } catch (parseError) {
           this.logger.error('Failed to parse txData', {
             error: parseError instanceof Error ? parseError.message : String(parseError),
             txData,
           });
-          // Decide if this error is fatal or recoverable
         }
       }
 
-      // Get block number with retry for RPC robustness
-      const currentBlock = await this.getCurrentBlockNumberWithRetry();
-
+      const currentBlock = await this.provider.getBlockNumber();
       const result = await this.executor.queueTransaction(
         depositIds,
         processedProfitability,
@@ -346,22 +335,20 @@ export class ExecutorWrapper {
 
       // Update checkpoint after successful transaction queueing
       if (currentBlock > this.lastProcessedBlock) {
-          // Get block details with retry
-          let block: ethers.Block | null = null;
-          for (let i = 0; i < 3; i++) {
-              try {
-                  block = await this.provider.getBlock(currentBlock);
-                  if (block) break;
-              } catch (blockError) { // Renamed error variable
-                 this.logger.warn(`Failed to get block details for ${currentBlock} (attempt ${i + 1}/3)`, { error: blockError });
-                 await sleep(500 * (i + 1));
-              }
+        let block: ethers.Block | null = null;
+        for (let i = 0; i < 3; i++) {
+          try {
+            block = await this.provider.getBlock(currentBlock);
+            if (block) break;
+          } catch (blockError) {
+            this.logger.warn(`Failed to get block details for ${currentBlock} (attempt ${i + 1}/3)`, { error: blockError });
+            await sleep(500 * (i + 1));
           }
-          if (!block) {
-              // Decide if failure to get block details is fatal
-              this.logger.error(`FATAL: Block ${currentBlock} not found after retries. Cannot update checkpoint.`);
-              throw new Error(`Block ${currentBlock} not found after retries`);
-          }
+        }
+        if (!block) {
+          this.logger.error(`Block ${currentBlock} not found after retries. Cannot update checkpoint.`);
+          throw new Error(`Block ${currentBlock} not found after retries`);
+        }
 
         await this.db?.updateCheckpoint({
           component_type: 'executor',
@@ -374,20 +361,17 @@ export class ExecutorWrapper {
 
       return result;
     } catch (error) {
-       // Check if it's a 403 error specifically for Defender
       if (this.type === ExecutorType.DEFENDER && error instanceof Error && error.message.includes('403')) {
-         this.logger.error('CRITICAL: Received 403 from Defender on queueTransaction. Exiting process.', { error: error.message });
-         // Exit the process. PM2 should be configured to restart it automatically.
+         this.logger.error('CRITICAL: Received 403 from Defender. Exiting process.', { error: error.message });
          process.exit(1);
       }
-      // For other errors, wrap and rethrow
       throw new ExecutorError(
         'Failed to queue transaction',
         {
           error: error instanceof Error ? error.message : String(error),
           depositIds: depositIds.map(String),
         },
-        true, // Assume other errors might be retryable
+        true,
       );
     }
   }
@@ -481,14 +465,14 @@ export class ExecutorWrapper {
     }
   }
 
-  private async getCurrentBlockNumberWithRetry(): Promise<number> {
-    for (let i = 0; i < 3; i++) {
+  private async getCurrentBlockNumberWithRetry(retries = 3, delayMs = 1000): Promise<number> {
+    for (let i = 0; i < retries; i++) {
       try {
-        const blockNumber = await this.provider.getBlockNumber();
-        return blockNumber;
+        return await this.provider.getBlockNumber();
       } catch (error) {
-        this.logger.warn(`Failed to get block number (attempt ${i + 1}/3)`, { error: error instanceof Error ? error.message : String(error) });
-        await sleep(500 * (i + 1));
+        this.logger.warn(`Failed to get block number (attempt ${i + 1}/${retries})`, { error });
+        if (i === retries - 1) throw error;
+        await sleep(delayMs * (i + 1));
       }
     }
     throw new ExecutorError('Failed to get block number after retries', {}, true);
