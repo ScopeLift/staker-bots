@@ -545,17 +545,24 @@ export class GovLstProfitabilityEngineWrapper
         const totalGasCost =
           (gasEstimate * (gasPrice.gasPrice || 0n) * (100n + gasBuffer)) / 100n;
 
-        const minProfitMargin = this.engine.config.minProfitMargin;
-        const isReallyProfitable =
-          totalRewards > totalGasCost + minProfitMargin;
+        // Get the minimum profit margin percentage from config
+        const minProfitMarginPercent = this.engine.config.minProfitMargin; // This is a number like 10
+
+        // Calculate the minimum required profit value in wei
+        const minProfitValue =
+          (totalRewards * BigInt(minProfitMarginPercent)) / 100n; // e.g., (totalRewards * 10) / 100
+
+        const isReallyProfitable = totalRewards > totalGasCost + minProfitValue;
 
         if (!isReallyProfitable) {
           this.logger.info(
-            'Skipping deposits - not profitable after gas costs:',
+            'Skipping deposits - not profitable after gas costs and margin:',
             {
               totalRewards: ethers.formatEther(totalRewards),
               estimatedGasCost: ethers.formatEther(totalGasCost),
-              minProfitMargin: ethers.formatEther(minProfitMargin),
+              minProfitMarginPercent: `${minProfitMarginPercent}%`,
+              requiredMinProfitValue: ethers.formatEther(minProfitValue),
+              actualProfit: ethers.formatEther(totalRewards - totalGasCost),
             },
           );
           return;

@@ -54,7 +54,7 @@ export type GasPriceEstimate = {
 
 export interface ProfitabilityConfig {
   rewardTokenAddress: string;
-  minProfitMargin: bigint;
+  minProfitMargin: number;
   gasPriceBuffer: number;
   maxBatchSize: number;
   defaultTipReceiver: string;

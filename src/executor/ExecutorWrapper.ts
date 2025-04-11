@@ -9,10 +9,7 @@ import {
   TransactionReceipt,
   RelayerExecutorConfig,
 } from './interfaces/types';
-import {
-  DEFAULT_EXECUTOR_CONFIG,
-  DEFAULT_RELAYER_EXECUTOR_CONFIG,
-} from './constants';
+import { EXECUTOR } from '@/configuration/constants';
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { IExecutor } from './interfaces/IExecutor';
 import { DatabaseWrapper } from '@/database';
@@ -73,10 +70,10 @@ export class ExecutorWrapper {
     if (type === ExecutorType.WALLET) {
       // Create a BaseExecutor with local wallet
       const fullConfig: ExecutorConfig = {
-        ...DEFAULT_EXECUTOR_CONFIG,
+        ...EXECUTOR.DEFAULT_CONFIG,
         ...(config as Partial<ExecutorConfig>),
         wallet: {
-          ...DEFAULT_EXECUTOR_CONFIG.wallet,
+          ...EXECUTOR.DEFAULT_CONFIG.wallet,
           ...(config as Partial<ExecutorConfig>).wallet,
         },
       };
@@ -90,7 +87,7 @@ export class ExecutorWrapper {
     } else if (type === ExecutorType.DEFENDER) {
       // Create a RelayerExecutor with OpenZeppelin Defender
       const fullConfig: RelayerExecutorConfig = {
-        ...DEFAULT_RELAYER_EXECUTOR_CONFIG,
+        ...EXECUTOR.DEFAULT_RELAYER_CONFIG,
         ...(config as Partial<RelayerExecutorConfig>),
       };
 

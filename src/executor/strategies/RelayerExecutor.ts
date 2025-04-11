@@ -17,7 +17,7 @@ import {
   DefenderRelayProvider,
   DefenderRelaySigner,
 } from '@openzeppelin/defender-relay-client/lib/ethers';
-import { EXECUTOR_EVENTS, GAS_CONSTANTS, QUEUE_CONSTANTS } from '../constants';
+import { EXECUTOR } from '@/configuration/constants';
 import {
   TransactionQueueStatus,
   ProcessingQueueStatus,
@@ -33,6 +33,33 @@ import {
   createExecutorError,
 } from '@/configuration/errors';
 import { CONFIG } from '@/configuration';
+import {
+  calculateGasLimit,
+  pollForReceipt,
+  validateTransaction,
+  extractQueueItemInfo,
+  calculateQueueStats,
+} from '@/configuration/helpers';
+
+// Local constants used in this file
+const RELAYER_EVENTS = {
+  TRANSACTION_QUEUED: EXECUTOR.EVENTS.TRANSACTION_QUEUED,
+  TRANSACTION_CONFIRMED: EXECUTOR.EVENTS.TRANSACTION_CONFIRMED,
+  TRANSACTION_FAILED: EXECUTOR.EVENTS.TRANSACTION_FAILED,
+  TIPS_TRANSFERRED: EXECUTOR.EVENTS.TIPS_TRANSFERRED,
+  ERROR: EXECUTOR.EVENTS.ERROR,
+} as const;
+
+const RELAYER_QUEUE = {
+  PROCESSOR_INTERVAL: EXECUTOR.QUEUE.QUEUE_PROCESSOR_INTERVAL,
+  MAX_BATCH_SIZE: EXECUTOR.QUEUE.MAX_BATCH_SIZE,
+  MIN_BATCH_SIZE: EXECUTOR.QUEUE.MIN_BATCH_SIZE,
+} as const;
+
+const RELAYER_PROFITABILITY = {
+  INCLUDE_GAS_COST: CONFIG.profitability.includeGasCost,
+  MIN_PROFIT_MARGIN: CONFIG.profitability.minProfitMargin,
+} as const;
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -186,7 +213,7 @@ export class RelayerExecutor implements IExecutor {
     };
 
     this.queue.set(tx.id, tx);
-    this.logger.info(EXECUTOR_EVENTS.TRANSACTION_QUEUED, {
+    this.logger.info(RELAYER_EVENTS.TRANSACTION_QUEUED, {
       id: tx.id,
       depositCount: depositIds.length,
       totalShares: profitability.estimates.total_shares.toString(),
@@ -204,52 +231,20 @@ export class RelayerExecutor implements IExecutor {
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
-    // Check for existing transactions with the same deposit IDs
-    const transactions = Array.from(this.queue.values());
-    const depositIdsStrings = depositIds.map(String);
-    const existingTransaction = transactions.find((tx) => {
-      // Check both queued and pending transactions
-      if (
-        tx.status !== TransactionStatus.QUEUED &&
-        tx.status !== TransactionStatus.PENDING
-      )
-        return false;
-      // Check if any of the deposit IDs overlap
-      return tx.depositIds.some((id) =>
-        depositIdsStrings.includes(id.toString()),
-      );
-    });
-
-    if (existingTransaction) {
+    // Use the centralized validation function first
+    const baseValidation = await validateTransaction(
+      depositIds,
+      profitability,
+      this.queue,
+    );
+    if (!baseValidation.isValid) {
       return {
         isValid: false,
         error: new TransactionValidationError(
-          'One or more deposits are already in a pending transaction',
+          baseValidation.error?.message || 'Transaction validation failed',
           {
-            depositIds: depositIdsStrings,
-            existingTxId: existingTransaction.id,
-            existingTxStatus: existingTransaction.status,
+            depositIds: depositIds.map(String),
           },
-        ),
-      };
-    }
-
-    if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE) {
-      return {
-        isValid: false,
-        error: new TransactionValidationError(
-          `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
-          { depositIds: depositIds.map(String) },
-        ),
-      };
-    }
-
-    if (depositIds.length < QUEUE_CONSTANTS.MIN_BATCH_SIZE) {
-      return {
-        isValid: false,
-        error: new TransactionValidationError(
-          `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
-          { depositIds: depositIds.map(String) },
         ),
       };
     }
@@ -288,24 +283,34 @@ export class RelayerExecutor implements IExecutor {
     }
     const payoutAmount = await this.lstContract.payoutAmount();
 
+    // Calculate the base amount for profit margin calculation
+    const baseAmountForMargin =
+      payoutAmount +
+      (RELAYER_PROFITABILITY.INCLUDE_GAS_COST ? estimatedGasCost : 0n);
+
+    // Get the min profit margin percentage (as a number)
+    const minProfitMarginPercent = RELAYER_PROFITABILITY.MIN_PROFIT_MARGIN;
+
+    // Calculate the required profit value in wei
+    const requiredProfitValue =
+      (baseAmountForMargin * BigInt(Math.round(minProfitMarginPercent * 100))) /
+      10000n; // Multiply by 100 for percentage, divide by 10000 (100*100)
+
     // Validate that expected reward is sufficient
-    // TODO: WE NEED TO COMPARE GAS PRICE TO TOKEN PRICE TO GET A REAL ESTIMATE OF PROFITABILITY
     if (
       profitability.estimates.expected_profit <
-      payoutAmount +
-        estimatedGasCost +
-        ((payoutAmount + estimatedGasCost) *
-          BigInt(CONFIG.profitability.minProfitMargin)) /
-          100n
+      baseAmountForMargin + requiredProfitValue
     ) {
       return {
         isValid: false,
         error: new TransactionValidationError(
-          'Expected reward is less than payout amount plus gas cost',
+          'Expected reward is less than payout amount plus gas cost and profit margin',
           {
             expectedReward: profitability.estimates.expected_profit.toString(),
             payoutAmount: payoutAmount.toString(),
             estimatedGasCost: estimatedGasCost.toString(),
+            requiredProfitValue: requiredProfitValue.toString(),
+            minProfitMarginPercent: `${minProfitMarginPercent}%`,
             depositIds: depositIds.map(String),
           },
         ),
@@ -319,46 +324,7 @@ export class RelayerExecutor implements IExecutor {
   }
 
   async getQueueStats(): Promise<QueueStats> {
-    const transactions = Array.from(this.queue.values());
-    const confirmed = transactions.filter(
-      (tx) => tx.status === TransactionStatus.CONFIRMED,
-    );
-    const failed = transactions.filter(
-      (tx) => tx.status === TransactionStatus.FAILED,
-    );
-    const pending = transactions.filter(
-      (tx) => tx.status === TransactionStatus.PENDING,
-    );
-    const queued = transactions.filter(
-      (tx) => tx.status === TransactionStatus.QUEUED,
-    );
-
-    const totalGasPrice = confirmed.reduce(
-      (sum, tx) => sum + (tx.gasPrice || 0n),
-      0n,
-    );
-    const totalGasLimit = confirmed.reduce(
-      (sum, tx) => sum + (tx.gasLimit || 0n),
-      0n,
-    );
-    const totalProfits = confirmed.reduce(
-      (sum, tx) => sum + tx.profitability.estimates.expected_profit,
-      0n,
-    );
-
-    return {
-      totalConfirmed: confirmed.length,
-      totalFailed: failed.length,
-      totalPending: pending.length,
-      totalQueued: queued.length,
-      averageGasPrice: confirmed.length
-        ? totalGasPrice / BigInt(confirmed.length)
-        : 0n,
-      averageGasLimit: confirmed.length
-        ? totalGasLimit / BigInt(confirmed.length)
-        : 0n,
-      totalProfits,
-    };
+    return calculateQueueStats(Array.from(this.queue.values()));
   }
 
   async getTransaction(id: string): Promise<QueuedTransaction | null> {
@@ -438,7 +404,7 @@ export class RelayerExecutor implements IExecutor {
       this.logger.info('Waiting for tip transfer transaction...');
       const receipt = await tx.wait();
 
-      this.logger.info(EXECUTOR_EVENTS.TIPS_TRANSFERRED, {
+      this.logger.info(RELAYER_EVENTS.TIPS_TRANSFERRED, {
         amount: ethers.formatEther(balanceBigInt - this.config.minBalance),
         receiver: this.config.defaultTipReceiver,
         hash: tx.hash,
@@ -478,7 +444,7 @@ export class RelayerExecutor implements IExecutor {
     }
     this.processingInterval = setInterval(
       () => this.processQueue(true),
-      QUEUE_CONSTANTS.QUEUE_PROCESSOR_INTERVAL,
+      RELAYER_QUEUE.PROCESSOR_INTERVAL,
     );
   }
 
@@ -539,7 +505,7 @@ export class RelayerExecutor implements IExecutor {
         isPeriodicCheck,
         queueSize: this.queue.size,
       });
-      this.logger.error(EXECUTOR_EVENTS.ERROR, {
+      this.logger.error(RELAYER_EVENTS.ERROR, {
         ...executorError,
         ...executorError.context,
       });
@@ -708,7 +674,12 @@ export class RelayerExecutor implements IExecutor {
             this.logger.info('Waiting for approval transaction...');
             let receipt;
             try {
-              receipt = await this.pollForReceipt(approveTx.hash, 3);
+              receipt = await pollForReceipt(
+                approveTx.hash,
+                this.relayProvider as unknown as ethers.Provider,
+                this.logger,
+                3,
+              );
             } catch (confirmError: unknown) {
               // If polling fails, just log the error
               this.logger.warn('Standard wait for approval failed', {
@@ -843,9 +814,10 @@ export class RelayerExecutor implements IExecutor {
       // Calculate gas limit with extra buffer for complex operations
       const gasEstimate = tx.profitability.estimates.gas_estimate;
       const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate; // Use minimum 500k gas if estimate is too low
-      const calculatedGasLimit = this.calculateGasLimit(
+      const calculatedGasLimit = calculateGasLimit(
         baseGasLimit,
         depositIds.length,
+        this.logger,
       );
 
       this.logger.info('Gas limit for transaction', {
@@ -887,7 +859,12 @@ export class RelayerExecutor implements IExecutor {
       try {
         let receipt;
         try {
-          receipt = await this.pollForReceipt(response.hash, 3);
+          receipt = await pollForReceipt(
+            response.hash,
+            this.relayProvider as unknown as ethers.Provider,
+            this.logger,
+            3,
+          );
         } catch (confirmError: unknown) {
           // If polling fails, just log the error
           this.logger.warn('Transaction confirmation failed', {
@@ -945,114 +922,6 @@ export class RelayerExecutor implements IExecutor {
     }
   }
 
-  // Add helper for gas limit calculation
-  private calculateGasLimit(
-    gasEstimate: bigint,
-    depositCount: number = 1,
-  ): bigint {
-    this.logger.info('Calculating gas limit', {
-      baseGasEstimate: gasEstimate.toString(),
-      depositCount,
-      buffer: GAS_CONSTANTS.GAS_LIMIT_BUFFER,
-      minGasLimit: GAS_CONSTANTS.MIN_GAS_LIMIT.toString(),
-      maxGasLimit: GAS_CONSTANTS.MAX_GAS_LIMIT.toString(),
-    });
-
-    let gasLimit: bigint;
-    try {
-      // Scale gas limit based on deposit count
-      // Base + additional gas per item beyond the first one
-      const baseGas = Number(gasEstimate) * GAS_CONSTANTS.GAS_LIMIT_BUFFER;
-      const additionalGas = Math.max(0, depositCount - 1) * 30000; // 30k gas per additional deposit
-      gasLimit = BigInt(Math.ceil(baseGas + additionalGas));
-    } catch (error) {
-      // If conversion fails, use a safe default
-      this.logger.warn('Error calculating gas limit, using safe default', {
-        error: error instanceof Error ? error.message : String(error),
-        gasEstimate: gasEstimate.toString(),
-        depositCount,
-      });
-      // Scale the safe default based on deposit count
-      gasLimit =
-        GAS_CONSTANTS.MIN_GAS_LIMIT * 2n +
-        BigInt(Math.max(0, depositCount - 1) * 30000);
-    }
-
-    // Apply bounds
-    if (gasLimit < GAS_CONSTANTS.MIN_GAS_LIMIT) {
-      this.logger.info('Gas limit below minimum, using minimum value', {
-        calculatedLimit: gasLimit.toString(),
-        minLimit: GAS_CONSTANTS.MIN_GAS_LIMIT.toString(),
-      });
-      return GAS_CONSTANTS.MIN_GAS_LIMIT;
-    } else if (gasLimit > GAS_CONSTANTS.MAX_GAS_LIMIT) {
-      this.logger.info('Gas limit above maximum, using maximum value', {
-        calculatedLimit: gasLimit.toString(),
-        maxLimit: GAS_CONSTANTS.MAX_GAS_LIMIT.toString(),
-      });
-      return GAS_CONSTANTS.MAX_GAS_LIMIT;
-    }
-
-    this.logger.info('Final gas limit calculated', {
-      finalGasLimit: gasLimit.toString(),
-      depositCount,
-    });
-
-    return gasLimit;
-  }
-
-  // Add custom receipt polling method to handle ethers v5/v6 compatibility
-  private async pollForReceipt(
-    txHash: string,
-    confirmations: number = 1,
-  ): Promise<EthersTransactionReceipt | null> {
-    if (!this.relayProvider) {
-      throw new ExecutorError('Relay provider not initialized', {}, false);
-    }
-
-    const maxAttempts = 30; // Try for about 5 minutes with 10-second intervals
-    const pollingInterval = 10000; // 10 seconds
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        // Get receipt
-        const receipt = (await this.relayProvider.getTransactionReceipt(
-          txHash,
-        )) as unknown as EthersTransactionReceipt;
-
-        if (!receipt) {
-          // If no receipt yet, wait and try again
-          await new Promise((resolve) => setTimeout(resolve, pollingInterval));
-          continue;
-        }
-
-        // Check if we have enough confirmations
-        const currentBlock = await this.relayProvider.getBlockNumber();
-        const receiptConfirmations = currentBlock - receipt.blockNumber + 1;
-
-        if (receiptConfirmations >= confirmations) {
-          return receipt;
-        }
-
-        // Not enough confirmations, wait and try again
-        await new Promise((resolve) => setTimeout(resolve, pollingInterval));
-      } catch (error) {
-        this.logger.warn('Error polling for receipt', {
-          error: error instanceof Error ? error.message : String(error),
-          txHash,
-          attempt,
-        });
-
-        // Wait and try again
-        await new Promise((resolve) => setTimeout(resolve, pollingInterval));
-      }
-    }
-
-    throw new Error(
-      `Transaction ${txHash} not confirmed after ${maxAttempts} attempts`,
-    );
-  }
-
   // Add or update processTransactionReceipt method
   private async processTransactionReceipt(
     tx: QueuedTransaction,
@@ -1072,14 +941,14 @@ export class RelayerExecutor implements IExecutor {
 
     // Logging based on status
     if (isSuccess) {
-      this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
+      this.logger.info(RELAYER_EVENTS.TRANSACTION_CONFIRMED, {
         id: tx.id,
         hash: response.hash,
         blockNumber: receipt?.blockNumber,
         gasUsed: receipt?.gasUsed.toString(),
       });
     } else {
-      this.logger.warn(EXECUTOR_EVENTS.TRANSACTION_FAILED, {
+      this.logger.warn(RELAYER_EVENTS.TRANSACTION_FAILED, {
         id: tx.id,
         hash: response.hash,
       });
@@ -1101,21 +970,10 @@ export class RelayerExecutor implements IExecutor {
     if (!this.db) return;
 
     try {
-      // Get queueItemId and depositIds from tx metadata or try to parse from tx_data
-      let queueItemId = tx.metadata?.queueItemId;
-      let depositIdStrings = tx.metadata?.depositIds || [];
-
-      if (!queueItemId && tx.tx_data) {
-        try {
-          const txData = JSON.parse(tx.tx_data);
-          queueItemId = txData.queueItemId;
-          depositIdStrings = txData.depositIds?.map(String) || [];
-        } catch (error) {
-          this.logger.error('Failed to parse txData for queue cleanup', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      // Use the centralized helper to extract queue item info
+      const { queueItemId, depositIds: extractedDepositIds } =
+        extractQueueItemInfo(tx);
+      let depositIdStrings = [...extractedDepositIds]; // Make a mutable copy
 
       // If we have a specific queue item ID
       if (queueItemId) {
@@ -1247,7 +1105,7 @@ export class RelayerExecutor implements IExecutor {
       depositIds: tx.depositIds.map(String),
       error: error instanceof Error ? error.message : String(error),
     };
-    this.logger.error(EXECUTOR_EVENTS.ERROR, {
+    this.logger.error(RELAYER_EVENTS.ERROR, {
       ...executorError,
       ...executorError.context,
     });
