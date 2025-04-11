@@ -83,10 +83,13 @@ export const CONFIG = {
     },
   },
   profitability: {
+    includeGasCost: process.env.PROFITABILITY_INCLUDE_GAS_COST === 'true',
     rewardCheckInterval: parseInt(
       process.env.GOVLST_REWARD_CHECK_INTERVAL || '60000',
     ), // 1 minute
-    minProfitMargin: process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || 10,
+    minProfitMargin: parseFloat(
+      process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || '10',
+    ), // 10% minimum profit margin by default
     gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,
     defaultTipReceiver: process.env.TIP_RECEIVER_ADDRESS || '',
@@ -99,7 +102,9 @@ export const CONFIG = {
   govlst: {
     addresses: process.env.GOVLST_ADDRESSES?.split(',') || [],
     payoutAmount: BigInt(process.env.GOVLST_PAYOUT_AMOUNT || 0),
-    minProfitMargin: BigInt(process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || 10), // 10% minimum profit margin
+    minProfitMargin: parseFloat(
+      process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || '10',
+    ), // 10% minimum profit margin by default
     maxBatchSize: parseInt(process.env.GOVLST_MAX_BATCH_SIZE || '10', 10),
     claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600', 10), // 1 hour default
     gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer

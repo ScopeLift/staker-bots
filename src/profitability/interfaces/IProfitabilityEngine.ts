@@ -6,7 +6,7 @@ import {
 
 export interface ProfitabilityEngineConfig {
   gasPriceBuffer: number;
-  minProfitMargin: bigint;
+  minProfitMargin: number;
 }
 
 export interface IGovLstProfitabilityEngine {

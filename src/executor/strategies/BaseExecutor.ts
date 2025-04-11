@@ -13,8 +13,11 @@ import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
 import { DatabaseWrapper } from '@/database';
 import { Interface } from 'ethers';
-import { TransactionQueueStatus } from '@/database/interfaces/types';
-import { EXECUTOR_EVENTS, GAS_CONSTANTS, QUEUE_CONSTANTS } from '../constants';
+import {
+  TransactionQueueStatus,
+  ProcessingQueueStatus,
+} from '@/database/interfaces/types';
+import { EXECUTOR } from '@/configuration/constants';
 import {
   ContractMethodError,
   ExecutorError,
@@ -25,8 +28,37 @@ import {
   TransactionValidationError,
   createExecutorError,
 } from '@/configuration/errors';
-import { ProcessingQueueStatus } from '@/database/interfaces/types';
 import { CONFIG } from '@/configuration';
+import {
+  calculateGasLimit,
+  pollForReceipt,
+  validateTransaction,
+  extractQueueItemInfo,
+  calculateQueueStats,
+} from '@/configuration/helpers';
+
+// Local constants used in this file
+const BASE_EVENTS = {
+  TRANSACTION_QUEUED: EXECUTOR.EVENTS.TRANSACTION_QUEUED,
+  TRANSACTION_CONFIRMED: EXECUTOR.EVENTS.TRANSACTION_CONFIRMED,
+  TRANSACTION_FAILED: EXECUTOR.EVENTS.TRANSACTION_FAILED,
+  TIPS_TRANSFERRED: EXECUTOR.EVENTS.TIPS_TRANSFERRED,
+  ERROR: EXECUTOR.EVENTS.ERROR,
+} as const;
+
+const GAS = {
+  MIN_LIMIT: EXECUTOR.GAS.MIN_GAS_LIMIT,
+  MAX_LIMIT: EXECUTOR.GAS.MAX_GAS_LIMIT,
+  BUFFER: EXECUTOR.GAS.GAS_LIMIT_BUFFER,
+} as const;
+
+const BASE_QUEUE = {
+  PROCESSOR_INTERVAL: EXECUTOR.QUEUE.QUEUE_PROCESSOR_INTERVAL,
+  MAX_BATCH_SIZE: EXECUTOR.QUEUE.MAX_BATCH_SIZE,
+  MIN_BATCH_SIZE: EXECUTOR.QUEUE.MIN_BATCH_SIZE,
+  MAX_RETRIES: EXECUTOR.QUEUE.MAX_RETRIES,
+  RETRY_DELAY: EXECUTOR.QUEUE.RETRY_DELAY,
+} as const;
 
 interface GovLstContract extends BaseContract {
   estimateGas: {
@@ -195,7 +227,7 @@ export class BaseExecutor implements IExecutor {
     };
 
     this.queue.set(tx.id, tx);
-    this.logger.info(EXECUTOR_EVENTS.TRANSACTION_QUEUED, {
+    this.logger.info(BASE_EVENTS.TRANSACTION_QUEUED, {
       id: tx.id,
       depositCount: depositIds.length,
       totalShares: profitability.estimates.total_shares.toString(),
@@ -211,53 +243,23 @@ export class BaseExecutor implements IExecutor {
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
-    // Check for existing transactions with the same deposit IDs
-    const transactions = Array.from(this.queue.values());
-    const depositIdsStrings = depositIds.map(String);
-    const existingTransaction = transactions.find((tx) => {
-      // Check both queued and pending transactions
-      if (
-        tx.status !== TransactionStatus.QUEUED &&
-        tx.status !== TransactionStatus.PENDING
-      )
-        return false;
-      // Check if any of the deposit IDs overlap
-      return tx.depositIds.some((id) =>
-        depositIdsStrings.includes(id.toString()),
-      );
-    });
-
-    if (existingTransaction) {
+    // Use the centralized validation function
+    const baseValidation = await validateTransaction(
+      depositIds,
+      profitability,
+      this.queue,
+    );
+    if (!baseValidation.isValid) {
       return {
         isValid: false,
         error: new TransactionValidationError(
-          'One or more deposits are already in a pending transaction',
+          baseValidation.error?.message || 'Transaction validation failed',
           {
-            depositIds: depositIdsStrings,
-            existingTxId: existingTransaction.id,
-            existingTxStatus: existingTransaction.status,
+            depositIds: depositIds.map(String),
           },
         ),
       };
     }
-
-    // Validate batch size
-    if (depositIds.length > QUEUE_CONSTANTS.MAX_BATCH_SIZE)
-      return {
-        isValid: false,
-        error: new TransactionValidationError(
-          `Batch size exceeds maximum of ${QUEUE_CONSTANTS.MAX_BATCH_SIZE}`,
-          { depositIds: depositIds.map(String) },
-        ),
-      };
-    if (depositIds.length < QUEUE_CONSTANTS.MIN_BATCH_SIZE)
-      return {
-        isValid: false,
-        error: new TransactionValidationError(
-          `Batch size below minimum of ${QUEUE_CONSTANTS.MIN_BATCH_SIZE}`,
-          { depositIds: depositIds.map(String) },
-        ),
-      };
 
     // Get current gas price and calculate gas cost
     const feeData = await this.provider.getFeeData();
@@ -319,21 +321,32 @@ export class BaseExecutor implements IExecutor {
       });
     }
 
+    // Calculate the base amount for profit margin calculation
+    const baseAmountForMargin =
+      payoutAmount +
+      (CONFIG.profitability.includeGasCost ? estimatedGasCost : 0n);
+
+    // Get the min profit margin percentage (as a number)
+    const minProfitMarginPercent = CONFIG.profitability.minProfitMargin;
+
+    // Calculate the required profit value in wei
+    const requiredProfitValue =
+      (baseAmountForMargin * BigInt(Math.round(minProfitMarginPercent * 100))) /
+      10000n; // Multiply by 100 for percentage, divide by 10000 (100*100)
+
     // Validate that expected reward is sufficient
     if (
       profitability.estimates.expected_profit <
-      payoutAmount +
-        estimatedGasCost +
-        ((payoutAmount + estimatedGasCost) *
-          BigInt(CONFIG.profitability.minProfitMargin)) /
-          100n
+      baseAmountForMargin + requiredProfitValue
     ) {
       throw new TransactionValidationError(
-        'Expected reward is less than payout amount plus gas cost',
+        'Expected reward is less than payout amount plus gas cost and profit margin',
         {
           expectedReward: profitability.estimates.expected_profit.toString(),
           payoutAmount: payoutAmount.toString(),
           estimatedGasCost: estimatedGasCost.toString(),
+          requiredProfitValue: requiredProfitValue.toString(),
+          minProfitMarginPercent: `${minProfitMarginPercent}%`,
           depositIds: depositIds.map(String),
         },
       );
@@ -350,46 +363,7 @@ export class BaseExecutor implements IExecutor {
    * @returns Queue statistics including counts and gas usage
    */
   async getQueueStats(): Promise<QueueStats> {
-    const transactions = Array.from(this.queue.values());
-    const confirmed = transactions.filter(
-      (tx) => tx.status === TransactionStatus.CONFIRMED,
-    );
-    const failed = transactions.filter(
-      (tx) => tx.status === TransactionStatus.FAILED,
-    );
-    const pending = transactions.filter(
-      (tx) => tx.status === TransactionStatus.PENDING,
-    );
-    const queued = transactions.filter(
-      (tx) => tx.status === TransactionStatus.QUEUED,
-    );
-
-    const totalGasPrice = confirmed.reduce(
-      (sum, tx) => sum + (tx.gasPrice || 0n),
-      0n,
-    );
-    const totalGasLimit = confirmed.reduce(
-      (sum, tx) => sum + (tx.gasLimit || 0n),
-      0n,
-    );
-    const totalProfits = confirmed.reduce(
-      (sum, tx) => sum + tx.profitability.estimates.expected_profit,
-      0n,
-    );
-
-    return {
-      totalConfirmed: confirmed.length,
-      totalFailed: failed.length,
-      totalPending: pending.length,
-      totalQueued: queued.length,
-      averageGasPrice: confirmed.length
-        ? totalGasPrice / BigInt(confirmed.length)
-        : 0n,
-      averageGasLimit: confirmed.length
-        ? totalGasLimit / BigInt(confirmed.length)
-        : 0n,
-      totalProfits,
-    };
+    return calculateQueueStats(Array.from(this.queue.values()));
   }
 
   /**
@@ -451,7 +425,7 @@ export class BaseExecutor implements IExecutor {
 
       const receipt = await tx.wait(1); // Just wait for 1 confirmation
 
-      this.logger.info(EXECUTOR_EVENTS.TIPS_TRANSFERRED, {
+      this.logger.info(BASE_EVENTS.TIPS_TRANSFERRED, {
         amount: ethers.formatEther(balance - this.config.wallet.minBalance),
         receiver: this.config.defaultTipReceiver,
         hash: tx.hash,
@@ -519,7 +493,7 @@ export class BaseExecutor implements IExecutor {
 
     this.processingInterval = setInterval(
       () => this.processQueue(true),
-      QUEUE_CONSTANTS.QUEUE_PROCESSOR_INTERVAL,
+      BASE_QUEUE.PROCESSOR_INTERVAL,
     );
   }
 
@@ -612,7 +586,7 @@ export class BaseExecutor implements IExecutor {
         isPeriodicCheck,
         queueSize: this.queue.size,
       });
-      this.logger.error(EXECUTOR_EVENTS.ERROR, {
+      this.logger.error(BASE_EVENTS.ERROR, {
         ...executorError,
         ...executorError.context,
         stack: error instanceof Error ? error.stack : undefined,
@@ -815,32 +789,14 @@ export class BaseExecutor implements IExecutor {
     boostedGasPrice: bigint;
   }> {
     // Apply a larger buffer for complex transactions
-    const gasBuffer = GAS_CONSTANTS.GAS_LIMIT_BUFFER;
+    const gasBuffer = GAS.BUFFER;
     this.logger.info('Calculating gas parameters', {
       baseGasEstimate: gasEstimate.toString(),
       buffer: gasBuffer,
     });
 
-    // Calculate gas limit with buffer
-    let gasLimit: bigint;
-    try {
-      gasLimit = BigInt(Math.ceil(Number(gasEstimate) * gasBuffer));
-    } catch (error) {
-      // If we can't convert properly, use a safe default
-      this.logger.warn('Error calculating gas limit, using safe default', {
-        error: error instanceof Error ? error.message : String(error),
-        gasEstimate: gasEstimate.toString(),
-      });
-      gasLimit = GAS_CONSTANTS.MIN_GAS_LIMIT * 2n;
-    }
-
-    // Ensure gas limit is within safe bounds
-    const finalGasLimit =
-      gasLimit < GAS_CONSTANTS.MIN_GAS_LIMIT
-        ? GAS_CONSTANTS.MIN_GAS_LIMIT
-        : gasLimit > GAS_CONSTANTS.MAX_GAS_LIMIT
-          ? GAS_CONSTANTS.MAX_GAS_LIMIT
-          : gasLimit;
+    // Calculate gas limit using helper function
+    const finalGasLimit = calculateGasLimit(gasEstimate, 1, this.logger);
 
     // Calculate boosted gas price
     const feeData = await this.provider.getFeeData();
@@ -850,7 +806,6 @@ export class BaseExecutor implements IExecutor {
 
     this.logger.info('Final gas parameters calculated', {
       baseGasEstimate: gasEstimate.toString(),
-      calculatedGasLimit: gasLimit.toString(),
       finalGasLimit: finalGasLimit.toString(),
       baseGasPrice: baseGasPrice.toString(),
       boostPercentage: this.config.gasBoostPercentage,
@@ -879,7 +834,12 @@ export class BaseExecutor implements IExecutor {
       let isSuccess = false;
 
       try {
-        receipt = await txResponse.wait(1); // Just wait for 1 confirmation
+        receipt = await pollForReceipt(
+          txResponse.hash,
+          this.provider,
+          this.logger,
+          1,
+        );
         isSuccess = receipt?.status === 1;
       } catch (waitError) {
         this.logger.warn('Transaction confirmation failed', {
@@ -908,14 +868,14 @@ export class BaseExecutor implements IExecutor {
 
       // Log appropriate event
       if (isSuccess) {
-        this.logger.info(EXECUTOR_EVENTS.TRANSACTION_CONFIRMED, {
+        this.logger.info(BASE_EVENTS.TRANSACTION_CONFIRMED, {
           id: tx.id,
           hash: txResponse.hash,
           blockNumber: receipt?.blockNumber,
           gasUsed: receipt?.gasUsed.toString(),
         });
       } else {
-        this.logger.error(EXECUTOR_EVENTS.TRANSACTION_FAILED, {
+        this.logger.error(BASE_EVENTS.TRANSACTION_FAILED, {
           id: tx.id,
           hash: txResponse.hash,
         });
@@ -959,7 +919,7 @@ export class BaseExecutor implements IExecutor {
         profitability: tx.profitability,
       },
     );
-    this.logger.error(EXECUTOR_EVENTS.ERROR, {
+    this.logger.error(BASE_EVENTS.ERROR, {
       ...executorError,
       ...executorError.context,
     });
@@ -983,27 +943,10 @@ export class BaseExecutor implements IExecutor {
     if (!this.db) return;
 
     try {
-      // Get queueItemId and depositIds from tx metadata or try to parse from tx_data
-      let queueItemId = tx.metadata?.queueItemId;
-      let depositIdStrings = tx.metadata?.depositIds || [];
-
-      if (!queueItemId && tx.tx_data) {
-        try {
-          const txData = JSON.parse(tx.tx_data);
-          queueItemId = txData.queueItemId;
-          depositIdStrings =
-            txData.depositIds?.map(String) || tx.depositIds.map(String);
-        } catch (error) {
-          this.logger.error('Failed to parse txData for queue cleanup', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      // If still no deposit IDs, use the ones from transaction object
-      if (depositIdStrings.length === 0) {
-        depositIdStrings = tx.depositIds.map(String);
-      }
+      // Use the centralized helper to extract queue item info
+      const { queueItemId, depositIds: extractedDepositIds } =
+        extractQueueItemInfo(tx);
+      let depositIdStrings = [...extractedDepositIds]; // Make a mutable copy
 
       // If we have a specific queue item ID
       if (queueItemId) {
@@ -1161,7 +1104,7 @@ export class BaseExecutor implements IExecutor {
       executorError.context = {
         error: error instanceof Error ? error.message : String(error),
       };
-      this.logger.error(EXECUTOR_EVENTS.ERROR, {
+      this.logger.error(BASE_EVENTS.ERROR, {
         ...executorError,
         ...executorError.context,
       });
