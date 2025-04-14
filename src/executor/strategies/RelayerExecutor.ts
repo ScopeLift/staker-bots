@@ -666,6 +666,19 @@ export class RelayerExecutor implements IExecutor {
       };
 
       try {
+        // Get payout amount first to check against allowance
+        let payoutAmount: bigint;
+        try {
+          if (typeof this.lstContract.payoutAmount !== 'function')
+            throw new ContractMethodError('payoutAmount');
+          payoutAmount = await this.lstContract.payoutAmount();
+        } catch (error) {
+          this.logger.error('Failed to get payout amount for allowance check', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw new ContractMethodError('payoutAmount');
+        }
+
         // Check current allowance
         const signerAddress = await this.relaySigner.getAddress();
         const lstContractAddress = this.lstContract.target.toString();
@@ -683,25 +696,25 @@ export class RelayerExecutor implements IExecutor {
 
         this.logger.info('Current allowance', {
           allowance: allowance.toString(),
+          payoutAmount: payoutAmount.toString(),
         });
 
-        // Determine approval amount - with fallback for contracts without payoutAmount
-        let approvalAmount: bigint;
         // Use approval amount from config
-        approvalAmount = BigInt(CONFIG.executor.approvalAmount);
+        const approvalAmount = BigInt(CONFIG.executor.approvalAmount);
 
         this.logger.info('Using configured approval amount', {
           approvalAmount: approvalAmount.toString(),
           approvalAmountInEth: ethers.formatEther(approvalAmount),
         });
 
-        // If allowance is too low, approve exact amount needed
-        if (allowance < approvalAmount) {
+        // If allowance is less than payout amount, approve with approval amount
+        if (allowance < payoutAmount) {
           this.logger.info('Approving reward token spend', {
             token: rewardTokenAddress,
             spender: lstContractAddress,
             currentAllowance: allowance.toString(),
-            requiredAmount: approvalAmount.toString(),
+            payoutAmount: payoutAmount.toString(),
+            approvalAmount: approvalAmount.toString(),
           });
 
           const approveTx = await rewardTokenContract.approve(
