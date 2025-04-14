@@ -27,7 +27,20 @@ export class JsonDatabase implements IDatabase {
   };
 
   constructor(dbPath = 'staker-monitor-db.json') {
-    this.dbPath = path.resolve(process.cwd(), dbPath);
+    // Ensure absolute path and create directory if needed
+    this.dbPath = path.isAbsolute(dbPath) 
+      ? dbPath 
+      : path.resolve(process.cwd(), dbPath);
+    
+    // Ensure directory exists
+    const dbDir = path.dirname(this.dbPath);
+    fs.mkdir(dbDir, { recursive: true }).catch(error => {
+      this.logger.error('Failed to create database directory:', { 
+        error: error instanceof Error ? error.message : String(error),
+        path: dbDir 
+      });
+    });
+
     this.logger = new ConsoleLogger('info');
     this.data = {
       deposits: {},
@@ -37,36 +50,116 @@ export class JsonDatabase implements IDatabase {
       govlst_deposits: {},
       govlst_claim_history: {},
     };
-    this.logger.info('JsonDatabase initialized at:', { path: this.dbPath });
-    this.initializeDb();
+    
+    this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
+    this.initializeDb().catch(error => {
+      this.logger.error('Failed to initialize database:', {
+        error: error instanceof Error ? error.message : String(error),
+        path: this.dbPath
+      });
+    });
   }
 
   private async initializeDb() {
     try {
-      const fileContent = await fs.readFile(this.dbPath, 'utf-8');
-      const loadedData = JSON.parse(fileContent);
+      // Check if file exists first
+      try {
+        await fs.access(this.dbPath);
+      } catch (accessError) {
+        // File doesn't exist, create it with empty data
+        await this.saveToFile();
+        this.logger.info('Created new database file:', { path: this.dbPath });
+        return;
+      }
 
-      // Ensure all required sections exist
-      this.data = {
-        deposits: loadedData.deposits || {},
-        checkpoints: loadedData.checkpoints || {},
-        processing_queue: loadedData.processing_queue || {},
-        transaction_queue: loadedData.transaction_queue || {},
-        govlst_deposits: loadedData.govlst_deposits || {},
-        govlst_claim_history: loadedData.govlst_claim_history || {},
-      };
+      // File exists, try to read it with retries
+      let retries = 3;
+      let lastError;
+      
+      while (retries > 0) {
+        try {
+          const fileContent = await fs.readFile(this.dbPath, 'utf-8');
+          const loadedData = JSON.parse(fileContent);
 
-      this.logger.info('Loaded existing database');
+          // Ensure all required sections exist with existing data
+          this.data = {
+            deposits: loadedData.deposits || {},
+            checkpoints: loadedData.checkpoints || {},
+            processing_queue: loadedData.processing_queue || {},
+            transaction_queue: loadedData.transaction_queue || {},
+            govlst_deposits: loadedData.govlst_deposits || {},
+            govlst_claim_history: loadedData.govlst_claim_history || {},
+          };
+
+          this.logger.info('Successfully loaded existing database:', { 
+            deposits: Object.keys(this.data.deposits).length,
+            checkpoints: Object.keys(this.data.checkpoints).length,
+            processing_queue: Object.keys(this.data.processing_queue).length,
+            transaction_queue: Object.keys(this.data.transaction_queue).length,
+            govlst_deposits: Object.keys(this.data.govlst_deposits).length,
+            govlst_claim_history: Object.keys(this.data.govlst_claim_history).length
+          });
+          return;
+        } catch (error) {
+          lastError = error;
+          retries--;
+          if (retries > 0) {
+            // Wait for 1 second before retrying
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+      }
+
+      // If we get here, all retries failed
+      this.logger.error('Failed to load database after retries:', { 
+        error: lastError,
+        path: this.dbPath 
+      });
+      throw lastError;
     } catch (error) {
-      // If file doesn't exist, create it with empty data
-      await this.saveToFile();
-      this.logger.info('Created new database file');
+      this.logger.error('Database initialization error:', { 
+        error: error instanceof Error ? error.message : String(error),
+        path: this.dbPath
+      });
+      throw error;
     }
   }
 
   private async saveToFile() {
-    await fs.writeFile(this.dbPath, JSON.stringify(this.data, null, 2));
-    this.logger.debug('Saved database to file');
+    let retries = 3;
+    let lastError;
+
+    while (retries > 0) {
+      try {
+        // Create a temporary file first
+        const tempPath = `${this.dbPath}.tmp`;
+        await fs.writeFile(tempPath, JSON.stringify(this.data, null, 2));
+        
+        // Rename temp file to actual file (atomic operation)
+        await fs.rename(tempPath, this.dbPath);
+        
+        this.logger.debug('Successfully saved database to file:', { 
+          path: this.dbPath,
+          deposits: Object.keys(this.data.deposits).length,
+          checkpoints: Object.keys(this.data.checkpoints).length
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        retries--;
+        if (retries > 0) {
+          // Wait for 1 second before retrying
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+    }
+
+    // If we get here, all retries failed
+    this.logger.error('Failed to save database after retries:', { 
+      error: lastError,
+      path: this.dbPath 
+    });
+    throw lastError;
   }
 
   // Deposits
