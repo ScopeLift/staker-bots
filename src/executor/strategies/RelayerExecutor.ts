@@ -512,6 +512,64 @@ export class RelayerExecutor implements IExecutor {
     }
   }
 
+  /**
+   * Optimizes a batch of deposits to include only what's needed to be profitable
+   * @param depositDetails - Array of deposit details with rewards
+   * @param payoutAmount - Current payout amount from contract
+   * @param gasEstimate - Estimated gas cost for the transaction
+   * @param maxFeePerGas - Current max fee per gas 
+   * @returns Optimized array of deposit IDs
+   */
+  private optimizeBatchSize(
+    depositDetails: Array<{ depositId: bigint; rewards: bigint; }>,
+    payoutAmount: bigint,
+    gasEstimate: bigint,
+    maxFeePerGas: bigint
+  ): bigint[] {
+    // Sort deposits by reward amount (highest first for efficiency)
+    const sortedDeposits = [...depositDetails].sort((a, b) => 
+      b.rewards > a.rewards ? 1 : b.rewards < a.rewards ? -1 : 0
+    );
+    
+    // Calculate gas cost
+    const estimatedGasCost = maxFeePerGas * gasEstimate;
+    
+    // Calculate base amount needed for profitability including gas cost if configured
+    const baseAmountForMargin = payoutAmount + 
+      (RELAYER_PROFITABILITY.INCLUDE_GAS_COST ? estimatedGasCost : 0n);
+    
+    // Calculate required profit based on margin percentage
+    const minProfitMarginPercent = RELAYER_PROFITABILITY.MIN_PROFIT_MARGIN;
+    const requiredProfitValue = (baseAmountForMargin * BigInt(Math.round(minProfitMarginPercent * 100))) / 10000n;
+    
+    // Minimum total rewards needed to be profitable
+    const minTotalRewardsNeeded = baseAmountForMargin + requiredProfitValue;
+    
+    // Select deposits until we reach profitability threshold
+    const selectedDeposits: bigint[] = [];
+    let totalRewards = 0n;
+    
+    for (const deposit of sortedDeposits) {
+      selectedDeposits.push(deposit.depositId);
+      totalRewards += deposit.rewards;
+      
+      // If we've reached profitability, stop adding more deposits
+      if (totalRewards >= minTotalRewardsNeeded) {
+        break;
+      }
+    }
+    
+    this.logger.info('Optimized batch size', {
+      originalCount: depositDetails.length,
+      optimizedCount: selectedDeposits.length,
+      totalRewards: totalRewards.toString(),
+      minRequired: minTotalRewardsNeeded.toString(),
+      isProfitable: totalRewards >= minTotalRewardsNeeded
+    });
+    
+    return selectedDeposits;
+  }
+
   protected async executeTransaction(tx: QueuedTransaction): Promise<void> {
     try {
       if (!this.lstContract) {
@@ -735,20 +793,6 @@ export class RelayerExecutor implements IExecutor {
         });
         throw new ContractMethodError('getPayoutAmount');
       }
-      // Get the minimum expected reward from the profitability check
-      const minExpectedReward = tx.profitability.estimates.expected_profit;
-      if (minExpectedReward <= payoutAmount) {
-        throw new TransactionValidationError(
-          'Expected reward is less than payout amount',
-          {
-            expectedReward: minExpectedReward.toString(),
-            payoutAmount: payoutAmount.toString(),
-            depositIds: tx.depositIds.map(String),
-          },
-        );
-      }
-
-      const depositIds = tx.depositIds;
 
       // Get current network conditions
       let maxFeePerGas: bigint | undefined;
@@ -767,6 +811,28 @@ export class RelayerExecutor implements IExecutor {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+
+      // Optimize the batch size to ensure profitability while minimizing transaction size
+      const optimizedDepositIds = this.optimizeBatchSize(
+        tx.profitability.deposit_details,
+        payoutAmount,
+        tx.profitability.estimates.gas_estimate,
+        maxFeePerGas || BigInt('50000000000') // Fallback value if maxFeePerGas is undefined
+      );
+
+      // Calculate total rewards from optimized deposit details
+      const minExpectedReward = tx.profitability.deposit_details
+        .filter(detail => optimizedDepositIds.includes(detail.depositId))
+        .reduce((sum, detail) => sum + detail.rewards, BigInt(0));
+
+      // Use optimized deposit IDs instead of original ones
+      const depositIds = optimizedDepositIds;
+
+      this.logger.info('Using optimized deposit batch', {
+        originalCount: tx.depositIds.length,
+        optimizedCount: depositIds.length, 
+        expectedReward: minExpectedReward.toString()
+      });
 
       // Get the relayer's address for reward recipient
       const signerAddress = await this.relaySigner.getAddress();
