@@ -615,40 +615,13 @@ export class RelayerExecutor implements IExecutor {
 
         // Determine approval amount - with fallback for contracts without payoutAmount
         let approvalAmount: bigint;
+        // Use approval amount from config
+        approvalAmount = BigInt(CONFIG.executor.approvalAmount);
 
-        try {
-          // Try to verify LST contract methods and get values from contract
-          if (typeof this.lstContract.payoutAmount === 'function') {
-            // Get payout amount from contract
-            const payoutAmount = await this.lstContract.payoutAmount();
-            // Set approval amount to payout amount * 10 to allow for multiple claims
-            approvalAmount = payoutAmount * 10n;
-
-            this.logger.info('Token approval requirements from contract', {
-              payoutAmount: payoutAmount.toString(),
-              approvalAmount: approvalAmount.toString(),
-              approvalAmountInEth: ethers.formatEther(approvalAmount),
-            });
-          } else {
-            throw new Error('Contract does not have required methods');
-          }
-        } catch (methodError) {
-          // Fallback: use a large approval amount to ensure coverage
-          this.logger.warn('Using fallback approval amount', {
-            error:
-              methodError instanceof Error
-                ? methodError.message
-                : String(methodError),
-          });
-
-          // Default to a large approval - 100 tokens (assuming 18 decimals)
-          approvalAmount = ethers.parseUnits('100', 18);
-
-          this.logger.info('Using fallback approval amount', {
-            approvalAmount: approvalAmount.toString(),
-            approvalAmountInEth: ethers.formatEther(approvalAmount),
-          });
-        }
+        this.logger.info('Using configured approval amount', {
+          approvalAmount: approvalAmount.toString(),
+          approvalAmountInEth: ethers.formatEther(approvalAmount),
+        });
 
         // If allowance is too low, approve exact amount needed
         if (allowance < approvalAmount) {

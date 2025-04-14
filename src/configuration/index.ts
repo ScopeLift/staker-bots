@@ -48,6 +48,7 @@ export const CONFIG = {
     healthCheckInterval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '60'),
   },
   executor: {
+    approvalAmount: process.env.EXECUTOR_APPROVAL_AMOUNT || '1000000000000000000000000',
     executorType: process.env.EXECUTOR_TYPE || '',
     privateKey: process.env.PRIVATE_KEY || '',
     tipReceiver:
