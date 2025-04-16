@@ -19,7 +19,7 @@ import {
 } from '@/configuration/errors';
 
 // Basic sleep function implementation if not available in utils
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Supported executor types
@@ -182,9 +182,16 @@ export class ExecutorWrapper {
     try {
       return await this.executor.getStatus();
     } catch (error) {
-      if (this.type === ExecutorType.DEFENDER && error instanceof Error && error.message.includes('403')) {
-         this.logger.error('CRITICAL: Received 403 from Defender. Exiting process.', { error: error.message });
-         process.exit(1);
+      if (
+        this.type === ExecutorType.DEFENDER &&
+        error instanceof Error &&
+        error.message.includes('403')
+      ) {
+        this.logger.error(
+          'CRITICAL: Received 403 from Defender. Exiting process.',
+          { error: error.message },
+        );
+        process.exit(1);
       }
       throw new ExecutorError(
         'Failed to get executor status',
@@ -242,6 +249,7 @@ export class ExecutorWrapper {
       estimates: {
         expected_profit: parseBigInt(check.estimates.expected_profit),
         gas_estimate: parseBigInt(check.estimates.gas_estimate),
+        gas_cost: parseBigInt(check.estimates.gas_cost),
         total_shares: parseBigInt(check.estimates.total_shares),
         payout_amount: parseBigInt(check.estimates.payout_amount),
       },
@@ -262,22 +270,30 @@ export class ExecutorWrapper {
 
     const oneHour = 3600 * 1000;
     if (Date.now() - this.lastDefenderValidationTimestamp > oneHour) {
-      this.logger.info('Attempting to validate Defender credentials (after 1 hour)...');
+      this.logger.info(
+        'Attempting to validate Defender credentials (after 1 hour)...',
+      );
       try {
-        // Placeholder: Assume RelayerExecutor has a validation method
-        if (typeof (this.executor as any).validateCredentials === 'function') {
-           await (this.executor as any).validateCredentials();
-           this.logger.info('Defender credentials validated successfully.');
+        // Check if the executor has the validateCredentials method
+        if (this.executor.validateCredentials) {
+          await this.executor.validateCredentials();
+          this.logger.info('Defender credentials validated successfully.');
         } else {
-            this.logger.warn('RelayerExecutor does not have a validateCredentials method.');
+          this.logger.warn(
+            'RelayerExecutor does not have a validateCredentials method.',
+          );
         }
         this.lastDefenderValidationTimestamp = Date.now();
       } catch (error) {
-        this.logger.error('Failed to validate Defender credentials', { error: error instanceof Error ? error.message : String(error) });
+        this.logger.error('Failed to validate Defender credentials', {
+          error: error instanceof Error ? error.message : String(error),
+        });
         // Check if it's a 403 error, if so, prepare to exit
         if (error instanceof Error && error.message.includes('403')) {
-            this.logger.error('CRITICAL: Defender credential validation resulted in 403. Exiting process.');
-            process.exit(1); // Exit the process, PM2 should restart it
+          this.logger.error(
+            'CRITICAL: Defender credential validation resulted in 403. Exiting process.',
+          );
+          process.exit(1); // Exit the process, PM2 should restart it
         }
         // Otherwise, rethrow as a potentially retryable error
         throw new ExecutorError(
@@ -320,7 +336,10 @@ export class ExecutorWrapper {
           }
         } catch (parseError) {
           this.logger.error('Failed to parse txData', {
-            error: parseError instanceof Error ? parseError.message : String(parseError),
+            error:
+              parseError instanceof Error
+                ? parseError.message
+                : String(parseError),
             txData,
           });
         }
@@ -341,12 +360,17 @@ export class ExecutorWrapper {
             block = await this.provider.getBlock(currentBlock);
             if (block) break;
           } catch (blockError) {
-            this.logger.warn(`Failed to get block details for ${currentBlock} (attempt ${i + 1}/3)`, { error: blockError });
+            this.logger.warn(
+              `Failed to get block details for ${currentBlock} (attempt ${i + 1}/3)`,
+              { error: blockError },
+            );
             await sleep(500 * (i + 1));
           }
         }
         if (!block) {
-          this.logger.error(`Block ${currentBlock} not found after retries. Cannot update checkpoint.`);
+          this.logger.error(
+            `Block ${currentBlock} not found after retries. Cannot update checkpoint.`,
+          );
           throw new Error(`Block ${currentBlock} not found after retries`);
         }
 
@@ -361,9 +385,16 @@ export class ExecutorWrapper {
 
       return result;
     } catch (error) {
-      if (this.type === ExecutorType.DEFENDER && error instanceof Error && error.message.includes('403')) {
-         this.logger.error('CRITICAL: Received 403 from Defender. Exiting process.', { error: error.message });
-         process.exit(1);
+      if (
+        this.type === ExecutorType.DEFENDER &&
+        error instanceof Error &&
+        error.message.includes('403')
+      ) {
+        this.logger.error(
+          'CRITICAL: Received 403 from Defender. Exiting process.',
+          { error: error.message },
+        );
+        process.exit(1);
       }
       throw new ExecutorError(
         'Failed to queue transaction',
@@ -465,16 +496,26 @@ export class ExecutorWrapper {
     }
   }
 
-  private async getCurrentBlockNumberWithRetry(retries = 3, delayMs = 1000): Promise<number> {
+  private async getCurrentBlockNumberWithRetry(
+    retries = 3,
+    delayMs = 1000,
+  ): Promise<number> {
     for (let i = 0; i < retries; i++) {
       try {
         return await this.provider.getBlockNumber();
       } catch (error) {
-        this.logger.warn(`Failed to get block number (attempt ${i + 1}/${retries})`, { error });
+        this.logger.warn(
+          `Failed to get block number (attempt ${i + 1}/${retries})`,
+          { error },
+        );
         if (i === retries - 1) throw error;
         await sleep(delayMs * (i + 1));
       }
     }
-    throw new ExecutorError('Failed to get block number after retries', {}, true);
+    throw new ExecutorError(
+      'Failed to get block number after retries',
+      {},
+      true,
+    );
   }
 }

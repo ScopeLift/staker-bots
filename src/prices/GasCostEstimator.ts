@@ -14,7 +14,9 @@ export class GasCostEstimator {
    * @param provider - Ethereum provider to get gas prices
    * @returns Estimated gas cost denominated in reward tokens
    */
-  async estimateGasCostInRewardToken(provider: ethers.Provider): Promise<bigint> {
+  async estimateGasCostInRewardToken(
+    provider: ethers.Provider,
+  ): Promise<bigint> {
     // Get current gas price and estimate gas cost
     const feeData = await provider.getFeeData();
     const gasPrice = feeData.gasPrice ?? BigInt(0);
@@ -30,7 +32,8 @@ export class GasCostEstimator {
     // Calculate gas cost in reward tokens
     // gasCost is in wei, convert to ETH by dividing by 1e18
     // Then multiply by price ratio (ethPrice/tokenPrice) to get token amount
-    const gasCostInRewardTokens = (gasCost * ethPriceInUsd) / (tokenPriceInUsd * BigInt(1e18));
+    const gasCostInRewardTokens =
+      (gasCost * ethPriceInUsd) / (tokenPriceInUsd * BigInt(1e18));
 
     this.logger.info('Estimated gas cost in reward tokens:', {
       gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
@@ -45,4 +48,4 @@ export class GasCostEstimator {
 
     return gasCostInRewardTokens;
   }
-} 
+}

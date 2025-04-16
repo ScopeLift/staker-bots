@@ -97,6 +97,7 @@ export interface GovLstProfitabilityCheck {
     total_shares: bigint;
     payout_amount: bigint;
     gas_estimate: bigint;
+    gas_cost: bigint;
     expected_profit: bigint;
   };
   deposit_details: Array<{

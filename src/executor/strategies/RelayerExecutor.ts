@@ -62,6 +62,36 @@ const RELAYER_PROFITABILITY = {
   MIN_PROFIT_MARGIN: CONFIG.profitability.minProfitMargin,
 } as const;
 
+// Add Defender API error interfaces
+interface DefenderErrorResponse {
+  status: number;
+  statusText: string;
+  data: {
+    error?: {
+      code: string;
+      message: string;
+      suggestedNonce?: number;
+      suggestedGasLimit?: string;
+    };
+  };
+}
+
+interface DefenderErrorConfig {
+  method?: string;
+  url?: string;
+  data?: unknown;
+}
+
+interface DefenderError extends Error {
+  response?: DefenderErrorResponse;
+  config?: DefenderErrorConfig;
+}
+
+// Add gas estimation error interface
+interface GasEstimationError extends Error {
+  data?: unknown;
+}
+
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
   protected readonly queue: Map<string, QueuedTransaction>;
@@ -471,31 +501,33 @@ export class RelayerExecutor implements IExecutor {
       this.logger.warn('Insufficient balance detected', {
         currentBalance: balanceBigInt.toString(),
         requiredBalance: this.config.minBalance.toString(),
-        difference: (this.config.minBalance - balanceBigInt).toString()
+        difference: (this.config.minBalance - balanceBigInt).toString(),
       });
 
       // Start monitoring balance
       let attempts = 0;
       const maxAttempts = 30; // Wait up to 5 minutes (30 * 10 seconds)
-      
+
       while (attempts < maxAttempts) {
         attempts++;
-        
+
         // Wait 10 seconds between checks
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        
-        const newBalance = await this.relayProvider.getBalance(this.config.address);
+        await new Promise((resolve) => setTimeout(resolve, 10000));
+
+        const newBalance = await this.relayProvider.getBalance(
+          this.config.address,
+        );
         const newBalanceBigInt = BigInt(newBalance.toString());
-        
+
         this.logger.info('Checking balance recovery', {
           attempt: attempts,
           currentBalance: newBalanceBigInt.toString(),
-          requiredBalance: this.config.minBalance.toString()
+          requiredBalance: this.config.minBalance.toString(),
         });
 
         if (newBalanceBigInt >= this.config.minBalance) {
           this.logger.info('Balance recovered', {
-            finalBalance: newBalanceBigInt.toString()
+            finalBalance: newBalanceBigInt.toString(),
           });
           return;
         }
@@ -525,28 +557,36 @@ export class RelayerExecutor implements IExecutor {
         if (error instanceof InsufficientBalanceError) {
           // Handle stuck transactions as before
           const queuedTxs = Array.from(this.queue.values()).filter(
-            (tx) => tx.status === TransactionStatus.QUEUED
+            (tx) => tx.status === TransactionStatus.QUEUED,
           );
 
           if (queuedTxs.length > 0) {
-            this.logger.warn('Clearing stuck transactions due to insufficient balance', {
-              queuedTransactions: queuedTxs.length,
-              error: error instanceof Error ? error.message : String(error)
-            });
+            this.logger.warn(
+              'Clearing stuck transactions due to insufficient balance',
+              {
+                queuedTransactions: queuedTxs.length,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
 
-            await Promise.all(queuedTxs.map(async (tx) => {
-              try {
-                tx.status = TransactionStatus.FAILED;
-                tx.error = error as Error;
-                await this.cleanupQueueItems(tx, '');
-                this.queue.delete(tx.id);
-              } catch (cleanupError) {
-                this.logger.error('Failed to clean up stuck transaction', {
-                  error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-                  txId: tx.id
-                });
-              }
-            }));
+            await Promise.all(
+              queuedTxs.map(async (tx) => {
+                try {
+                  tx.status = TransactionStatus.FAILED;
+                  tx.error = error as Error;
+                  await this.cleanupQueueItems(tx, '');
+                  this.queue.delete(tx.id);
+                } catch (cleanupError) {
+                  this.logger.error('Failed to clean up stuck transaction', {
+                    error:
+                      cleanupError instanceof Error
+                        ? cleanupError.message
+                        : String(cleanupError),
+                    txId: tx.id,
+                  });
+                }
+              }),
+            );
           }
           throw error;
         }
@@ -679,13 +719,13 @@ export class RelayerExecutor implements IExecutor {
           this.logger.info('Raw payout amount details:', {
             value: rawPayoutAmount,
             type: typeof rawPayoutAmount,
-            stringified: String(rawPayoutAmount)
+            stringified: String(rawPayoutAmount),
           });
 
           payoutAmount = BigInt(rawPayoutAmount);
           this.logger.info('Converted payout amount:', {
             value: payoutAmount.toString(),
-            type: typeof payoutAmount
+            type: typeof payoutAmount,
           });
         } catch (error) {
           this.logger.error('Failed to get payout amount for allowance check', {
@@ -704,10 +744,12 @@ export class RelayerExecutor implements IExecutor {
           rewardToken: rewardTokenAddress,
         });
 
-        const allowance = BigInt(await rewardTokenContract.allowance(
-          signerAddress,
-          lstContractAddress,
-        ));
+        const allowance = BigInt(
+          await rewardTokenContract.allowance(
+            signerAddress,
+            lstContractAddress,
+          ),
+        );
 
         this.logger.info('Current allowance', {
           allowance: allowance.toString(),
@@ -826,13 +868,13 @@ export class RelayerExecutor implements IExecutor {
         this.logger.info('Raw payout amount details:', {
           value: rawPayoutAmount,
           type: typeof rawPayoutAmount,
-          stringified: String(rawPayoutAmount)
+          stringified: String(rawPayoutAmount),
         });
 
         payoutAmount = rawPayoutAmount;
         this.logger.info('Converted payout amount:', {
           value: payoutAmount.toString(),
-          type: typeof payoutAmount
+          type: typeof payoutAmount,
         });
 
         // Calculate optimal threshold
@@ -851,7 +893,7 @@ export class RelayerExecutor implements IExecutor {
         const gasCost = 0n; // Set to 0 for now since we don't have actual values
         this.logger.info('Using default gas cost:', {
           value: gasCost.toString(),
-          type: typeof gasCost
+          type: typeof gasCost,
         });
 
         // Convert profit margin to basis points first
@@ -859,14 +901,14 @@ export class RelayerExecutor implements IExecutor {
         this.logger.info('Raw profit margin value:', {
           value: profitMargin,
           type: typeof profitMargin,
-          source: 'CONFIG.profitability.minProfitMargin'
+          source: 'CONFIG.profitability.minProfitMargin',
         });
 
         if (typeof profitMargin !== 'number' || isNaN(profitMargin)) {
           this.logger.error('Invalid profit margin configuration:', {
             value: profitMargin,
             type: typeof profitMargin,
-            config: CONFIG.profitability.minProfitMargin
+            config: CONFIG.profitability.minProfitMargin,
           });
           throw new Error(`Invalid profit margin value: ${profitMargin}`);
         }
@@ -876,7 +918,7 @@ export class RelayerExecutor implements IExecutor {
           value: profitMarginBasisPoints.toString(),
           type: typeof profitMarginBasisPoints,
           originalValue: profitMargin,
-          calculation: `${profitMargin} * 100 = ${profitMargin * 100}`
+          calculation: `${profitMargin} * 100 = ${profitMargin * 100}`,
         });
 
         this.logger.info('Pre-calculation values:', {
@@ -885,12 +927,13 @@ export class RelayerExecutor implements IExecutor {
           gasCost: gasCost.toString(),
           gasCostType: typeof gasCost,
           profitMarginBasisPoints: profitMarginBasisPoints.toString(),
-          profitMarginBasisPointsType: typeof profitMarginBasisPoints
+          profitMarginBasisPointsType: typeof profitMarginBasisPoints,
         });
 
         // Calculate profit margin amount using basis points
         const baseAmount = payoutAmount + gasCost;
-        const profitMarginAmount = (baseAmount * profitMarginBasisPoints) / 10000n;
+        const profitMarginAmount =
+          (baseAmount * profitMarginBasisPoints) / 10000n;
 
         const optimalThreshold = payoutAmount + gasCost + profitMarginAmount;
         this.logger.info('Final optimal threshold calculation:', {
@@ -899,8 +942,8 @@ export class RelayerExecutor implements IExecutor {
           components: {
             payoutAmount: payoutAmount.toString(),
             gasCost: gasCost.toString(),
-            profitMarginAmount: profitMarginAmount.toString()
-          }
+            profitMarginAmount: profitMarginAmount.toString(),
+          },
         });
 
         this.logger.info('Calculated optimal threshold:', {
@@ -986,159 +1029,212 @@ export class RelayerExecutor implements IExecutor {
         };
 
         // Execute via contract with signer
-        const response = await this.lstContract.claimAndDistributeReward(
-          signerAddress,
-          optimalThreshold,
-          depositIds,
-          {
-            gasLimit: calculatedGasLimit,
-            maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-            maxPriorityFeePerGas:
-              this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas,
-          },
-        ).catch(async (error: any) => {
-          // Enhanced error handling for Defender 400 errors
-          const isDefender400Error = error?.message?.includes('status code 400') || 
-                                   error?.response?.status === 400;
+        const response = await this.lstContract
+          .claimAndDistributeReward(
+            signerAddress,
+            optimalThreshold,
+            depositIds,
+            {
+              gasLimit: calculatedGasLimit,
+              maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
+              maxPriorityFeePerGas:
+                this.config.gasPolicy?.maxPriorityFeePerGas ||
+                maxPriorityFeePerGas,
+            },
+          )
+          .catch(async (error: Error) => {
+            // Enhanced error handling for Defender 400 errors
+            const defenderError = error as DefenderError;
+            const isDefender400Error =
+              defenderError.message?.includes('status code 400') ||
+              defenderError.response?.status === 400;
 
-          if (isDefender400Error) {
-            // Get current network state for diagnostics
-            const [networkGasPrice, blockNumber, balance] = await Promise.all([
-              this.relayProvider.getFeeData(),
-              this.relayProvider.getBlockNumber(),
-              this.relayProvider.getBalance(signerAddress)
-            ]).catch(e => {
-              this.logger.error('Failed to get network diagnostics:', { error: e });
-              return [null, null, null];
-            });
+            if (isDefender400Error) {
+              // Get current network state for diagnostics
+              const [networkGasPrice, blockNumber, balance] = await Promise.all(
+                [
+                  this.relayProvider.getFeeData(),
+                  this.relayProvider.getBlockNumber(),
+                  this.relayProvider.getBalance(signerAddress),
+                ],
+              ).catch((e) => {
+                this.logger.error('Failed to get network diagnostics:', {
+                  error: e,
+                });
+                return [null, null, null];
+              });
 
-            // Log detailed diagnostic information
-            this.logger.error('Defender Relayer 400 Error Details:', {
-              error: {
-                message: error?.message,
-                response: {
-                  status: error?.response?.status,
-                  statusText: error?.response?.statusText,
-                  data: error?.response?.data
+              // Log detailed diagnostic information
+              this.logger.error('Defender Relayer 400 Error Details:', {
+                error: {
+                  message: defenderError.message,
+                  response: {
+                    status: defenderError.response?.status,
+                    statusText: defenderError.response?.statusText,
+                    data: defenderError.response?.data,
+                  },
+                  request: {
+                    method: defenderError.config?.method,
+                    url: defenderError.config?.url,
+                    data: defenderError.config?.data,
+                  },
                 },
-                request: {
-                  method: error?.config?.method,
-                  url: error?.config?.url,
-                  data: error?.config?.data
+                transaction: {
+                  recipient: signerAddress,
+                  minExpectedReward: optimalThreshold.toString(),
+                  depositIds: depositIds.map(String),
+                  gasLimit: calculatedGasLimit.toString(),
+                  maxFeePerGas: (
+                    this.config.gasPolicy?.maxFeePerGas || maxFeePerGas
+                  )?.toString(),
+                  maxPriorityFeePerGas: (
+                    this.config.gasPolicy?.maxPriorityFeePerGas ||
+                    maxPriorityFeePerGas
+                  )?.toString(),
+                },
+                networkState: {
+                  currentBlock: blockNumber,
+                  balance: balance?.toString(),
+                  networkGasPrice: {
+                    maxFeePerGas: networkGasPrice?.maxFeePerGas?.toString(),
+                    maxPriorityFeePerGas:
+                      networkGasPrice?.maxPriorityFeePerGas?.toString(),
+                    gasPrice: networkGasPrice?.gasPrice?.toString(),
+                  },
+                },
+                relayerConfig: {
+                  address: this.config.address,
+                  minBalance: this.config.minBalance.toString(),
+                  maxPendingTransactions: this.config.maxPendingTransactions,
+                  gasPolicyConfig: this.config.gasPolicy,
+                },
+              });
+
+              // Check specific conditions that might cause 400 errors
+              if (balance) {
+                const balanceBigInt = BigInt(balance.toString());
+                if (balanceBigInt < this.config.minBalance) {
+                  throw new InsufficientBalanceError(
+                    balanceBigInt,
+                    this.config.minBalance,
+                  );
                 }
-              },
-              transaction: {
-                recipient: signerAddress,
-                minExpectedReward: optimalThreshold.toString(),
-                depositIds: depositIds.map(String),
-                gasLimit: calculatedGasLimit.toString(),
-                maxFeePerGas: (this.config.gasPolicy?.maxFeePerGas || maxFeePerGas)?.toString(),
-                maxPriorityFeePerGas: (this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas)?.toString()
-              },
-              networkState: {
-                currentBlock: blockNumber,
-                balance: balance?.toString(),
-                networkGasPrice: {
-                  maxFeePerGas: networkGasPrice?.maxFeePerGas?.toString(),
-                  maxPriorityFeePerGas: networkGasPrice?.maxPriorityFeePerGas?.toString(),
-                  gasPrice: networkGasPrice?.gasPrice?.toString()
-                }
-              },
-              relayerConfig: {
-                address: this.config.address,
-                minBalance: this.config.minBalance.toString(),
-                maxPendingTransactions: this.config.maxPendingTransactions,
-                gasPolicyConfig: this.config.gasPolicy
               }
-            });
 
-            // Check specific conditions that might cause 400 errors
-             if (balance) {
-               const balanceBigInt = BigInt(balance.toString());
-               if (balanceBigInt < this.config.minBalance) {
-                 throw new InsufficientBalanceError(balanceBigInt, this.config.minBalance);
-               }
-             }
+              // Add gas estimation validation
+              try {
+                // Try to estimate gas for the transaction
+                const estimatedGas = await this.lstContract.runner?.provider
+                  ?.estimateGas({
+                    to: this.lstContract.target,
+                    data: this.lstContract.interface.encodeFunctionData(
+                      'claimAndDistributeReward',
+                      [signerAddress, optimalThreshold, depositIds],
+                    ),
+                    maxFeePerGas:
+                      this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
+                    maxPriorityFeePerGas:
+                      this.config.gasPolicy?.maxPriorityFeePerGas ||
+                      maxPriorityFeePerGas,
+                  })
+                  .catch((estimateError: GasEstimationError) => {
+                    this.logger.error('Gas estimation failed:', {
+                      error: estimateError,
+                      message: estimateError.message,
+                      data: estimateError.data,
+                    });
+                    return null;
+                  });
 
-             // Add gas estimation validation
-             try {
-               // Try to estimate gas for the transaction
-               const estimatedGas = await this.lstContract.runner?.provider?.estimateGas({
-                 to: this.lstContract.target,
-                 data: this.lstContract.interface.encodeFunctionData(
-                   'claimAndDistributeReward',
-                   [signerAddress, optimalThreshold, depositIds]
-                 ),
-                 maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-                 maxPriorityFeePerGas: this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas,
-               }).catch((estimateError: Error) => {
-                 this.logger.error('Gas estimation failed:', { 
-                   error: estimateError,
-                   message: estimateError.message,
-                   data: (estimateError as any)?.data
-                 });
-                 return null;
-               });
+                if (estimatedGas) {
+                  const estimatedGasBigInt = BigInt(estimatedGas.toString());
+                  if (estimatedGasBigInt > calculatedGasLimit) {
+                    throw new ExecutorError(
+                      'Estimated gas exceeds calculated limit',
+                      {
+                        estimatedGas: estimatedGasBigInt.toString(),
+                        calculatedLimit: calculatedGasLimit.toString(),
+                        difference: (
+                          estimatedGasBigInt - calculatedGasLimit
+                        ).toString(),
+                      },
+                      true,
+                    );
+                  }
+                }
+              } catch (gasError) {
+                this.logger.error('Gas estimation error:', {
+                  error:
+                    gasError instanceof Error
+                      ? gasError.message
+                      : String(gasError),
+                  transaction: {
+                    recipient: signerAddress,
+                    minExpectedReward: optimalThreshold.toString(),
+                    depositIds: depositIds.map(String),
+                  },
+                });
+              }
 
-               if (estimatedGas) {
-                 const estimatedGasBigInt = BigInt(estimatedGas.toString());
-                 if (estimatedGasBigInt > calculatedGasLimit) {
-                   throw new ExecutorError('Estimated gas exceeds calculated limit', {
-                     estimatedGas: estimatedGasBigInt.toString(),
-                     calculatedLimit: calculatedGasLimit.toString(),
-                     difference: (estimatedGasBigInt - calculatedGasLimit).toString()
-                   }, true);
-                 }
-               }
-             } catch (gasError) {
-               this.logger.error('Gas estimation error:', {
-                 error: gasError instanceof Error ? gasError.message : String(gasError),
-                 transaction: {
-                   recipient: signerAddress,
-                   minExpectedReward: optimalThreshold.toString(),
-                   depositIds: depositIds.map(String)
-                 }
-               });
-             }
+              if (networkGasPrice?.maxFeePerGas && maxFeePerGas) {
+                const networkMaxFee = BigInt(
+                  networkGasPrice.maxFeePerGas.toString(),
+                );
+                if (networkMaxFee > maxFeePerGas) {
+                  throw new ExecutorError(
+                    'Network gas price exceeds configured maximum',
+                    {
+                      networkMaxFee: networkMaxFee.toString(),
+                      configuredMaxFee: maxFeePerGas.toString(),
+                      difference: (networkMaxFee - maxFeePerGas).toString(),
+                    },
+                    true,
+                  );
+                }
+              }
 
-             if (networkGasPrice?.maxFeePerGas && maxFeePerGas) {
-               const networkMaxFee = BigInt(networkGasPrice.maxFeePerGas.toString());
-               if (networkMaxFee > maxFeePerGas) {
-                 throw new ExecutorError('Network gas price exceeds configured maximum', {
-                   networkMaxFee: networkMaxFee.toString(),
-                   configuredMaxFee: maxFeePerGas.toString(),
-                   difference: (networkMaxFee - maxFeePerGas).toString()
-                 }, true);
-               }
-             }
+              // Check if the error response contains specific Defender error codes
+              const defenderErrorData = defenderError.response?.data?.error;
+              if (defenderErrorData) {
+                switch (defenderErrorData.code) {
+                  case 'NONCE_TOO_LOW':
+                    throw new ExecutorError(
+                      'Nonce too low - transaction would be replaced',
+                      {
+                        suggestedNonce: defenderErrorData.suggestedNonce,
+                      },
+                      true,
+                    );
+                  case 'INSUFFICIENT_FUNDS':
+                    throw new InsufficientBalanceError(
+                      BigInt(balance?.toString() || '0'),
+                      this.config.minBalance,
+                    );
+                  case 'GAS_LIMIT_TOO_LOW':
+                    throw new ExecutorError(
+                      'Gas limit too low for complex transaction',
+                      {
+                        providedGasLimit: calculatedGasLimit.toString(),
+                        suggestedGasLimit: defenderErrorData.suggestedGasLimit,
+                      },
+                      true,
+                    );
+                  default:
+                    throw new ExecutorError(
+                      `Defender API Error: ${defenderErrorData.message}`,
+                      {
+                        code: defenderErrorData.code,
+                        details: defenderErrorData,
+                      },
+                      false,
+                    );
+                }
+              }
+            }
 
-             // Check if the error response contains specific Defender error codes
-             const defenderError = error?.response?.data?.error;
-             if (defenderError) {
-               switch(defenderError.code) {
-                 case 'NONCE_TOO_LOW':
-                   throw new ExecutorError('Nonce too low - transaction would be replaced', {
-                     suggestedNonce: defenderError.suggestedNonce
-                   }, true);
-                 case 'INSUFFICIENT_FUNDS':
-                   throw new InsufficientBalanceError(BigInt(balance?.toString() || '0'), this.config.minBalance);
-                 case 'GAS_LIMIT_TOO_LOW':
-                   throw new ExecutorError('Gas limit too low for complex transaction', {
-                     providedGasLimit: calculatedGasLimit.toString(),
-                     suggestedGasLimit: defenderError.suggestedGasLimit
-                   }, true);
-                 default:
-                   throw new ExecutorError(`Defender API Error: ${defenderError.message}`, {
-                     code: defenderError.code,
-                     details: defenderError
-                   }, false);
-               }
-             }
-          }
-
-          // If not a 400 error or no specific error code, throw the original error
-          throw error;
-        });
+            // If not a 400 error or no specific error code, throw the original error
+            throw error;
+          });
 
         this.logger.info('Transaction submitted:', {
           hash: response.hash,
@@ -1196,7 +1292,9 @@ export class RelayerExecutor implements IExecutor {
         } catch (waitError) {
           this.logger.error('Failed waiting for transaction confirmation', {
             error:
-              waitError instanceof Error ? waitError.message : String(waitError),
+              waitError instanceof Error
+                ? waitError.message
+                : String(waitError),
             transactionId: tx.id,
             depositIds: depositIds.map(String),
           });

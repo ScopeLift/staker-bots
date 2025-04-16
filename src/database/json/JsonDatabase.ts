@@ -26,16 +26,16 @@ export class JsonDatabase implements IDatabase {
 
   constructor(dbPath = 'staker-monitor-db.json') {
     // Ensure absolute path and create directory if needed
-    this.dbPath = path.isAbsolute(dbPath) 
-      ? dbPath 
+    this.dbPath = path.isAbsolute(dbPath)
+      ? dbPath
       : path.resolve(process.cwd(), dbPath);
-    
+
     // Ensure directory exists
     const dbDir = path.dirname(this.dbPath);
-    fs.mkdir(dbDir, { recursive: true }).catch(error => {
-      this.logger.error('Failed to create database directory:', { 
+    fs.mkdir(dbDir, { recursive: true }).catch((error) => {
+      this.logger.error('Failed to create database directory:', {
         error: error instanceof Error ? error.message : String(error),
-        path: dbDir 
+        path: dbDir,
       });
     });
 
@@ -47,12 +47,12 @@ export class JsonDatabase implements IDatabase {
       transaction_queue: {},
       govlst_claim_history: {},
     };
-    
+
     this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
-    this.initializeDb().catch(error => {
+    this.initializeDb().catch((error) => {
       this.logger.error('Failed to initialize database:', {
         error: error instanceof Error ? error.message : String(error),
-        path: this.dbPath
+        path: this.dbPath,
       });
     });
   }
@@ -72,7 +72,7 @@ export class JsonDatabase implements IDatabase {
       // File exists, try to read it with retries
       let retries = 3;
       let lastError;
-      
+
       while (retries > 0) {
         try {
           const fileContent = await fs.readFile(this.dbPath, 'utf-8');
@@ -87,12 +87,13 @@ export class JsonDatabase implements IDatabase {
             govlst_claim_history: loadedData.govlst_claim_history || {},
           };
 
-          this.logger.info('Successfully loaded existing database:', { 
+          this.logger.info('Successfully loaded existing database:', {
             deposits: Object.keys(this.data.deposits).length,
             checkpoints: Object.keys(this.data.checkpoints).length,
             processing_queue: Object.keys(this.data.processing_queue).length,
             transaction_queue: Object.keys(this.data.transaction_queue).length,
-            govlst_claim_history: Object.keys(this.data.govlst_claim_history).length
+            govlst_claim_history: Object.keys(this.data.govlst_claim_history)
+              .length,
           });
           return;
         } catch (error) {
@@ -100,21 +101,21 @@ export class JsonDatabase implements IDatabase {
           retries--;
           if (retries > 0) {
             // Wait for 1 second before retrying
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
         }
       }
 
       // If we get here, all retries failed
-      this.logger.error('Failed to load database after retries:', { 
+      this.logger.error('Failed to load database after retries:', {
         error: lastError,
-        path: this.dbPath 
+        path: this.dbPath,
       });
       throw lastError;
     } catch (error) {
-      this.logger.error('Database initialization error:', { 
+      this.logger.error('Database initialization error:', {
         error: error instanceof Error ? error.message : String(error),
-        path: this.dbPath
+        path: this.dbPath,
       });
       throw error;
     }
@@ -129,14 +130,14 @@ export class JsonDatabase implements IDatabase {
         // Create a temporary file first
         const tempPath = `${this.dbPath}.tmp`;
         await fs.writeFile(tempPath, JSON.stringify(this.data, null, 2));
-        
+
         // Rename temp file to actual file (atomic operation)
         await fs.rename(tempPath, this.dbPath);
-        
-        this.logger.debug('Successfully saved database to file:', { 
+
+        this.logger.debug('Successfully saved database to file:', {
           path: this.dbPath,
           deposits: Object.keys(this.data.deposits).length,
-          checkpoints: Object.keys(this.data.checkpoints).length
+          checkpoints: Object.keys(this.data.checkpoints).length,
         });
         return;
       } catch (error) {
@@ -144,15 +145,15 @@ export class JsonDatabase implements IDatabase {
         retries--;
         if (retries > 0) {
           // Wait for 1 second before retrying
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
     }
 
     // If we get here, all retries failed
-    this.logger.error('Failed to save database after retries:', { 
+    this.logger.error('Failed to save database after retries:', {
       error: lastError,
-      path: this.dbPath 
+      path: this.dbPath,
     });
     throw lastError;
   }

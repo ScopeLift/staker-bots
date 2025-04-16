@@ -61,23 +61,27 @@ sequenceDiagram
 ## Component Architecture
 
 ### 1. Monitor
+
 - Tracks on-chain events (deposits, withdrawals, delegatee changes)
 - Groups events by transaction
 - Maintains checkpoints for resilience
 - Emits events to the profitability engine
 
 ### 2. Profitability Engine
+
 - Analyzes deposits for claim profitability
 - Optimizes batch size and timing
 - Uses price feeds and gas estimates
 - Queues profitable claims for execution
 
 ### 3. Executor
+
 - Manages transaction queue (FIFO)
 - Executes claim transactions (wallet or Defender relayer)
 - Handles retries, confirmations, and tip management
 
 ### 4. Database
+
 - Stores deposits, events, checkpoints, queues, and claim history
 - Supports Supabase (production) and JSON (testing)
 
@@ -726,7 +730,7 @@ The service uses a JSON file database by default (`staker-monitor-db.json`). Thi
 
 # GovLst Profitability Engine
 
-The GovLst Profitability Engine is a sophisticated system for analyzing and optimizing reward claims from GovLst staking deposits. It implements a single-bin accumulation strategy that efficiently groups deposits to maximize profitability while minimizing gas costs.
+The GovLst Profitability Engine is a simple system for analyzing and optimizing reward claims from GovLst staking deposits. It implements a single-bin accumulation strategy that efficiently groups deposits to maximize profitability while minimizing gas costs.
 
 ## Core Features
 
@@ -770,10 +774,11 @@ The engine implements a novel single-bin accumulation strategy that:
 The engine calculates profitability using:
 
 ```typescript
-expectedProfit = totalRewards - (gasPrice * gasLimit * ethPrice / tokenPrice)
+expectedProfit = totalRewards - (gasPrice * gasLimit * ethPrice) / tokenPrice;
 ```
 
 Where:
+
 - `totalRewards`: Sum of unclaimed rewards in the bin
 - `gasPrice`: Current gas price with safety buffer
 - `gasLimit`: Estimated gas required for claim (300,000)
@@ -800,6 +805,7 @@ Implements a robust error handling system:
 ## Performance Optimizations
 
 1. **Caching System**
+
    - Gas price caching with TTL
    - Reward calculation memoization
    - Batch processing of RPC calls
@@ -813,13 +819,13 @@ Implements a robust error handling system:
 
 ```typescript
 interface ProfitabilityConfig {
-  rewardTokenAddress: string;     // Reward token contract address
-  minProfitMargin: bigint;       // Minimum profit threshold
-  gasPriceBuffer: number;        // Gas price safety margin (%)
-  maxBatchSize: number;          // Maximum deposits per batch
-  defaultTipReceiver: string;    // Default tip receiver address
+  rewardTokenAddress: string; // Reward token contract address
+  minProfitMargin: bigint; // Minimum profit threshold
+  gasPriceBuffer: number; // Gas price safety margin (%)
+  maxBatchSize: number; // Maximum deposits per batch
+  defaultTipReceiver: string; // Default tip receiver address
   priceFeed: {
-    cacheDuration: number;       // Price cache duration (ms)
+    cacheDuration: number; // Price cache duration (ms)
   };
 }
 ```
@@ -834,13 +840,13 @@ const engine = new GovLstProfitabilityEngine(
   {
     rewardTokenAddress: '0x...',
     minProfitMargin: BigInt(1e16), // 0.01 tokens
-    gasPriceBuffer: 20,            // 20% buffer
+    gasPriceBuffer: 20, // 20% buffer
     maxBatchSize: 50,
     defaultTipReceiver: '0x...',
     priceFeed: {
-      cacheDuration: 300_000,      // 5 minutes
+      cacheDuration: 300_000, // 5 minutes
     },
-  }
+  },
 );
 
 // Start the engine
@@ -866,10 +872,10 @@ The engine provides detailed monitoring capabilities:
 ## Error Types
 
 ```typescript
-- ProfitabilityError      // Base error class
-  - GasEstimationError    // Gas calculation issues
-  - BatchFetchError       // Batch processing failures
-  - QueueProcessingError  // Queue operation errors
+-ProfitabilityError - // Base error class
+  GasEstimationError - // Gas calculation issues
+  BatchFetchError - // Batch processing failures
+  QueueProcessingError; // Queue operation errors
 ```
 
 ## Future Improvements

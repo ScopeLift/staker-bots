@@ -47,12 +47,6 @@ const BASE_EVENTS = {
   ERROR: EXECUTOR.EVENTS.ERROR,
 } as const;
 
-const GAS = {
-  MIN_LIMIT: EXECUTOR.GAS.MIN_GAS_LIMIT,
-  MAX_LIMIT: EXECUTOR.GAS.MAX_GAS_LIMIT,
-  BUFFER: EXECUTOR.GAS.GAS_LIMIT_BUFFER,
-} as const;
-
 const BASE_QUEUE = {
   PROCESSOR_INTERVAL: EXECUTOR.QUEUE.QUEUE_PROCESSOR_INTERVAL,
   MAX_BATCH_SIZE: EXECUTOR.QUEUE.MAX_BATCH_SIZE,
@@ -606,28 +600,33 @@ export class BaseExecutor implements IExecutor {
     this.logger.info('Starting transaction execution', {
       id: tx.id,
       depositIds: tx.depositIds.map(String),
-      expectedProfit: ethers.formatEther(
-        tx.profitability.estimates.expected_profit,
-      ),
     });
 
     try {
       tx.status = TransactionStatus.PENDING;
       this.queue.set(tx.id, tx);
-      this.logger.info('Transaction status updated to pending', { id: tx.id });
 
-      // Get payout amount and gas cost for optimal threshold
+      // Get payout amount from contract
       const payoutAmount = await this.govLstContract.payoutAmount();
-      const gasCost = await this.gasCostEstimator.estimateGasCostInRewardToken(this.provider);
+
+      // Temporarily use a default gas cost value
+      const gasCost = 0n; // Set to 0 for now since we don't have actual values
+      this.logger.info('Using default gas cost:', {
+        value: gasCost.toString(),
+        type: typeof gasCost,
+      });
+
+      // Calculate optimal threshold
       const profitMargin = this.config.minProfitMargin;
-      
-      // Calculate optimal threshold (minExpectedReward)
-      const optimalThreshold = payoutAmount + gasCost + 
-        ((payoutAmount + gasCost) * BigInt(profitMargin)) / BigInt(100);
+      const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
+      const baseAmount = payoutAmount + gasCost;
+      const profitMarginAmount =
+        (baseAmount * profitMarginBasisPoints) / 10000n;
+      const optimalThreshold = payoutAmount + gasCost + profitMarginAmount;
 
       const depositIds = tx.depositIds;
 
-      // Store queue-related metadata in transaction
+      // Store queue-related metadata
       let queueItemId: string | undefined;
       let queueDepositIds: string[] = [];
       if (tx.tx_data) {
@@ -643,29 +642,15 @@ export class BaseExecutor implements IExecutor {
         }
       }
 
-      // Store for later cleanup
       tx.metadata = {
         queueItemId,
         depositIds: queueDepositIds,
       };
 
-      this.logger.info('Estimating gas for transaction', {
-        id: tx.id,
-        depositCount: depositIds.length,
-        minExpectedReward: ethers.formatEther(optimalThreshold),
-      });
-
+      // Calculate gas parameters
       const gasEstimate = await this.estimateGas(depositIds, tx.profitability);
       const { finalGasLimit, boostedGasPrice } =
         await this.calculateGasParameters(gasEstimate);
-
-      this.logger.info('Gas parameters calculated', {
-        id: tx.id,
-        baseGasEstimate: gasEstimate.toString(),
-        finalGasLimit: finalGasLimit.toString(),
-        boostedGasPrice: ethers.formatUnits(boostedGasPrice, 'gwei'),
-        estimatedCostEth: ethers.formatEther(finalGasLimit * boostedGasPrice),
-      });
 
       const claimAndDistributeReward = this.govLstContract
         .claimAndDistributeReward as GovLstContractMethod;
@@ -673,16 +658,9 @@ export class BaseExecutor implements IExecutor {
         throw new ContractMethodError('claimAndDistributeReward');
       }
 
-      this.logger.info('Submitting transaction', {
-        id: tx.id,
-        tipReceiver: this.config.defaultTipReceiver,
-        minExpectedReward: ethers.formatEther(optimalThreshold),
-        depositIds: depositIds.map(String),
-      });
-
       const txResponse = await claimAndDistributeReward(
         this.config.defaultTipReceiver || this.wallet.address,
-        optimalThreshold, // Use optimal threshold as minExpectedReward
+        optimalThreshold,
         depositIds,
         {
           gasLimit: finalGasLimit,
@@ -693,8 +671,6 @@ export class BaseExecutor implements IExecutor {
       this.logger.info('Transaction submitted', {
         id: tx.id,
         hash: txResponse.hash,
-        nonce: txResponse.nonce,
-        gasPrice: ethers.formatUnits(txResponse.gasPrice || 0n, 'gwei'),
       });
 
       // Process the transaction receipt
@@ -703,7 +679,6 @@ export class BaseExecutor implements IExecutor {
       this.logger.error('Transaction execution failed', {
         id: tx.id,
         error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
       });
       await this.handleTransactionError(tx, error);
     }
@@ -795,29 +770,11 @@ export class BaseExecutor implements IExecutor {
     finalGasLimit: bigint;
     boostedGasPrice: bigint;
   }> {
-    // Apply a larger buffer for complex transactions
-    const gasBuffer = GAS.BUFFER;
-    this.logger.info('Calculating gas parameters', {
-      baseGasEstimate: gasEstimate.toString(),
-      buffer: gasBuffer,
-    });
-
-    // Calculate gas limit using helper function
     const finalGasLimit = calculateGasLimit(gasEstimate, 1, this.logger);
-
-    // Calculate boosted gas price
     const feeData = await this.provider.getFeeData();
     const baseGasPrice = feeData.gasPrice || 0n;
     const gasBoostMultiplier = BigInt(100 + this.config.gasBoostPercentage);
     const boostedGasPrice = (baseGasPrice * gasBoostMultiplier) / 100n;
-
-    this.logger.info('Final gas parameters calculated', {
-      baseGasEstimate: gasEstimate.toString(),
-      finalGasLimit: finalGasLimit.toString(),
-      baseGasPrice: baseGasPrice.toString(),
-      boostPercentage: this.config.gasBoostPercentage,
-      boostedGasPrice: boostedGasPrice.toString(),
-    });
 
     return { finalGasLimit, boostedGasPrice };
   }
@@ -832,11 +789,6 @@ export class BaseExecutor implements IExecutor {
     txResponse: ContractTransactionResponse,
   ): Promise<void> {
     try {
-      this.logger.info('Waiting for transaction...', {
-        hash: txResponse.hash,
-        nonce: txResponse.nonce,
-      });
-
       let receipt;
       let isSuccess = false;
 
@@ -854,15 +806,7 @@ export class BaseExecutor implements IExecutor {
             waitError instanceof Error ? waitError.message : String(waitError),
           hash: txResponse.hash,
         });
-        // Continue processing with failed status
       }
-
-      this.logger.info('Transaction confirmation complete', {
-        hash: txResponse.hash,
-        status: isSuccess ? 'SUCCESS' : 'FAILED',
-        blockNumber: receipt?.blockNumber,
-        gasUsed: receipt?.gasUsed.toString(),
-      });
 
       // Update transaction status
       tx.status = isSuccess
@@ -879,7 +823,6 @@ export class BaseExecutor implements IExecutor {
           id: tx.id,
           hash: txResponse.hash,
           blockNumber: receipt?.blockNumber,
-          gasUsed: receipt?.gasUsed.toString(),
         });
       } else {
         this.logger.error(BASE_EVENTS.TRANSACTION_FAILED, {
@@ -888,19 +831,11 @@ export class BaseExecutor implements IExecutor {
         });
       }
 
-      // Clean up queue items regardless of success or failure
+      // Clean up queue items and update queue
       await this.cleanupQueueItems(tx, txResponse.hash);
-
-      // Update in-memory queue
       this.queue.set(tx.id, tx);
-
-      // Remove from in-memory queue
       this.queue.delete(tx.id);
     } catch (error) {
-      this.logger.error('Failed to process transaction receipt', {
-        error: error instanceof Error ? error.message : String(error),
-        transactionId: tx.id,
-      });
       await this.handleTransactionError(tx, error);
     }
   }
