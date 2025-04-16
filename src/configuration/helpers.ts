@@ -27,22 +27,49 @@ export function calculateGasLimit(
 
   let gasLimit: bigint;
   try {
-    // Scale gas limit based on deposit count
-    // Base + additional gas per item beyond the first one
-    const baseGas = Number(gasEstimate) * EXECUTOR.GAS.GAS_LIMIT_BUFFER;
-    const additionalGas = Math.max(0, depositCount - 1) * 30000; // 30k gas per additional deposit
-    gasLimit = BigInt(Math.ceil(baseGas + additionalGas));
+    // Scale gas limit based on deposit count with progressive scaling
+    // Base calculation
+    const baseGas = Number(gasEstimate);
+    
+    // Calculate additional gas per deposit with progressive scaling
+    // Start with 50k gas per deposit and increase by 10k for each additional deposit
+    const basePerDeposit = 50000;
+    const progressiveIncrease = 10000;
+    let totalAdditionalGas = 0;
+    
+    for (let i = 0; i < depositCount; i++) {
+      totalAdditionalGas += basePerDeposit + (i * progressiveIncrease);
+    }
+
+    // Apply dynamic buffer based on deposit count
+    // Increase buffer percentage as deposit count grows
+    const baseBuffer = EXECUTOR.GAS.GAS_LIMIT_BUFFER; // e.g. 1.3 for 30%
+    const extraBufferPerDeposit = 0.1; // Add 10% per deposit
+    const dynamicBuffer = baseBuffer + (depositCount - 1) * extraBufferPerDeposit;
+    
+    // Calculate final gas limit with all factors
+    const bufferedBaseGas = Math.ceil(baseGas * dynamicBuffer);
+    gasLimit = BigInt(bufferedBaseGas + totalAdditionalGas);
+
+    logger.info('Gas limit calculation details', {
+      baseGas,
+      totalAdditionalGas,
+      dynamicBuffer,
+      bufferedBaseGas,
+      finalGasLimit: gasLimit.toString(),
+    });
   } catch (error) {
-    // If conversion fails, use a safe default
+    // If conversion fails, use a safe default with progressive scaling
     logger.warn('Error calculating gas limit, using safe default', {
       error: error instanceof Error ? error.message : String(error),
       gasEstimate: gasEstimate.toString(),
       depositCount,
     });
-    // Scale the safe default based on deposit count
-    gasLimit =
-      EXECUTOR.GAS.MIN_GAS_LIMIT * 2n +
-      BigInt(Math.max(0, depositCount - 1) * 30000);
+    
+    // Safe default calculation with progressive scaling
+    const safeBaseGas = Number(EXECUTOR.GAS.MIN_GAS_LIMIT) * 2;
+    const safeAdditionalGas = depositCount * 75000; // 75k gas per deposit for safety
+    gasLimit = BigInt(safeBaseGas + safeAdditionalGas);
   }
 
   // Apply bounds

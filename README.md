@@ -726,7 +726,7 @@ The service uses a JSON file database by default (`staker-monitor-db.json`). Thi
 
 # GovLst Profitability Engine
 
-The GovLst Profitability Engine is a sophisticated system for analyzing and optimizing reward claims from GovLst staking deposits. It implements a single-bin accumulation strategy that efficiently groups deposits to maximize profitability while minimizing gas costs.
+The GovLst Profitability Engine is a simple system for analyzing and optimizing reward claims from GovLst staking deposits. It implements a single-bin accumulation strategy that efficiently groups deposits to maximize profitability while minimizing gas costs.
 
 ## Core Features
 
