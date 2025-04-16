@@ -1383,19 +1383,12 @@ export class RelayerExecutor implements IExecutor {
       return;
     }
 
-    // Extract deposit IDs and add them to cleanup set
-    const { depositIds: extractedDepositIds } = extractQueueItemInfo(tx);
-    const depositIdStrings = extractedDepositIds;
-    
-    try {
-      // Add all deposit IDs to cleanup set
-      depositIdStrings.forEach(id => this.cleanupInProgress.add(id));
-      
-      this.logger.info('Starting cleanup with lock:', {
-        depositIds: depositIdStrings,
-        txHash
-      });
+    if (!tx.depositIds || tx.depositIds.length === 0) {
+      this.logger.warn('No deposit IDs in transaction, skipping cleanup');
+      return;
+    }
 
+    try {
       // Only proceed with deletion if transaction is confirmed
       if (tx.status !== TransactionStatus.CONFIRMED) {
         this.logger.info('Skipping cleanup for unconfirmed transaction:', {
@@ -1405,39 +1398,74 @@ export class RelayerExecutor implements IExecutor {
         return;
       }
 
-      const { queueItemId } = extractQueueItemInfo(tx);
-      
-      // If we have a queue item ID, delete it
+      // First try to get queueItemId from tx metadata or tx_data
+      let queueItemId: string | undefined;
+      if (tx.metadata?.queueItemId) {
+        queueItemId = tx.metadata.queueItemId;
+      } else if (tx.tx_data && typeof tx.tx_data === 'string') {
+        try {
+          const txData = JSON.parse(tx.tx_data);
+          queueItemId = txData.queueItemId;
+        } catch (error) {
+          this.logger.warn('Failed to parse tx_data for queueItemId:', {
+            error: error instanceof Error ? error.message : String(error),
+            txData: tx.tx_data
+          });
+        }
+      }
+
+      // If we don't have a queueItemId, try to find it in the database
+      if (!queueItemId) {
+        // Try to find by transaction hash first
+        const itemsByHash = await this.db.getTransactionQueueItemsByHash(txHash);
+        if (itemsByHash.length > 0) {
+          queueItemId = itemsByHash[0]?.id;
+        } else {
+          // Try to find by deposit IDs
+          for (const depositId of tx.depositIds) {
+            const item = await this.db.getTransactionQueueItemByDepositId(depositId.toString());
+            if (item) {
+              queueItemId = item.id;
+              break;
+            }
+          }
+        }
+      }
+
+      // If we found a queue item, delete it
       if (queueItemId) {
-        this.logger.info('Deleting confirmed transaction from queue:', {
+        this.logger.info('Deleting transaction queue item:', {
           queueItemId,
           txHash
         });
         
         await this.db.deleteTransactionQueueItem(queueItemId);
+      } else {
+        this.logger.warn('Could not find transaction queue item to delete:', {
+          txHash,
+          depositIds: tx.depositIds.map(String)
+        });
       }
 
-      // Delete any associated processing queue items
-      for (const depositId of depositIdStrings) {
-        const processingItem = await this.db.getProcessingQueueItemByDepositId(depositId);
+      // Clean up any associated processing queue items
+      for (const depositId of tx.depositIds) {
+        const processingItem = await this.db.getProcessingQueueItemByDepositId(depositId.toString());
         if (processingItem) {
           await this.db.deleteProcessingQueueItem(processingItem.id);
+          this.logger.info('Deleted processing queue item:', {
+            processingItemId: processingItem.id,
+            depositId: depositId.toString()
+          });
         }
       }
 
     } catch (error) {
       this.logger.error('Failed to delete confirmed transaction:', {
         error: error instanceof Error ? error.message : String(error),
-        txHash
+        txHash,
+        stack: error instanceof Error ? error.stack : undefined
       });
       throw error;
-    } finally {
-      // Always remove deposit IDs from cleanup set, even if there was an error
-      depositIdStrings.forEach(id => this.cleanupInProgress.delete(id));
-      this.logger.info('Cleanup lock released:', {
-        depositIds: depositIdStrings,
-        txHash
-      });
     }
   }
 
