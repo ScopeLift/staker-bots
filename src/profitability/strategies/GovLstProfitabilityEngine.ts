@@ -520,6 +520,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       const rewardsMap = new Map<string, bigint>();
       const batchSize = GovLstProfitabilityEngine.BATCH_SIZE;
       
+      this.logger.info('Starting batch fetch of unclaimed rewards:', {
+        totalDeposits: depositIds.length,
+        batchSize
+      });
+      
       for (let i = 0; i < depositIds.length; i += batchSize) {
         const batchIds = depositIds.slice(i, i + batchSize);
         
@@ -531,13 +536,28 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           batchIds.map(async (id) => {
             try {
               const reward = await this.stakerContract.unclaimedReward(id);
+              this.logger.info('Fetched reward for deposit:', {
+                depositId: id.toString(),
+                reward: reward.toString(),
+                rewardInEther: ethers.formatEther(reward)
+              });
               rewardsMap.set(id.toString(), reward);
             } catch (error) {
-              this.logger.error(`Error fetching reward for deposit ${id}:`, { error });
+              this.logger.error(`Error fetching reward for deposit ${id}:`, { 
+                error,
+                errorMessage: error instanceof Error ? error.message : String(error)
+              });
             }
           })
         );
       }
+      
+      const totalRewards = Array.from(rewardsMap.values()).reduce((sum, reward) => sum + reward, BigInt(0));
+      this.logger.info('Completed batch fetch of unclaimed rewards:', {
+        totalDeposits: depositIds.length,
+        successfulFetches: rewardsMap.size,
+        totalRewardsInEther: ethers.formatEther(totalRewards)
+      });
       
       return rewardsMap;
     } catch (error) {
@@ -597,13 +617,28 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     const gasLimit = BigInt(300000); // Estimated gas limit for claim
     const gasCost = gasPrice * gasLimit;
 
+    this.logger.info('Gas cost calculation:', {
+      gasPriceGwei: ethers.formatUnits(gasPrice, 'gwei'),
+      gasLimit: gasLimit.toString(),
+      gasCostWei: gasCost.toString(),
+      gasCostEther: ethers.formatEther(gasCost)
+    });
+
     // Use hardcoded prices for testing
     // ETH price: $1800, Token price: $1
     const ethPriceScaled = BigInt(1800) * BigInt(1e18);
     const rewardTokenPriceScaled = BigInt(1) * BigInt(1e18);
 
     // Calculate gas cost in reward tokens
-    return (gasCost * ethPriceScaled) / rewardTokenPriceScaled;
+    const gasCostInRewardTokens = (gasCost * ethPriceScaled) / rewardTokenPriceScaled;
+
+    this.logger.info('Gas cost in reward tokens:', {
+      ethPriceUSD: ethers.formatEther(ethPriceScaled),
+      tokenPriceUSD: ethers.formatEther(rewardTokenPriceScaled),
+      gasCostInTokens: ethers.formatEther(gasCostInRewardTokens)
+    });
+
+    return gasCostInRewardTokens;
   }
 
   /**
