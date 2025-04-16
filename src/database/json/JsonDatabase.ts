@@ -8,7 +8,6 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
-  GovLstDeposit,
   GovLstClaimHistory,
 } from '../interfaces/types';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
@@ -22,7 +21,6 @@ export class JsonDatabase implements IDatabase {
     checkpoints: Record<string, ProcessingCheckpoint>;
     processing_queue: Record<string, ProcessingQueueItem>;
     transaction_queue: Record<string, TransactionQueueItem>;
-    govlst_deposits: Record<string, GovLstDeposit>;
     govlst_claim_history: Record<string, GovLstClaimHistory>;
   };
 
@@ -47,7 +45,6 @@ export class JsonDatabase implements IDatabase {
       checkpoints: {},
       processing_queue: {},
       transaction_queue: {},
-      govlst_deposits: {},
       govlst_claim_history: {},
     };
     
@@ -87,7 +84,6 @@ export class JsonDatabase implements IDatabase {
             checkpoints: loadedData.checkpoints || {},
             processing_queue: loadedData.processing_queue || {},
             transaction_queue: loadedData.transaction_queue || {},
-            govlst_deposits: loadedData.govlst_deposits || {},
             govlst_claim_history: loadedData.govlst_claim_history || {},
           };
 
@@ -96,7 +92,6 @@ export class JsonDatabase implements IDatabase {
             checkpoints: Object.keys(this.data.checkpoints).length,
             processing_queue: Object.keys(this.data.processing_queue).length,
             transaction_queue: Object.keys(this.data.transaction_queue).length,
-            govlst_deposits: Object.keys(this.data.govlst_deposits).length,
             govlst_claim_history: Object.keys(this.data.govlst_claim_history).length
           });
           return;
@@ -396,50 +391,6 @@ export class JsonDatabase implements IDatabase {
   async deleteTransactionQueueItem(id: string): Promise<void> {
     delete this.data.transaction_queue[id];
     await this.saveToFile();
-  }
-
-  // GovLst Deposit Operations
-  async createGovLstDeposit(deposit: GovLstDeposit): Promise<void> {
-    this.data.govlst_deposits[deposit.deposit_id] = {
-      ...deposit,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    await this.saveToFile();
-  }
-
-  async updateGovLstDeposit(
-    depositId: string,
-    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>,
-  ): Promise<void> {
-    const existing = this.data.govlst_deposits[depositId];
-    if (!existing) {
-      throw new Error(`GovLst deposit not found: ${depositId}`);
-    }
-
-    this.data.govlst_deposits[depositId] = {
-      ...existing,
-      ...update,
-      updated_at: new Date().toISOString(),
-    };
-
-    await this.saveToFile();
-  }
-
-  async getGovLstDeposit(depositId: string): Promise<GovLstDeposit | null> {
-    return this.data.govlst_deposits[depositId] || null;
-  }
-
-  async getGovLstDepositsByAddress(
-    govLstAddress: string,
-  ): Promise<GovLstDeposit[]> {
-    return Object.values(this.data.govlst_deposits).filter(
-      (deposit) => deposit.govlst_address === govLstAddress,
-    );
-  }
-
-  async getAllGovLstDeposits(): Promise<GovLstDeposit[]> {
-    return Object.values(this.data.govlst_deposits);
   }
 
   // GovLst Claim History Operations

@@ -24,7 +24,6 @@ import {
 } from './constants';
 import {
   EventProcessingError,
-  DatabaseError,
   MonitorError,
 } from '@/configuration/errors';
 import { stakerAbi } from '@/configuration/abis';
@@ -479,11 +478,8 @@ export class StakerMonitor extends EventEmitter {
         }
 
         const result = await this.eventProcessor.processStakeDeposited(event);
+        
         if (result.success || !result.retryable) {
-          await this.updateGovLstDeposit(
-            event.depositId,
-            event.delegateeAddress,
-          );
           return;
         }
 
@@ -551,7 +547,6 @@ export class StakerMonitor extends EventEmitter {
 
         const result = await this.eventProcessor.processDelegateeAltered(event);
         if (result.success || !result.retryable) {
-          await this.updateGovLstDeposit(event.depositId, event.newDelegatee);
           this.emit(MONITOR_EVENTS.DELEGATE_EVENT, event);
           return;
         }
@@ -583,8 +578,6 @@ export class StakerMonitor extends EventEmitter {
   ): Promise<void> {
     await this.withRetry(async () => {
       // Update GovLst deposit mapping
-      await this.updateGovLstDeposit(event.depositId, event.referrer);
-
       this.emit(MONITOR_EVENTS.STAKE_WITH_ATTRIBUTION, event);
     }, 'process StakedWithAttribution event');
   }
@@ -634,9 +627,6 @@ export class StakerMonitor extends EventEmitter {
           });
         }
 
-        // Now update GovLst deposit mapping
-        await this.updateGovLstDeposit(event.depositId, event.delegatee);
-
         this.emit(MONITOR_EVENTS.DEPOSIT_INITIALIZED, event);
       } catch (error) {
         if (error instanceof MonitorError) throw error;
@@ -662,8 +652,6 @@ export class StakerMonitor extends EventEmitter {
       try {
         const result = await this.eventProcessor.processDepositUpdated(event);
         if (result.success || !result.retryable) {
-          // Update GovLst deposit mapping for the new deposit ID
-          await this.updateGovLstDeposit(event.newDepositId, event.holder);
           this.emit(MONITOR_EVENTS.DEPOSIT_UPDATED, event);
           return;
         }
@@ -715,41 +703,5 @@ export class StakerMonitor extends EventEmitter {
       }
     }
     throw new Error('Unreachable');
-  }
-
-  /**
-   * Updates or creates a GovLst deposit record in the database
-   * @param depositId - Unique identifier for the deposit
-   * @param delegatee - Address of the delegatee for this deposit
-   * @throws DatabaseError if database operations fail
-   *
-   * Used to maintain mapping between deposits and their delegatees.
-   * Updates existing record if found, creates new record if not.
-   * Handles both creation and update timestamps automatically.
-   */
-  private async updateGovLstDeposit(
-    depositId: string,
-    delegatee: string,
-  ): Promise<void> {
-    try {
-      const existingDeposit = await this.db.getGovLstDeposit(depositId);
-      if (existingDeposit) {
-        await this.db.updateGovLstDeposit(depositId, {
-          govlst_address: delegatee,
-        });
-      } else {
-        await this.db.createGovLstDeposit({
-          deposit_id: depositId,
-          govlst_address: delegatee,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-      }
-    } catch (error) {
-      throw new DatabaseError('update GovLst deposit mapping', error as Error, {
-        depositId,
-        delegatee,
-      });
-    }
   }
 }

@@ -327,6 +327,17 @@ export class BatchOptimizationError extends GovLstError {
   }
 }
 
+export class BatchFetchError extends GovLstError {
+  constructor(error: Error, context: Record<string, unknown>) {
+    super(
+      `Batch fetch operation failed: ${error.message}`,
+      context,
+      true, // Batch fetch errors are generally retryable due to potential network issues
+    );
+    this.name = 'BatchFetchError';
+  }
+}
+
 // Error message constants
 export const ERROR_MESSAGES = {
   MONITOR: {

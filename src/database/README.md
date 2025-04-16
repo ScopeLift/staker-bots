@@ -2,6 +2,65 @@
 
 The database component provides a storage layer for the staker-bots system. It supports both Supabase and local JSON file storage.
 
+---
+
+## State Diagram: Table Relationships
+
+```mermaid
+erDiagram
+    DEPOSITS ||--o{ PROCESSING_QUEUE : contains
+    DEPOSITS ||--o{ GOVLST_DEPOSITS : tracks
+    PROCESSING_QUEUE ||--o{ TRANSACTION_QUEUE : triggers
+    GOVLST_DEPOSITS ||--o{ GOVLST_CLAIM_HISTORY : claims
+```
+
+---
+
+## Sequence Diagram: Deposit to Claim Flow
+
+```mermaid
+sequenceDiagram
+    participant Monitor
+    participant Database
+    participant ProfitabilityEngine
+    participant Executor
+    participant Ethereum
+
+    Monitor->>Database: Store deposit event
+    ProfitabilityEngine->>Database: Read deposits
+    ProfitabilityEngine->>Database: Update processing_queue
+    alt Profitable
+        ProfitabilityEngine->>Database: Add to transaction_queue
+        Executor->>Database: Read transaction_queue
+        Executor->>Ethereum: Submit claim tx
+        Ethereum-->>Executor: Tx receipt
+        Executor->>Database: Update claim_history
+    end
+```
+
+---
+
+## Schema Overview
+
+- **deposits**: Tracks staking deposits
+- **processing_checkpoints**: Tracks component state
+- **govlst_deposits**: Tracks GovLst-owned deposits
+- **govlst_claim_history**: Records claim executions
+- **processing_queue**: Manages analysis queue
+- **transaction_queue**: Manages tx execution queue
+
+---
+
+## Integration
+
+- **Monitor**: Writes events and deposits
+- **Profitability Engine**: Reads deposits, updates queues
+- **Executor**: Reads/writes transaction and claim history
+
+---
+
+## See root README for system-level diagrams and configuration.
+
 ## Database Schema
 
 The database schema is organized into logical components:

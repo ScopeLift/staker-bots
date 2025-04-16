@@ -36,6 +36,7 @@ import {
   extractQueueItemInfo,
   calculateQueueStats,
 } from '@/configuration/helpers';
+import { GasCostEstimator } from '@/prices/GasCostEstimator';
 
 // Local constants used in this file
 const BASE_EVENTS = {
@@ -108,6 +109,7 @@ export class BaseExecutor implements IExecutor {
   protected readonly govLstContract: GovLstContract;
   private readonly provider: ethers.Provider;
   private readonly config: ExecutorConfig;
+  private readonly gasCostEstimator: GasCostEstimator;
 
   /**
    * Creates a new BaseExecutor instance
@@ -147,6 +149,8 @@ export class BaseExecutor implements IExecutor {
 
     if (!this.govLstContract.interface.hasFunction('claimAndDistributeReward'))
       throw new ContractMethodError('claimAndDistributeReward');
+
+    this.gasCostEstimator = new GasCostEstimator();
   }
 
   /**
@@ -612,11 +616,14 @@ export class BaseExecutor implements IExecutor {
       this.queue.set(tx.id, tx);
       this.logger.info('Transaction status updated to pending', { id: tx.id });
 
-      // Calculate total rewards from deposit details
-      const totalRewards = tx.profitability.deposit_details.reduce(
-        (sum, detail) => sum + detail.rewards,
-        BigInt(0),
-      );
+      // Get payout amount and gas cost for optimal threshold
+      const payoutAmount = await this.govLstContract.payoutAmount();
+      const gasCost = await this.gasCostEstimator.estimateGasCostInRewardToken(this.provider);
+      const profitMargin = this.config.minProfitMargin;
+      
+      // Calculate optimal threshold (minExpectedReward)
+      const optimalThreshold = payoutAmount + gasCost + 
+        ((payoutAmount + gasCost) * BigInt(profitMargin)) / BigInt(100);
 
       const depositIds = tx.depositIds;
 
@@ -645,7 +652,7 @@ export class BaseExecutor implements IExecutor {
       this.logger.info('Estimating gas for transaction', {
         id: tx.id,
         depositCount: depositIds.length,
-        minExpectedReward: ethers.formatEther(totalRewards),
+        minExpectedReward: ethers.formatEther(optimalThreshold),
       });
 
       const gasEstimate = await this.estimateGas(depositIds, tx.profitability);
@@ -669,13 +676,13 @@ export class BaseExecutor implements IExecutor {
       this.logger.info('Submitting transaction', {
         id: tx.id,
         tipReceiver: this.config.defaultTipReceiver,
-        minExpectedReward: ethers.formatEther(totalRewards),
+        minExpectedReward: ethers.formatEther(optimalThreshold),
         depositIds: depositIds.map(String),
       });
 
       const txResponse = await claimAndDistributeReward(
         this.config.defaultTipReceiver || this.wallet.address,
-        totalRewards,
+        optimalThreshold, // Use optimal threshold as minExpectedReward
         depositIds,
         {
           gasLimit: finalGasLimit,

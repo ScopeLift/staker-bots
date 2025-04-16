@@ -42,11 +42,6 @@ interface DatabaseDeposit {
   updated_at?: string;
 }
 
-interface DepositCache {
-  deposit: GovLstDeposit;
-  timestamp: number;
-}
-
 interface ProfitableTransaction {
   deposit_id: bigint;
   unclaimed_rewards: bigint;
@@ -54,29 +49,20 @@ interface ProfitableTransaction {
 }
 
 /**
- * Wrapper for the GovLst profitability engine that handles caching and analysis
+ * Wrapper for the GovLst profitability engine that handles analysis and processing
  */
 export class GovLstProfitabilityEngineWrapper
   implements IGovLstProfitabilityEngine
 {
   private readonly engine: IGovLstProfitabilityEngine;
   private readonly processingQueue: Set<string> = new Set();
-  private readonly depositCache: Map<string, DepositCache> = new Map();
   private queueProcessorInterval: NodeJS.Timeout | null = null;
   private rewardCheckInterval: NodeJS.Timeout | null = null;
   private isRunning = false;
   private lastProcessedBlock = 0;
-  private static readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
   private static readonly REWARD_CHECK_INTERVAL =
     CONFIG.profitability.rewardCheckInterval;
   private profitableTransactions: ProfitableTransaction[] = [];
-  private readonly profitabilityCache = new Map<
-    string,
-    {
-      check: GovLstProfitabilityCheck;
-      timestamp: number;
-    }
-  >();
   private readonly provider: ethers.Provider;
 
   constructor(
@@ -115,58 +101,10 @@ export class GovLstProfitabilityEngineWrapper
     );
   }
 
-  private serializeProfitabilityCheck(deposits: GovLstDeposit[]): string {
-    return deposits
-      .map((d) => `${d.deposit_id}-${d.delegatee_address}-${d.amount}`)
-      .sort()
-      .join('|');
-  }
-  private serializeBigInts(obj: unknown): unknown {
-    if (typeof obj === 'bigint') {
-      return obj.toString();
-    }
-
-    if (Array.isArray(obj)) {
-      return obj.map((item) => this.serializeBigInts(item));
-    }
-
-    if (obj !== null && typeof obj === 'object') {
-      const result: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(obj)) {
-        result[key] = this.serializeBigInts(value);
-      }
-      return result;
-    }
-
-    return obj;
-  }
-
   async checkGroupProfitability(
     deposits: GovLstDeposit[],
   ): Promise<GovLstProfitabilityCheck> {
-    const cacheKey = this.serializeProfitabilityCheck(deposits);
-    const cached = this.profitabilityCache.get(cacheKey);
-
-    if (
-      cached &&
-      Date.now() - cached.timestamp < GovLstProfitabilityEngineWrapper.CACHE_TTL
-    ) {
-      return cached.check;
-    }
-
-    const check = await this.engine.checkGroupProfitability(deposits);
-
-    // Serialize BigInt values before caching
-    const serializedCheck = this.serializeBigInts(
-      check,
-    ) as GovLstProfitabilityCheck;
-
-    this.profitabilityCache.set(cacheKey, {
-      check: serializedCheck,
-      timestamp: Date.now(),
-    });
-
-    return serializedCheck;
+    return this.engine.checkGroupProfitability(deposits);
   }
 
   async getProfitableTransactions(): Promise<ProfitableTransaction[]> {
@@ -301,9 +239,14 @@ export class GovLstProfitabilityEngineWrapper
 
     try {
       const currentBlock = await this.provider.getBlockNumber();
-      const deposits = await this.getDepositsWithCache(
-        Array.from(this.processingQueue).map((id) => BigInt(id)),
-      );
+      const deposits: GovLstDeposit[] = [];
+
+      // Get deposits directly from database
+      for (const id of Array.from(this.processingQueue)) {
+        const deposit = await this.db.getDeposit(id);
+        if (!deposit) throw new DepositNotFoundError(id);
+        deposits.push(this.convertToGovLstDeposit(deposit));
+      }
 
       // Clear the processing queue since we've retrieved the deposits
       this.processingQueue.clear();
@@ -386,38 +329,6 @@ export class GovLstProfitabilityEngineWrapper
     }
   }
 
-  private async getDepositsWithCache(
-    depositIds: bigint[],
-  ): Promise<GovLstDeposit[]> {
-    const now = Date.now();
-    const deposits: GovLstDeposit[] = [];
-
-    for (const id of depositIds) {
-      const idStr = id.toString();
-      const cached = this.depositCache.get(idStr);
-
-      if (
-        cached &&
-        now - cached.timestamp < GovLstProfitabilityEngineWrapper.CACHE_TTL
-      ) {
-        deposits.push(cached.deposit);
-        continue;
-      }
-
-      const deposit = await this.db.getDeposit(idStr);
-      if (!deposit) throw new DepositNotFoundError(idStr);
-
-      const govLstDeposit = this.convertToGovLstDeposit(deposit);
-      this.depositCache.set(idStr, {
-        deposit: govLstDeposit,
-        timestamp: now,
-      });
-      deposits.push(govLstDeposit);
-    }
-
-    return deposits;
-  }
-
   private convertToGovLstDeposit(deposit: DatabaseDeposit): GovLstDeposit {
     if (!deposit.deposit_id || !deposit.owner_address || !deposit.amount) {
       throw new InvalidDepositDataError(deposit);
@@ -476,238 +387,128 @@ export class GovLstProfitabilityEngineWrapper
         depositsToCheck.push(deposit);
       }
 
-      // Process only deposits that aren't already queued
-      const profitableDeposits = [];
-      const depositDetails = [];
+      // Convert database deposits to GovLstDeposits
+      const govLstDeposits = depositsToCheck.map(deposit => this.convertToGovLstDeposit(deposit));
 
-      for (const deposit of depositsToCheck) {
+      // Use GovLstProfitabilityEngine to analyze deposits
+      const analysis = await this.engine.analyzeAndGroupDeposits(govLstDeposits);
+
+      this.logger.info('Deposit analysis results:', {
+        totalGroups: analysis.deposit_groups.length,
+        totalExpectedProfit: ethers.formatEther(analysis.total_expected_profit),
+        totalGasEstimate: analysis.total_gas_estimate.toString(),
+        totalDeposits: analysis.total_deposits
+      });
+
+      // Process each profitable group
+      for (const group of analysis.deposit_groups) {
         try {
-          // Skip deposits with no ID
-          if (!deposit.deposit_id) continue;
-
-          // Get unclaimed rewards for this deposit
-          const unclaimedRewards = await (
-            this.engine as IGovLstProfitabilityEngine & {
-              stakerContract: {
-                unclaimedReward: (depositId: string) => Promise<bigint>;
-              };
-            }
-          ).stakerContract.unclaimedReward(deposit.deposit_id);
-
-          this.logger.info(
-            `Unclaimed rewards for deposit ${deposit.deposit_id}:`,
-            {
-              depositId: deposit.deposit_id,
-              rewards: unclaimedRewards.toString(),
-              owner: deposit.owner_address,
-              amount: deposit.amount,
-            },
-          );
-
-          // Add deposits with non-zero rewards to the profitable list
-          if (unclaimedRewards > 0n) {
-            profitableDeposits.push(deposit);
-            depositDetails.push({
-              depositId: BigInt(deposit.deposit_id),
-              rewards: unclaimedRewards,
-            });
-          }
-        } catch (error) {
-          this.logger.error(
-            `Error checking rewards for deposit ${deposit.deposit_id}:`,
-            { error },
-          );
-          // Continue with other deposits
-        }
-      }
-
-      this.logger.info(
-        `Found ${profitableDeposits.length} deposits with unclaimed rewards`,
-      );
-
-      // Process profitable deposits if any found
-      if (profitableDeposits.length > 0) {
-        // Calculate total rewards and shares
-        const totalRewards = depositDetails.reduce(
-          (sum, detail) => sum + detail.rewards,
-          0n,
-        );
-
-        const totalShares = profitableDeposits.reduce(
-          (sum, deposit) => sum + BigInt(deposit.amount),
-          0n,
-        );
-
-        // Get current gas price and estimate total gas cost
-        const gasPrice = await this.provider.getFeeData();
-        const gasEstimate = BigInt(300000);
-        const gasBuffer = BigInt(this.engine.config.gasPriceBuffer);
-        const totalGasCost =
-          (gasEstimate * (gasPrice.gasPrice || 0n) * (100n + gasBuffer)) / 100n;
-
-        // Get the minimum profit margin percentage from config
-        const minProfitMarginPercent = this.engine.config.minProfitMargin; // This is a number like 10
-
-        // Calculate the minimum required profit value in wei
-        const minProfitValue =
-          (totalRewards * BigInt(minProfitMarginPercent)) / 100n; // e.g., (totalRewards * 10) / 100
-
-        const isReallyProfitable = totalRewards > totalGasCost + minProfitValue;
-
-        if (!isReallyProfitable) {
-          this.logger.info(
-            'Skipping deposits - not profitable after gas costs and margin:',
-            {
-              totalRewards: ethers.formatEther(totalRewards),
-              estimatedGasCost: ethers.formatEther(totalGasCost),
-              minProfitMarginPercent: `${minProfitMarginPercent}%`,
-              requiredMinProfitValue: ethers.formatEther(minProfitValue),
-              actualProfit: ethers.formatEther(totalRewards - totalGasCost),
-            },
-          );
-          return;
-        }
-
-        // Create profitability check object for all deposits
-        const profitabilityCheck: GovLstProfitabilityCheck = {
-          is_profitable: true,
-          constraints: {
-            has_enough_shares: true,
-            meets_min_reward: true,
-            meets_min_profit: true,
-          },
-          estimates: {
-            expected_profit: totalRewards - totalGasCost,
-            gas_estimate: gasEstimate,
-            total_shares: totalShares,
-            payout_amount: totalRewards,
-          },
-          deposit_details: depositDetails,
-        };
-
-        try {
-          // First validate the transaction
+          // Validate the transaction first
           await this.executor.validateTransaction(
-            profitableDeposits.map((d) => BigInt(d.deposit_id)),
-            profitabilityCheck,
+            group.deposit_ids,
+            {
+              is_profitable: true,
+              constraints: {
+                has_enough_shares: true,
+                meets_min_reward: true,
+                meets_min_profit: true,
+              },
+              estimates: {
+                expected_profit: group.expected_profit,
+                gas_estimate: group.gas_estimate,
+                total_shares: group.total_shares,
+                payout_amount: group.total_payout,
+              },
+              deposit_details: group.deposit_ids.map(id => ({
+                depositId: id,
+                rewards: BigInt(0), // Will be calculated by contract
+              })),
+            }
           );
 
-          // If validation succeeds, create database entries
-          // Update or create processing queue items
-          for (const deposit of profitableDeposits) {
-            // Check for existing queue item by deposit ID
-            const existingItem =
-              await this.db.getProcessingQueueItemByDepositId(
-                deposit.deposit_id,
-              );
+          // Create processing queue items for each deposit in the group
+          for (const depositId of group.deposit_ids) {
+            const deposit = depositsToCheck.find(d => BigInt(d.deposit_id) === depositId);
+            if (!deposit) continue;
+
+            const existingItem = await this.db.getProcessingQueueItemByDepositId(deposit.deposit_id);
             if (existingItem) {
-              // Update existing item
               await this.db.updateProcessingQueueItem(existingItem.id, {
                 status: ProcessingQueueStatus.PENDING,
                 delegatee: deposit.delegatee_address || '',
               });
-              this.logger.info(
-                `Updated existing queue item for deposit ${deposit.deposit_id}`,
-              );
             } else {
-              // Create new item
               await this.db.createProcessingQueueItem({
                 deposit_id: deposit.deposit_id,
                 status: ProcessingQueueStatus.PENDING,
                 delegatee: deposit.delegatee_address || '',
               });
-              this.logger.info(
-                `Created new queue item for deposit ${deposit.deposit_id}`,
-              );
             }
           }
 
-          try {
-            // Create a single transaction queue item for all deposits
-            if (profitableDeposits.length === 0) {
-              throw new Error('No profitable deposits to queue');
-            }
-
-            // Ensure the first deposit has a valid deposit_id
-            const firstDeposit = profitableDeposits[0];
-            if (!firstDeposit || typeof firstDeposit.deposit_id !== 'string') {
-              throw new Error('Invalid deposit data - missing deposit_id');
-            }
-
-            // Use the first deposit ID to satisfy foreign key constraint
-            const txQueueItem = await this.db.createTransactionQueueItem({
-              deposit_id: firstDeposit.deposit_id,
-              status: TransactionQueueStatus.PENDING,
-              tx_data: JSON.stringify({
-                depositIds: profitableDeposits.map((d) => d.deposit_id),
-                totalRewards: totalRewards.toString(),
-                profitability: this.serializeBigInts(profitabilityCheck),
-              }),
-            });
-
-            this.logger.info('Created transaction queue item:', {
-              id: txQueueItem.id,
-              primaryDepositId: firstDeposit.deposit_id,
-              allDepositIds: profitableDeposits.map((d) => d.deposit_id),
-            });
-
-            try {
-              // Queue the transaction with the executor
-              const queueResult = await this.executor.queueTransaction(
-                profitableDeposits.map((d) => BigInt(d.deposit_id)),
-                profitabilityCheck,
-                JSON.stringify({
-                  depositIds: profitableDeposits.map((d) => d.deposit_id),
-                  totalRewards: totalRewards.toString(),
-                  profitability: this.serializeBigInts(profitabilityCheck),
-                  queueItemId: txQueueItem.id,
-                }),
-              );
-
-              this.logger.info('Transaction processing status:', {
-                queueItemId: txQueueItem.id,
-                depositIds: profitableDeposits.map((d) => d.deposit_id),
-                totalRewards: ethers.formatEther(totalRewards),
-                gasEstimate: gasEstimate.toString(),
-                executorStatus: await this.executor.getStatus(),
-                queueResult,
-              });
-            } catch (queueError) {
-              this.logger.error('Failed to queue transaction with executor:', {
-                queueError,
-              });
-
-              // Clean up transaction queue item if executor queueing fails
-              try {
-                await this.db.updateTransactionQueueItem(txQueueItem.id, {
-                  status: TransactionQueueStatus.FAILED,
-                  error:
-                    queueError instanceof Error
-                      ? queueError.message
-                      : String(queueError),
-                });
-              } catch (cleanupError) {
-                this.logger.error(
-                  'Failed to update transaction queue item after error:',
-                  { cleanupError },
-                );
-              }
-
-              throw queueError;
-            }
-          } catch (txQueueError) {
-            this.logger.error('Failed to create transaction queue item:', {
-              txQueueError,
-            });
-            throw txQueueError;
+          // Create transaction queue item for the group
+          const firstDeposit = depositsToCheck.find(d => BigInt(d.deposit_id) === group.deposit_ids[0]);
+          if (!firstDeposit) {
+            throw new Error('Invalid deposit data - missing first deposit');
           }
+
+          const txQueueItem = await this.db.createTransactionQueueItem({
+            deposit_id: firstDeposit.deposit_id,
+            status: TransactionQueueStatus.PENDING,
+            tx_data: JSON.stringify({
+              depositIds: group.deposit_ids.map(id => id.toString()),
+              totalRewards: group.total_rewards.toString(),
+              expectedProfit: group.expected_profit.toString(),
+              gasEstimate: group.gas_estimate.toString(),
+            }),
+          });
+
+          // Queue transaction with executor
+          await this.executor.queueTransaction(
+            group.deposit_ids,
+            {
+              is_profitable: true,
+              constraints: {
+                has_enough_shares: true,
+                meets_min_reward: true,
+                meets_min_profit: true,
+              },
+              estimates: {
+                expected_profit: group.expected_profit,
+                gas_estimate: group.gas_estimate,
+                total_shares: group.total_shares,
+                payout_amount: group.total_payout,
+              },
+              deposit_details: group.deposit_ids.map(id => ({
+                depositId: id,
+                rewards: BigInt(0), // Will be calculated by contract
+              })),
+            },
+            JSON.stringify({
+              depositIds: group.deposit_ids.map(id => id.toString()),
+              totalRewards: group.total_rewards.toString(),
+              expectedProfit: group.expected_profit.toString(),
+              gasEstimate: group.gas_estimate.toString(),
+              queueItemId: txQueueItem.id,
+            }),
+          );
+
+          this.logger.info('Successfully queued profitable group:', {
+            groupSize: group.deposit_ids.length,
+            totalRewards: ethers.formatEther(group.total_rewards),
+            expectedProfit: ethers.formatEther(group.expected_profit),
+            gasEstimate: group.gas_estimate.toString(),
+          });
+
         } catch (error) {
-          this.logger.error('Failed to validate/queue transaction:', { error });
-          throw error; // No cleanup needed since we validate before creating database entries
+          this.logger.error('Failed to process profitable group:', {
+            error,
+            depositIds: group.deposit_ids,
+          });
+          // Continue with next group
         }
-      } else {
-        this.logger.info('No profitable deposits found in this check cycle');
       }
+
     } catch (error) {
       this.logger.error('Error in reward check cycle:', {
         error,

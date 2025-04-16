@@ -46,7 +46,11 @@ export enum TransactionStatus {
 }
 
 export interface ExecutorConfig {
-  wallet: WalletConfig;
+  wallet: {
+    privateKey: string;
+    minBalance: bigint;
+    maxPendingTransactions: number;
+  };
   maxQueueSize: number;
   minConfirmations: number;
   maxRetries: number;
@@ -54,7 +58,8 @@ export interface ExecutorConfig {
   transferOutThreshold: bigint;
   gasBoostPercentage: number;
   concurrentTransactions: number;
-  defaultTipReceiver?: string;
+  defaultTipReceiver: string;
+  minProfitMargin: number;
 }
 
 export interface RelayerExecutorConfig {
@@ -74,7 +79,8 @@ export interface RelayerExecutorConfig {
   transferOutThreshold: bigint;
   gasBoostPercentage: number;
   concurrentTransactions: number;
-  defaultTipReceiver?: string;
+  defaultTipReceiver: string;
+  minProfitMargin: number;
 }
 
 export interface TransactionReceipt {

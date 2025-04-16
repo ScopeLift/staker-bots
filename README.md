@@ -1,6 +1,132 @@
 # Staker Profitability Monitor
 
-A service that monitors staking deposits, executes profitable earning power bump transactions, and claims GovLst rewards.
+A modular service for monitoring staking deposits, executing profitable transactions, and claiming GovLst rewards.
+
+---
+
+## System Overview
+
+This system is composed of four main components:
+
+- **Monitor**: Tracks on-chain staking events and updates the database.
+- **Profitability Engine**: Analyzes deposits for profitable actions and batches.
+- **Executor**: Executes profitable transactions and manages the transaction queue.
+- **Database**: Persists all state, events, and queue data (supports Supabase and JSON).
+
+---
+
+## High-Level State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Monitor
+    Monitor --> Database: Store events
+    Monitor --> ProfitabilityEngine: Notify new/updated deposits
+    ProfitabilityEngine --> Database: Update queue, analysis
+    ProfitabilityEngine --> Executor: Queue profitable actions
+    Executor --> Database: Update tx status
+    Executor --> [*]
+```
+
+---
+
+## Sequence Diagram: Claiming GovLst Rewards
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Monitor
+    participant Database
+    participant ProfitabilityEngine
+    participant Executor
+    participant Ethereum
+
+    Monitor->>Ethereum: Poll for events
+    Ethereum-->>Monitor: New deposit/withdrawal events
+    Monitor->>Database: Store events
+    Monitor->>ProfitabilityEngine: Notify deposit update
+    ProfitabilityEngine->>Database: Read deposits
+    ProfitabilityEngine->>ProfitabilityEngine: Analyze profitability
+    alt Profitable
+        ProfitabilityEngine->>Executor: Queue claim tx
+        Executor->>Database: Store tx
+        Executor->>Ethereum: Submit claim tx
+        Ethereum-->>Executor: Tx receipt
+        Executor->>Database: Update tx status
+    end
+```
+
+---
+
+## Component Architecture
+
+### 1. Monitor
+- Tracks on-chain events (deposits, withdrawals, delegatee changes)
+- Groups events by transaction
+- Maintains checkpoints for resilience
+- Emits events to the profitability engine
+
+### 2. Profitability Engine
+- Analyzes deposits for claim profitability
+- Optimizes batch size and timing
+- Uses price feeds and gas estimates
+- Queues profitable claims for execution
+
+### 3. Executor
+- Manages transaction queue (FIFO)
+- Executes claim transactions (wallet or Defender relayer)
+- Handles retries, confirmations, and tip management
+
+### 4. Database
+- Stores deposits, events, checkpoints, queues, and claim history
+- Supports Supabase (production) and JSON (testing)
+
+---
+
+## Configuration
+
+Configuration is managed via environment variables and `src/configuration/`.
+
+- See `.env.example` for all options.
+- Key parameters: RPC_URL, STAKER_CONTRACT_ADDRESS, LST_ADDRESS, GOVLST_ADDRESSES, EXECUTOR_TYPE, DATABASE_TYPE, etc.
+
+---
+
+## Running the Service
+
+```bash
+pnpm run build
+pnpm run prod
+```
+
+Or run specific components:
+
+```bash
+COMPONENTS=monitor,profitability pnpm run prod
+```
+
+---
+
+## Health Checks & Maintenance
+
+- Each component exposes health/status logs.
+- Use `pnpm run health-check` for status.
+- Logs: `output.log` (info), `errors.log` (errors)
+
+---
+
+## Database Schema (Summary)
+
+- `deposits`: Tracks staking deposits
+- `processing_checkpoints`: Tracks component state
+- `govlst_deposits`: Tracks GovLst-owned deposits
+- `govlst_claim_history`: Records claim executions
+- `processing_queue`: Manages analysis queue
+- `transaction_queue`: Manages tx execution queue
+
+---
+
+## See component READMEs for detailed diagrams and flows.
 
 ## Table of Contents
 
@@ -321,7 +447,7 @@ NETWORK_NAME=sepolia
 # Contracts
 STAKER_CONTRACT_ADDRESS=0x8C97699cBEAB273e4b469E863721522c04349057
 LST_ADDRESS=0xDfdEB974D0A564d7C25610e568c1D309220236BB
-GOVLST_ADDRESSES=0x2D0020Fc5BAA1c2fe02058c2E1eefA38e0e58519,0x8C97699cBEAB273e4b469E863721522c04349057
+GOVLST_ADDRESSES=
 
 # Executor (Local Wallet)
 EXECUTOR_TYPE=wallet
@@ -597,3 +723,165 @@ The service uses a JSON file database by default (`staker-monitor-db.json`). Thi
 - **processing_checkpoints**: Tracks component processing state
 - **govlst_deposits**: Tracks GovLst-owned deposits
 - **govlst_claim_history**: Records GovLst claim executions
+
+# GovLst Profitability Engine
+
+The GovLst Profitability Engine is a sophisticated system for analyzing and optimizing reward claims from GovLst staking deposits. It implements a single-bin accumulation strategy that efficiently groups deposits to maximize profitability while minimizing gas costs.
+
+## Core Features
+
+- Single-bin accumulation strategy for optimal deposit grouping
+- Real-time profitability analysis with gas cost estimation
+- Batch processing of unclaimed rewards
+- Automatic threshold optimization
+- Resilient error handling and retry mechanisms
+
+## Architecture Overview
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Analyzing: New deposits
+    Analyzing --> BinAccumulation: Process deposits
+    BinAccumulation --> ThresholdCheck: Add to bin
+    ThresholdCheck --> Queueing: Threshold met
+    ThresholdCheck --> BinAccumulation: Continue accumulating
+    Queueing --> Idle
+```
+
+## Single-Bin Accumulation Algorithm
+
+The engine implements a novel single-bin accumulation strategy that:
+
+1. Maintains one active bin for collecting deposits
+2. Sorts deposits by reward amount in descending order
+3. Accumulates deposits until reaching optimal threshold
+4. Automatically queues full bins for execution
+
+### Optimization Parameters
+
+- **Optimal Threshold**: Minimum 1 token (1e18 wei)
+- **Gas Cost Buffer**: Configurable safety margin for gas estimates
+- **Batch Size**: 100 deposits per processing batch
+- **Profit Margin**: Configurable minimum profit requirement
+
+### Profitability Calculation
+
+The engine calculates profitability using:
+
+```typescript
+expectedProfit = totalRewards - (gasPrice * gasLimit * ethPrice / tokenPrice)
+```
+
+Where:
+- `totalRewards`: Sum of unclaimed rewards in the bin
+- `gasPrice`: Current gas price with safety buffer
+- `gasLimit`: Estimated gas required for claim (300,000)
+- `ethPrice`: ETH price in USD
+- `tokenPrice`: Reward token price in USD
+
+## Batch Processing
+
+The engine processes deposits in batches to optimize RPC calls:
+
+1. **Reward Fetching**: Processes 100 deposits per batch
+2. **Gas Estimation**: Cached with configurable update interval
+3. **Threshold Checking**: Real-time bin optimization
+
+## Error Handling
+
+Implements a robust error handling system:
+
+- Automatic retries for transient failures
+- Exponential backoff for RPC calls
+- Detailed error context and logging
+- Graceful degradation on partial failures
+
+## Performance Optimizations
+
+1. **Caching System**
+   - Gas price caching with TTL
+   - Reward calculation memoization
+   - Batch processing of RPC calls
+
+2. **Smart Batching**
+   - Parallel reward fetching
+   - Sorted deposit processing
+   - Optimal bin threshold calculation
+
+## Configuration
+
+```typescript
+interface ProfitabilityConfig {
+  rewardTokenAddress: string;     // Reward token contract address
+  minProfitMargin: bigint;       // Minimum profit threshold
+  gasPriceBuffer: number;        // Gas price safety margin (%)
+  maxBatchSize: number;          // Maximum deposits per batch
+  defaultTipReceiver: string;    // Default tip receiver address
+  priceFeed: {
+    cacheDuration: number;       // Price cache duration (ms)
+  };
+}
+```
+
+## Usage Example
+
+```typescript
+const engine = new GovLstProfitabilityEngine(
+  govLstContract,
+  stakerContract,
+  provider,
+  {
+    rewardTokenAddress: '0x...',
+    minProfitMargin: BigInt(1e16), // 0.01 tokens
+    gasPriceBuffer: 20,            // 20% buffer
+    maxBatchSize: 50,
+    defaultTipReceiver: '0x...',
+    priceFeed: {
+      cacheDuration: 300_000,      // 5 minutes
+    },
+  }
+);
+
+// Start the engine
+await engine.start();
+
+// Analyze deposits
+const analysis = await engine.analyzeAndGroupDeposits(deposits);
+
+// Check if bin is ready
+const isReady = await engine.isActiveBinReady();
+```
+
+## Monitoring
+
+The engine provides detailed monitoring capabilities:
+
+- Real-time bin status
+- Gas price trends
+- Processing metrics
+- Error rates and types
+- Profitability statistics
+
+## Error Types
+
+```typescript
+- ProfitabilityError      // Base error class
+  - GasEstimationError    // Gas calculation issues
+  - BatchFetchError       // Batch processing failures
+  - QueueProcessingError  // Queue operation errors
+```
+
+## Future Improvements
+
+1. Dynamic threshold adjustment based on market conditions
+2. Machine learning for gas price prediction
+3. Multi-bin optimization strategies
+4. Advanced profit maximization algorithms
+5. Enhanced monitoring and alerting systems
+
+## See Also
+
+- [Contract Documentation](./docs/contracts.md)
+- [API Reference](./docs/api.md)
+- [Configuration Guide](./docs/config.md)
