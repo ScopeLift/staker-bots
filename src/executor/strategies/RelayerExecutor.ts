@@ -110,6 +110,7 @@ export class RelayerExecutor implements IExecutor {
   };
   protected db?: DatabaseWrapper;
   private readonly gasCostEstimator: GasCostEstimator;
+  private cleanupInProgress: Set<string> = new Set(); // Add cleanup lock set
 
   constructor(
     lstContract: ethers.Contract,
@@ -226,6 +227,24 @@ export class RelayerExecutor implements IExecutor {
       throw new QueueOperationError('queue', new Error('Queue is full'), {
         maxSize: this.config.maxQueueSize,
       });
+    }
+
+    // Check if any of the deposit IDs are being cleaned up
+    const depositIdStrings = depositIds.map(String);
+    const isCleaningUp = depositIdStrings.some(id => this.cleanupInProgress.has(id));
+    if (isCleaningUp) {
+      this.logger.info('Skipping queue transaction - cleanup in progress:', {
+        depositIds: depositIdStrings
+      });
+      return {
+        id: '',
+        depositIds,
+        profitability,
+        status: TransactionStatus.FAILED,
+        createdAt: new Date(),
+        error: new Error('Cleanup in progress'),
+        tx_data: txData
+      };
     }
 
     // Validate the transaction
@@ -1364,7 +1383,19 @@ export class RelayerExecutor implements IExecutor {
       return;
     }
 
+    // Extract deposit IDs and add them to cleanup set
+    const { depositIds: extractedDepositIds } = extractQueueItemInfo(tx);
+    const depositIdStrings = extractedDepositIds;
+    
     try {
+      // Add all deposit IDs to cleanup set
+      depositIdStrings.forEach(id => this.cleanupInProgress.add(id));
+      
+      this.logger.info('Starting cleanup with lock:', {
+        depositIds: depositIdStrings,
+        txHash
+      });
+
       // Only proceed with deletion if transaction is confirmed
       if (tx.status !== TransactionStatus.CONFIRMED) {
         this.logger.info('Skipping cleanup for unconfirmed transaction:', {
@@ -1374,7 +1405,7 @@ export class RelayerExecutor implements IExecutor {
         return;
       }
 
-      const { queueItemId, depositIds: extractedDepositIds } = extractQueueItemInfo(tx);
+      const { queueItemId } = extractQueueItemInfo(tx);
       
       // If we have a queue item ID, delete it
       if (queueItemId) {
@@ -1387,7 +1418,6 @@ export class RelayerExecutor implements IExecutor {
       }
 
       // Delete any associated processing queue items
-      const depositIdStrings = extractedDepositIds;
       for (const depositId of depositIdStrings) {
         const processingItem = await this.db.getProcessingQueueItemByDepositId(depositId);
         if (processingItem) {
@@ -1401,6 +1431,13 @@ export class RelayerExecutor implements IExecutor {
         txHash
       });
       throw error;
+    } finally {
+      // Always remove deposit IDs from cleanup set, even if there was an error
+      depositIdStrings.forEach(id => this.cleanupInProgress.delete(id));
+      this.logger.info('Cleanup lock released:', {
+        depositIds: depositIdStrings,
+        txHash
+      });
     }
   }
 
