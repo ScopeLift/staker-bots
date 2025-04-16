@@ -330,30 +330,137 @@ export class GovLstProfitabilityEngineWrapper
   }
 
   private convertToGovLstDeposit(deposit: DatabaseDeposit): GovLstDeposit {
-    if (!deposit.deposit_id || !deposit.owner_address || !deposit.amount) {
-      throw new InvalidDepositDataError(deposit);
-    }
-
-    // Ensure all numeric values are properly converted to BigInt
     try {
-      return {
-        deposit_id: BigInt(deposit.deposit_id),
+      // Log the incoming deposit data for debugging
+      this.logger.debug('Converting database deposit:', {
+        deposit_id: deposit.deposit_id,
         owner_address: deposit.owner_address,
-        depositor_address: deposit.depositor_address,
-        delegatee_address: deposit.delegatee_address || '',
-        amount: BigInt(deposit.amount),
-        shares_of: BigInt(deposit.amount), // Default to amount if not specified
+        amount: deposit.amount,
+        delegatee_address: deposit.delegatee_address,
+        earning_power: deposit.earning_power,
+      });
+
+      // Validate required fields
+      if (!deposit.deposit_id) {
+        throw new InvalidDepositDataError({
+          deposit,
+          cause: new Error('Missing deposit_id')
+        });
+      }
+
+      if (!deposit.owner_address) {
+        throw new InvalidDepositDataError({
+          deposit,
+          cause: new Error('Missing owner_address')
+        });
+      }
+
+      // amount can be 0, but must be defined
+      if (typeof deposit.amount === 'undefined' || deposit.amount === null) {
+        throw new InvalidDepositDataError({
+          deposit,
+          cause: new Error('Amount field is undefined or null')
+        });
+      }
+
+      // Handle numeric conversions safely
+      let depositId: bigint;
+      let amount: bigint;
+      let earningPower: bigint;
+
+      try {
+        depositId = BigInt(deposit.deposit_id);
+        // Validate deposit_id is not negative
+        if (depositId < 0n) {
+          throw new Error('Negative deposit_id is not allowed');
+        }
+      } catch (error) {
+        throw new InvalidDepositDataError({
+          deposit,
+          cause: new Error(`Invalid deposit_id format: ${deposit.deposit_id}`)
+        });
+      }
+
+      try {
+        // Handle both string and number inputs for amount
+        amount = typeof deposit.amount === 'string' ? 
+          BigInt(deposit.amount) : 
+          BigInt(Math.floor(deposit.amount));
+        
+        // Allow zero amounts but not negative
+        if (amount < 0n) {
+          throw new Error('Negative amount is not allowed');
+        }
+      } catch (error) {
+        throw new InvalidDepositDataError({
+          deposit,
+          cause: new Error(`Invalid amount format: ${deposit.amount}`)
+        });
+      }
+
+      try {
+        if (deposit.earning_power === undefined || deposit.earning_power === null) {
+          earningPower = BigInt(0);
+        } else {
+          earningPower = typeof deposit.earning_power === 'string' ?
+            BigInt(deposit.earning_power) :
+            BigInt(Math.floor(deposit.earning_power));
+          
+          // Allow zero earning power but not negative
+          if (earningPower < 0n) {
+            this.logger.warn('Negative earning_power found, defaulting to 0:', {
+              deposit_id: deposit.deposit_id,
+              earning_power: deposit.earning_power
+            });
+            earningPower = BigInt(0);
+          }
+        }
+      } catch (error) {
+        this.logger.warn('Invalid earning_power format, defaulting to 0:', {
+          deposit_id: deposit.deposit_id,
+          earning_power: deposit.earning_power
+        });
+        earningPower = BigInt(0);
+      }
+
+      // Create and return the GovLstDeposit object
+      const govLstDeposit: GovLstDeposit = {
+        deposit_id: depositId,
+        owner_address: deposit.owner_address,
+        depositor_address: deposit.depositor_address || deposit.owner_address, // Default to owner if not specified
+        delegatee_address: deposit.delegatee_address || '', // Empty string if not specified
+        amount: amount,
+        shares_of: amount, // Default to amount if not specified
         payout_amount: BigInt(0), // Will be set during processing
         rewards: BigInt(0), // Will be calculated during processing
-        earning_power: deposit.earning_power ? BigInt(deposit.earning_power) : BigInt(0),
+        earning_power: earningPower,
         created_at: deposit.created_at || new Date().toISOString(),
         updated_at: deposit.updated_at || new Date().toISOString(),
       };
+
+      // Log successful conversion
+      this.logger.debug('Successfully converted deposit:', {
+        deposit_id: govLstDeposit.deposit_id.toString(),
+        amount: govLstDeposit.amount.toString(),
+        earning_power: govLstDeposit.earning_power.toString()
+      });
+
+      return govLstDeposit;
     } catch (error) {
+      // Log detailed error information
       this.logger.error('Failed to convert deposit data:', {
         error: error instanceof Error ? error.message : String(error),
-        deposit,
+        deposit_id: deposit.deposit_id,
+        owner_address: deposit.owner_address,
+        amount: deposit.amount,
+        stack: error instanceof Error ? error.stack : undefined
       });
+
+      // Re-throw with proper error type
+      if (error instanceof InvalidDepositDataError) {
+        throw error;
+      }
+      
       throw new InvalidDepositDataError({
         deposit,
         cause: error instanceof Error ? error : new Error(String(error))
@@ -361,12 +468,39 @@ export class GovLstProfitabilityEngineWrapper
     }
   }
 
-  // Add helper method for consistent queue item creation
+  // Add helper function for BigInt serialization
+  private serializeBigIntValues(obj: any): any {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj === 'bigint') {
+      return obj.toString();
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.serializeBigIntValues(item));
+    }
+
+    if (typeof obj === 'object') {
+      const result: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        result[key] = this.serializeBigIntValues(value);
+      }
+      return result;
+    }
+
+    return obj;
+  }
+
   private async createQueueItems(
     deposits: GovLstDeposit[],
     profitability: GovLstProfitabilityCheck,
   ): Promise<void> {
     try {
+      // Serialize profitability check data for database storage
+      const serializedProfitability = this.serializeBigIntValues(profitability);
+
       // Create processing queue items for each deposit
       for (const deposit of deposits) {
         const depositId = deposit.deposit_id.toString();
@@ -378,7 +512,7 @@ export class GovLstProfitabilityEngineWrapper
           deposit_id: depositId,
           status: ProcessingQueueStatus.PENDING,
           delegatee: deposit.delegatee_address,
-          last_profitability_check: JSON.stringify(profitability),
+          last_profitability_check: JSON.stringify(serializedProfitability),
         };
 
         if (existingItem) {
@@ -394,31 +528,36 @@ export class GovLstProfitabilityEngineWrapper
         throw new Error('No deposits available for transaction queue item');
       }
 
+      // Serialize transaction data
+      const txData = {
+        depositIds: deposits.map(d => d.deposit_id.toString()),
+        expectedProfit: profitability.estimates.expected_profit.toString(),
+        gasEstimate: profitability.estimates.gas_estimate.toString(),
+        totalShares: profitability.estimates.total_shares.toString(),
+      };
+
       const txQueueItem = await this.db.createTransactionQueueItem({
         deposit_id: firstDeposit.deposit_id.toString(),
         status: TransactionQueueStatus.PENDING,
-        tx_data: JSON.stringify({
-          depositIds: deposits.map(d => d.deposit_id.toString()),
-          expectedProfit: profitability.estimates.expected_profit.toString(),
-          gasEstimate: profitability.estimates.gas_estimate.toString(),
-          totalShares: profitability.estimates.total_shares.toString(),
-        }),
+        tx_data: JSON.stringify(txData),
       });
 
       this.logger.info('Created queue items:', {
         processingQueueCount: deposits.length,
         transactionQueueId: txQueueItem.id,
+        firstDepositId: firstDeposit.deposit_id.toString(),
       });
     } catch (error) {
       this.logger.error('Failed to create queue items:', {
         error: error instanceof Error ? error.message : String(error),
         depositCount: deposits.length,
+        firstDepositId: deposits[0]?.deposit_id.toString(),
       });
       throw error;
     }
   }
 
-  // Update checkAndProcessRewards to use the new helpers
+  // Update checkAndProcessRewards to use serialized values when queueing transactions
   private async checkAndProcessRewards(): Promise<void> {
     try {
       // Get executor status first
@@ -431,6 +570,28 @@ export class GovLstProfitabilityEngineWrapper
       // Get all deposits to check
       const deposits = await this.db.getAllDeposits();
       this.logger.info(`Found ${deposits.length} deposits to check for rewards`);
+
+      if (deposits.length === 0) {
+        this.logger.info('No deposits to process, skipping cycle');
+        return;
+      }
+
+      // Log sample deposit for debugging
+      if (deposits.length > 0) {
+        const firstDeposit = deposits[0];
+        if (firstDeposit && firstDeposit.owner_address) {
+          this.logger.debug('Sample deposit structure:', {
+            first_deposit: {
+              ...firstDeposit,
+              // Don't log sensitive data
+              owner_address: '0x....' + firstDeposit.owner_address.slice(-4),
+              depositor_address: firstDeposit.depositor_address ? 
+                '0x....' + firstDeposit.depositor_address.slice(-4) : 
+                undefined,
+            }
+          });
+        }
+      }
 
       // Filter out deposits that are already in a transaction queue
       const depositsToCheck = [];
@@ -490,22 +651,24 @@ export class GovLstProfitabilityEngineWrapper
           );
           await this.createQueueItems(groupDeposits, profitabilityCheck);
 
-          // Queue transaction with executor
+          // Queue transaction with executor using serialized data
+          const serializedTxData = this.serializeBigIntValues({
+            depositIds: group.deposit_ids,
+            totalRewards: group.total_rewards,
+            expectedProfit: group.expected_profit,
+            gasEstimate: group.gas_estimate,
+          });
+
           await this.executor.queueTransaction(
             group.deposit_ids,
             profitabilityCheck,
-            JSON.stringify({
-              depositIds: group.deposit_ids.map(String),
-              totalRewards: group.total_rewards.toString(),
-              expectedProfit: group.expected_profit.toString(),
-              gasEstimate: group.gas_estimate.toString(),
-            }),
+            JSON.stringify(serializedTxData),
           );
 
           this.logger.info('Successfully queued profitable group:', {
             groupSize: group.deposit_ids.length,
-            totalRewards: ethers.formatEther(group.total_rewards),
-            expectedProfit: ethers.formatEther(group.expected_profit),
+            totalRewards: group.total_rewards.toString(),
+            expectedProfit: group.expected_profit.toString(),
             gasEstimate: group.gas_estimate.toString(),
           });
         } catch (error) {
@@ -517,10 +680,22 @@ export class GovLstProfitabilityEngineWrapper
         }
       }
     } catch (error) {
-      this.logger.error('Error in reward check cycle:', {
-        error: error instanceof Error ? error.message : String(error),
-        message: 'Skipping current cycle and continuing to next one',
-      });
+      if (error instanceof InvalidDepositDataError) {
+        this.logger.error('Invalid deposit data encountered:', {
+          error: error.message,
+          context: error.context,
+          retryable: error.retryable
+        });
+      } else {
+        this.logger.error('Error in reward check cycle:', {
+          error: error instanceof Error ? error.message : String(error),
+          type: error instanceof Error ? error.constructor.name : typeof error,
+          stack: error instanceof Error ? error.stack : undefined
+        });
+      }
+      
+      // Continue to next cycle
+      this.logger.info('Skipping current cycle and continuing to next one');
     }
   }
 
