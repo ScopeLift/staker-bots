@@ -5,7 +5,6 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
-  GovLstDeposit,
   GovLstClaimHistory,
 } from './types';
 
@@ -70,16 +69,6 @@ export interface IDatabase {
   ): Promise<TransactionQueueItem | null>;
   getTransactionQueueItemsByHash(hash: string): Promise<TransactionQueueItem[]>;
   deleteTransactionQueueItem(id: string): Promise<void>;
-
-  // GovLst Deposits
-  createGovLstDeposit(deposit: GovLstDeposit): Promise<void>;
-  updateGovLstDeposit(
-    depositId: string,
-    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>,
-  ): Promise<void>;
-  getGovLstDeposit(depositId: string): Promise<GovLstDeposit | null>;
-  getGovLstDepositsByAddress(govLstAddress: string): Promise<GovLstDeposit[]>;
-  getAllGovLstDeposits(): Promise<GovLstDeposit[]>;
 
   // GovLst Claim History
   createGovLstClaimHistory(

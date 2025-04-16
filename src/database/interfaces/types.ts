@@ -58,15 +58,6 @@ export type TransactionQueueItem = {
   attempts: number;
 };
 
-export type GovLstDeposit = {
-  deposit_id: string;
-  govlst_address: string;
-  last_reward_check?: string;
-  last_unclaimed_reward?: string;
-  created_at?: string;
-  updated_at?: string;
-};
-
 export type GovLstClaimHistory = {
   id?: string;
   govlst_address: string;

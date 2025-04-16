@@ -1,6 +1,6 @@
 # Executor Component
 
-The Executor component is responsible for managing and executing GovLst reward claim transactions in a controlled, efficient manner. It handles wallet management, batch transaction queueing, execution, and tip collection.
+The Executor component manages and executes GovLst reward claim transactions in a controlled, efficient manner. It handles wallet management, batch transaction queueing, execution, and tip collection.
 
 ## Core Features
 
@@ -113,6 +113,41 @@ await executor.stop();
 | `gasBoostPercentage`            | Percentage to boost gas price                  | 10       |
 | `concurrentTransactions`        | Maximum concurrent transactions                | 3        |
 
+## State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Queueing: New tx from ProfitabilityEngine
+    Queueing --> Executing: Tx ready for execution
+    Executing --> Confirming: Await confirmations
+    Confirming --> Idle: On success
+    Confirming --> Retrying: On failure
+    Retrying --> Executing: Retry tx
+    Retrying --> [*]: On unrecoverable error
+    Executing --> [*]: On unrecoverable error
+```
+
+## Sequence Diagram: Transaction Execution
+
+```mermaid
+sequenceDiagram
+    participant ProfitabilityEngine
+    participant Executor
+    participant Database
+    participant Ethereum
+
+    ProfitabilityEngine->>Executor: Queue claim tx
+    Executor->>Database: Store tx
+    Executor->>Ethereum: Submit tx
+    Ethereum-->>Executor: Tx receipt
+    Executor->>Database: Update tx status
+    alt Tip threshold reached
+        Executor->>Ethereum: Transfer tips
+        Ethereum-->>Executor: Tip receipt
+    end
+```
+
 ## Architecture
 
 The component follows a modular architecture with clear separation of concerns:
@@ -224,6 +259,11 @@ Errors are automatically logged with:
 - Stack trace when available
 - Retry status
 - Related transaction/deposit IDs
+
+## Monitoring
+
+- Health/status via `getStatus()`
+- Metrics: queue size, pending txs, wallet balance, last error
 
 ## Testing
 
@@ -345,3 +385,5 @@ await executor.queueTransaction(depositIds, profitability)
 - The RelayerExecutor doesn't implement transferOutTips() as relayers manage their own funds
 - Transaction retry logic is handled by the Defender service
 - Batch processing is optimized for the Defender infrastructure
+
+## See root README for system-level diagrams and configuration.

@@ -6,7 +6,6 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
-  GovLstDeposit,
   GovLstClaimHistory,
 } from './interfaces/types';
 import * as supabaseDb from './supabase/deposits';
@@ -104,24 +103,6 @@ export class DatabaseWrapper implements IDatabase {
         deleteTransactionQueueItem: this.wrapWithFallback(
           supabaseTransactionQueue.deleteTransactionQueueItem,
         ),
-
-        // GovLst Deposit Operations
-        createGovLstDeposit: this.wrapWithFallback(
-          supabaseGovLstRewards.createGovLstDeposit,
-        ),
-        updateGovLstDeposit: this.wrapWithFallback(
-          supabaseGovLstRewards.updateGovLstDeposit,
-        ),
-        getGovLstDeposit: this.wrapWithFallback(
-          supabaseGovLstRewards.getGovLstDeposit,
-        ),
-        getGovLstDepositsByAddress: this.wrapWithFallback(
-          supabaseGovLstRewards.getGovLstDepositsByAddress,
-        ),
-        getAllGovLstDeposits: this.wrapWithFallback(
-          supabaseGovLstRewards.getAllGovLstDeposits,
-        ),
-
         // GovLst Claim History Operations
         createGovLstClaimHistory: this.wrapWithFallback(
           supabaseGovLstRewards.createGovLstClaimHistory,
@@ -322,32 +303,6 @@ export class DatabaseWrapper implements IDatabase {
   // Add missing methods
   async getDepositsByOwner(ownerAddress: string): Promise<Deposit[]> {
     return this.db.getDepositsByOwner(ownerAddress);
-  }
-
-  // GovLst Deposit Operations
-  async createGovLstDeposit(deposit: GovLstDeposit): Promise<void> {
-    return this.db.createGovLstDeposit(deposit);
-  }
-
-  async updateGovLstDeposit(
-    depositId: string,
-    update: Partial<Omit<GovLstDeposit, 'deposit_id'>>,
-  ): Promise<void> {
-    return this.db.updateGovLstDeposit(depositId, update);
-  }
-
-  async getGovLstDeposit(depositId: string): Promise<GovLstDeposit | null> {
-    return this.db.getGovLstDeposit(depositId);
-  }
-
-  async getGovLstDepositsByAddress(
-    govLstAddress: string,
-  ): Promise<GovLstDeposit[]> {
-    return this.db.getGovLstDepositsByAddress(govLstAddress);
-  }
-
-  async getAllGovLstDeposits(): Promise<GovLstDeposit[]> {
-    return this.db.getAllGovLstDeposits();
   }
 
   // GovLst Claim History Operations

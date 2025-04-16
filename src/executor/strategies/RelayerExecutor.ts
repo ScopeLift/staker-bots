@@ -40,6 +40,7 @@ import {
   extractQueueItemInfo,
   calculateQueueStats,
 } from '@/configuration/helpers';
+import { GasCostEstimator } from '@/prices/GasCostEstimator';
 
 // Local constants used in this file
 const RELAYER_EVENTS = {
@@ -78,6 +79,7 @@ export class RelayerExecutor implements IExecutor {
     payoutAmount(): Promise<bigint>;
   };
   protected db?: DatabaseWrapper;
+  private readonly gasCostEstimator: GasCostEstimator;
 
   constructor(
     lstContract: ethers.Contract,
@@ -132,6 +134,8 @@ export class RelayerExecutor implements IExecutor {
     if (!this.lstContract.interface.hasFunction('claimAndDistributeReward')) {
       throw new ContractMethodError('claimAndDistributeReward');
     }
+
+    this.gasCostEstimator = new GasCostEstimator();
   }
 
   // Add setDatabase method
@@ -671,7 +675,18 @@ export class RelayerExecutor implements IExecutor {
         try {
           if (typeof this.lstContract.payoutAmount !== 'function')
             throw new ContractMethodError('payoutAmount');
-          payoutAmount = await this.lstContract.payoutAmount();
+          const rawPayoutAmount = await this.lstContract.payoutAmount();
+          this.logger.info('Raw payout amount details:', {
+            value: rawPayoutAmount,
+            type: typeof rawPayoutAmount,
+            stringified: String(rawPayoutAmount)
+          });
+
+          payoutAmount = BigInt(rawPayoutAmount);
+          this.logger.info('Converted payout amount:', {
+            value: payoutAmount.toString(),
+            type: typeof payoutAmount
+          });
         } catch (error) {
           this.logger.error('Failed to get payout amount for allowance check', {
             error: error instanceof Error ? error.message : String(error),
@@ -689,10 +704,10 @@ export class RelayerExecutor implements IExecutor {
           rewardToken: rewardTokenAddress,
         });
 
-        const allowance = await rewardTokenContract.allowance(
+        const allowance = BigInt(await rewardTokenContract.allowance(
           signerAddress,
           lstContractAddress,
-        );
+        ));
 
         this.logger.info('Current allowance', {
           allowance: allowance.toString(),
@@ -701,11 +716,6 @@ export class RelayerExecutor implements IExecutor {
 
         // Use approval amount from config
         const approvalAmount = BigInt(CONFIG.executor.approvalAmount);
-
-        this.logger.info('Using configured approval amount', {
-          approvalAmount: approvalAmount.toString(),
-          approvalAmountInEth: ethers.formatEther(approvalAmount),
-        });
 
         // If allowance is less than payout amount, approve with approval amount
         if (allowance < payoutAmount) {
@@ -812,310 +822,397 @@ export class RelayerExecutor implements IExecutor {
         if (typeof this.lstContract.payoutAmount !== 'function')
           throw new ContractMethodError('getPayoutAmount');
 
-        payoutAmount = await this.lstContract.payoutAmount();
-      } catch (error) {
-        this.logger.error('Failed to get payout amount', {
-          error: error instanceof Error ? error.message : String(error),
-          depositIds: tx.depositIds.map((id) => id.toString()),
+        const rawPayoutAmount = await this.lstContract.payoutAmount();
+        this.logger.info('Raw payout amount details:', {
+          value: rawPayoutAmount,
+          type: typeof rawPayoutAmount,
+          stringified: String(rawPayoutAmount)
         });
-        throw new ContractMethodError('getPayoutAmount');
-      }
-      // Get the minimum expected reward from the profitability check
-      const minExpectedReward = tx.profitability.estimates.expected_profit;
-      if (minExpectedReward <= payoutAmount) {
-        throw new TransactionValidationError(
-          'Expected reward is less than payout amount',
-          {
-            expectedReward: minExpectedReward.toString(),
+
+        payoutAmount = rawPayoutAmount;
+        this.logger.info('Converted payout amount:', {
+          value: payoutAmount.toString(),
+          type: typeof payoutAmount
+        });
+
+        // Calculate optimal threshold
+        // profitMargin is in percentage (e.g. 10 for 10%)
+        // Convert profitMargin to basis points (multiply by 100 for precision)
+        // const rawGasCost = await this.gasCostEstimator.estimateGasCostInRewardToken(
+        //   this.relayProvider as unknown as ethers.Provider
+        // );
+        // this.logger.info('Raw gas cost details:', {
+        //   value: rawGasCost,
+        //   type: typeof rawGasCost,
+        //   stringified: String(rawGasCost)
+        // });
+
+        // Temporarily use a default gas cost value
+        const gasCost = 0n; // Set to 0 for now since we don't have actual values
+        this.logger.info('Using default gas cost:', {
+          value: gasCost.toString(),
+          type: typeof gasCost
+        });
+
+        // Convert profit margin to basis points first
+        const profitMargin = CONFIG.profitability.minProfitMargin;
+        this.logger.info('Raw profit margin value:', {
+          value: profitMargin,
+          type: typeof profitMargin,
+          source: 'CONFIG.profitability.minProfitMargin'
+        });
+
+        if (typeof profitMargin !== 'number' || isNaN(profitMargin)) {
+          this.logger.error('Invalid profit margin configuration:', {
+            value: profitMargin,
+            type: typeof profitMargin,
+            config: CONFIG.profitability.minProfitMargin
+          });
+          throw new Error(`Invalid profit margin value: ${profitMargin}`);
+        }
+
+        const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
+        this.logger.info('Profit margin basis points:', {
+          value: profitMarginBasisPoints.toString(),
+          type: typeof profitMarginBasisPoints,
+          originalValue: profitMargin,
+          calculation: `${profitMargin} * 100 = ${profitMargin * 100}`
+        });
+
+        this.logger.info('Pre-calculation values:', {
+          payoutAmount: payoutAmount.toString(),
+          payoutAmountType: typeof payoutAmount,
+          gasCost: gasCost.toString(),
+          gasCostType: typeof gasCost,
+          profitMarginBasisPoints: profitMarginBasisPoints.toString(),
+          profitMarginBasisPointsType: typeof profitMarginBasisPoints
+        });
+
+        // Calculate profit margin amount using basis points
+        const baseAmount = payoutAmount + gasCost;
+        const profitMarginAmount = (baseAmount * profitMarginBasisPoints) / 10000n;
+
+        const optimalThreshold = payoutAmount + gasCost + profitMarginAmount;
+        this.logger.info('Final optimal threshold calculation:', {
+          value: optimalThreshold.toString(),
+          type: typeof optimalThreshold,
+          components: {
             payoutAmount: payoutAmount.toString(),
-            depositIds: tx.depositIds.map(String),
-          },
-        );
-      }
-
-      const depositIds = tx.depositIds;
-
-      // Get current network conditions
-      let maxFeePerGas: bigint | undefined;
-      let maxPriorityFeePerGas: bigint | undefined;
-
-      try {
-        const feeData = await this.relayProvider.getFeeData();
-        maxFeePerGas = feeData.maxFeePerGas
-          ? BigInt(feeData.maxFeePerGas.toString())
-          : undefined;
-        maxPriorityFeePerGas = feeData.maxPriorityFeePerGas
-          ? BigInt(feeData.maxPriorityFeePerGas.toString())
-          : undefined;
-      } catch (error) {
-        this.logger.error('Failed to get fee data', {
-          error: error instanceof Error ? error.message : String(error),
+            gasCost: gasCost.toString(),
+            profitMarginAmount: profitMarginAmount.toString()
+          }
         });
-      }
 
-      // Get the relayer's address for reward recipient
-      const signerAddress = await this.relaySigner.getAddress();
+        this.logger.info('Calculated optimal threshold:', {
+          payoutAmount: ethers.formatEther(payoutAmount),
+          payoutAmountRaw: payoutAmount.toString(),
+          gasCost: ethers.formatEther(gasCost),
+          gasCostRaw: gasCost.toString(),
+          profitMargin: `${profitMargin}%`,
+          profitMarginAmount: ethers.formatEther(profitMarginAmount),
+          profitMarginAmountRaw: profitMarginAmount.toString(),
+          optimalThreshold: ethers.formatEther(optimalThreshold),
+          optimalThresholdRaw: optimalThreshold.toString(),
+        });
 
-      // Verify the contract has the claimAndDistributeReward method
-      if (typeof this.lstContract.claimAndDistributeReward !== 'function') {
-        throw new ContractMethodError('claimAndDistributeReward');
-      }
-
-      // Log transaction parameters before execution
-      this.logger.info('Executing claimAndDistributeReward', {
-        recipient: signerAddress,
-        minExpectedReward: minExpectedReward.toString(),
-        depositIds: depositIds.map((id) => id.toString()),
-        gasEstimate: tx.profitability.estimates.gas_estimate.toString(),
-      });
-
-      // Calculate gas limit with extra buffer for complex operations
-      const gasEstimate = tx.profitability.estimates.gas_estimate;
-      const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate; // Use minimum 500k gas if estimate is too low
-      const calculatedGasLimit = calculateGasLimit(
-        baseGasLimit,
-        depositIds.length,
-        this.logger,
-      );
-
-      this.logger.info('Gas limit for transaction', {
-        originalEstimate: gasEstimate.toString(),
-        baseGasLimit: baseGasLimit.toString(),
-        finalGasLimit: calculatedGasLimit.toString(),
-        depositCount: depositIds.length,
-      });
-
-      // Store depositIds in tx object for later use in receipt processing
-      tx.metadata = {
-        queueItemId,
-        depositIds: queueDepositIds,
-      };
-
-      // Execute via contract with signer
-      const response = await this.lstContract.claimAndDistributeReward(
-        signerAddress,
-        minExpectedReward,
-        depositIds,
-        {
-          gasLimit: calculatedGasLimit,
-          maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-          maxPriorityFeePerGas:
-            this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas,
-        },
-      ).catch(async (error: any) => {
-        // Enhanced error handling for Defender 400 errors
-        const isDefender400Error = error?.message?.includes('status code 400') || 
-                                 error?.response?.status === 400;
-
-        if (isDefender400Error) {
-          // Get current network state for diagnostics
-          const [networkGasPrice, blockNumber, balance] = await Promise.all([
-            this.relayProvider.getFeeData(),
-            this.relayProvider.getBlockNumber(),
-            this.relayProvider.getBalance(signerAddress)
-          ]).catch(e => {
-            this.logger.error('Failed to get network diagnostics:', { error: e });
-            return [null, null, null];
-          });
-
-          // Log detailed diagnostic information
-          this.logger.error('Defender Relayer 400 Error Details:', {
-            error: {
-              message: error?.message,
-              response: {
-                status: error?.response?.status,
-                statusText: error?.response?.statusText,
-                data: error?.response?.data
-              },
-              request: {
-                method: error?.config?.method,
-                url: error?.config?.url,
-                data: error?.config?.data
-              }
+        // Validate that optimal threshold is sufficient
+        if (optimalThreshold <= payoutAmount) {
+          throw new TransactionValidationError(
+            'Optimal threshold is less than or equal to payout amount',
+            {
+              optimalThreshold: optimalThreshold.toString(),
+              payoutAmount: payoutAmount.toString(),
+              depositIds: tx.depositIds.map(String),
             },
-            transaction: {
-              recipient: signerAddress,
-              minExpectedReward: minExpectedReward.toString(),
-              depositIds: depositIds.map(String),
-              gasLimit: calculatedGasLimit.toString(),
-              maxFeePerGas: (this.config.gasPolicy?.maxFeePerGas || maxFeePerGas)?.toString(),
-              maxPriorityFeePerGas: (this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas)?.toString()
-            },
-            networkState: {
-              currentBlock: blockNumber,
-              balance: balance?.toString(),
-              networkGasPrice: {
-                maxFeePerGas: networkGasPrice?.maxFeePerGas?.toString(),
-                maxPriorityFeePerGas: networkGasPrice?.maxPriorityFeePerGas?.toString(),
-                gasPrice: networkGasPrice?.gasPrice?.toString()
-              }
-            },
-            relayerConfig: {
-              address: this.config.address,
-              minBalance: this.config.minBalance.toString(),
-              maxPendingTransactions: this.config.maxPendingTransactions,
-              gasPolicyConfig: this.config.gasPolicy
-            }
-          });
-
-          // Check specific conditions that might cause 400 errors
-           if (balance) {
-             const balanceBigInt = BigInt(balance.toString());
-             if (balanceBigInt < this.config.minBalance) {
-               throw new InsufficientBalanceError(balanceBigInt, this.config.minBalance);
-             }
-           }
-
-           // Add gas estimation validation
-           try {
-             // Try to estimate gas for the transaction
-             const estimatedGas = await this.lstContract.runner?.provider?.estimateGas({
-               to: this.lstContract.target,
-               data: this.lstContract.interface.encodeFunctionData(
-                 'claimAndDistributeReward',
-                 [signerAddress, minExpectedReward, depositIds]
-               ),
-               maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-               maxPriorityFeePerGas: this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas,
-             }).catch((estimateError: Error) => {
-               this.logger.error('Gas estimation failed:', { 
-                 error: estimateError,
-                 message: estimateError.message,
-                 data: (estimateError as any)?.data
-               });
-               return null;
-             });
-
-             if (estimatedGas) {
-               const estimatedGasBigInt = BigInt(estimatedGas.toString());
-               if (estimatedGasBigInt > calculatedGasLimit) {
-                 throw new ExecutorError('Estimated gas exceeds calculated limit', {
-                   estimatedGas: estimatedGasBigInt.toString(),
-                   calculatedLimit: calculatedGasLimit.toString(),
-                   difference: (estimatedGasBigInt - calculatedGasLimit).toString()
-                 }, true);
-               }
-             }
-           } catch (gasError) {
-             this.logger.error('Gas estimation error:', {
-               error: gasError instanceof Error ? gasError.message : String(gasError),
-               transaction: {
-                 recipient: signerAddress,
-                 minExpectedReward: minExpectedReward.toString(),
-                 depositIds: depositIds.map(String)
-               }
-             });
-           }
-
-           if (networkGasPrice?.maxFeePerGas && maxFeePerGas) {
-             const networkMaxFee = BigInt(networkGasPrice.maxFeePerGas.toString());
-             if (networkMaxFee > maxFeePerGas) {
-               throw new ExecutorError('Network gas price exceeds configured maximum', {
-                 networkMaxFee: networkMaxFee.toString(),
-                 configuredMaxFee: maxFeePerGas.toString(),
-                 difference: (networkMaxFee - maxFeePerGas).toString()
-               }, true);
-             }
-           }
-
-           // Check if the error response contains specific Defender error codes
-           const defenderError = error?.response?.data?.error;
-           if (defenderError) {
-             switch(defenderError.code) {
-               case 'NONCE_TOO_LOW':
-                 throw new ExecutorError('Nonce too low - transaction would be replaced', {
-                   suggestedNonce: defenderError.suggestedNonce
-                 }, true);
-               case 'INSUFFICIENT_FUNDS':
-                 throw new InsufficientBalanceError(BigInt(balance?.toString() || '0'), this.config.minBalance);
-               case 'GAS_LIMIT_TOO_LOW':
-                 throw new ExecutorError('Gas limit too low for complex transaction', {
-                   providedGasLimit: calculatedGasLimit.toString(),
-                   suggestedGasLimit: defenderError.suggestedGasLimit
-                 }, true);
-               default:
-                 throw new ExecutorError(`Defender API Error: ${defenderError.message}`, {
-                   code: defenderError.code,
-                   details: defenderError
-                 }, false);
-             }
-           }
+          );
         }
 
-        // If not a 400 error or no specific error code, throw the original error
-        throw error;
-      });
+        const depositIds = tx.depositIds;
 
-      this.logger.info('Transaction submitted:', {
-        hash: response.hash,
-        nonce: response.nonce,
-        gasLimit: response.gasLimit.toString(),
-        maxFeePerGas: response.maxFeePerGas?.toString(),
-        maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
-      });
+        // Get current network conditions
+        let maxFeePerGas: bigint | undefined;
+        let maxPriorityFeePerGas: bigint | undefined;
 
-      // Wait for transaction to be mined
-      this.logger.info('Waiting for transaction...');
-      try {
-        let receipt;
         try {
-          receipt = await pollForReceipt(
-            response.hash,
-            this.relayProvider as unknown as ethers.Provider,
-            this.logger,
-            3,
-          );
-        } catch (confirmError: unknown) {
-          // If polling fails, just log the error
-          this.logger.warn('Transaction confirmation failed', {
-            error:
-              confirmError instanceof Error
-                ? confirmError.message
-                : String(confirmError),
-            hash: response.hash,
-            errorType:
-              typeof confirmError === 'object' && confirmError !== null
-                ? confirmError.constructor?.name || 'Unknown'
-                : typeof confirmError,
+          const feeData = await this.relayProvider.getFeeData();
+          maxFeePerGas = feeData.maxFeePerGas
+            ? BigInt(feeData.maxFeePerGas.toString())
+            : undefined;
+          maxPriorityFeePerGas = feeData.maxPriorityFeePerGas
+            ? BigInt(feeData.maxPriorityFeePerGas.toString())
+            : undefined;
+        } catch (error) {
+          this.logger.error('Failed to get fee data', {
+            error: error instanceof Error ? error.message : String(error),
           });
-
-          this.logger.info(
-            'Continuing execution despite confirmation error - transaction may still have succeeded',
-          );
-
-          // Skip polling and consider it a warning rather than error
-          this.logger.debug('Transaction details for debugging', {
-            transaction: {
-              hash: response.hash,
-              to: response.to,
-              from: response.from,
-              nonce: response.nonce,
-            },
-          });
-
-          // Continue without receipt - transaction might have gone through anyway
-          receipt = null;
         }
 
-        // Process the transaction receipt and clean up queues
-        await this.processTransactionReceipt(tx, response, receipt);
-      } catch (waitError) {
-        this.logger.error('Failed waiting for transaction confirmation', {
-          error:
-            waitError instanceof Error ? waitError.message : String(waitError),
-          transactionId: tx.id,
-          depositIds: depositIds.map(String),
+        // Get the relayer's address for reward recipient
+        const signerAddress = await this.relaySigner.getAddress();
+
+        // Verify the contract has the claimAndDistributeReward method
+        if (typeof this.lstContract.claimAndDistributeReward !== 'function') {
+          throw new ContractMethodError('claimAndDistributeReward');
+        }
+
+        // Log transaction parameters before execution
+        this.logger.info('Executing claimAndDistributeReward', {
+          recipient: signerAddress,
+          minExpectedReward: optimalThreshold.toString(),
+          depositIds: depositIds.map((id) => id.toString()),
+          gasEstimate: tx.profitability.estimates.gas_estimate.toString(),
         });
-        throw new ExecutorError(
-          'Failed waiting for transaction confirmation',
-          {
-            error:
-              waitError instanceof Error
-                ? waitError.message
-                : String(waitError),
-          },
-          false,
+
+        // Calculate gas limit with extra buffer for complex operations
+        const gasEstimate = tx.profitability.estimates.gas_estimate;
+        const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate; // Use minimum 500k gas if estimate is too low
+        const calculatedGasLimit = calculateGasLimit(
+          baseGasLimit,
+          depositIds.length,
+          this.logger,
         );
+
+        this.logger.info('Gas limit for transaction', {
+          originalEstimate: gasEstimate.toString(),
+          baseGasLimit: baseGasLimit.toString(),
+          finalGasLimit: calculatedGasLimit.toString(),
+          depositCount: depositIds.length,
+        });
+
+        // Store depositIds in tx object for later use in receipt processing
+        tx.metadata = {
+          queueItemId,
+          depositIds: queueDepositIds,
+        };
+
+        // Execute via contract with signer
+        const response = await this.lstContract.claimAndDistributeReward(
+          signerAddress,
+          optimalThreshold,
+          depositIds,
+          {
+            gasLimit: calculatedGasLimit,
+            maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
+            maxPriorityFeePerGas:
+              this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas,
+          },
+        ).catch(async (error: any) => {
+          // Enhanced error handling for Defender 400 errors
+          const isDefender400Error = error?.message?.includes('status code 400') || 
+                                   error?.response?.status === 400;
+
+          if (isDefender400Error) {
+            // Get current network state for diagnostics
+            const [networkGasPrice, blockNumber, balance] = await Promise.all([
+              this.relayProvider.getFeeData(),
+              this.relayProvider.getBlockNumber(),
+              this.relayProvider.getBalance(signerAddress)
+            ]).catch(e => {
+              this.logger.error('Failed to get network diagnostics:', { error: e });
+              return [null, null, null];
+            });
+
+            // Log detailed diagnostic information
+            this.logger.error('Defender Relayer 400 Error Details:', {
+              error: {
+                message: error?.message,
+                response: {
+                  status: error?.response?.status,
+                  statusText: error?.response?.statusText,
+                  data: error?.response?.data
+                },
+                request: {
+                  method: error?.config?.method,
+                  url: error?.config?.url,
+                  data: error?.config?.data
+                }
+              },
+              transaction: {
+                recipient: signerAddress,
+                minExpectedReward: optimalThreshold.toString(),
+                depositIds: depositIds.map(String),
+                gasLimit: calculatedGasLimit.toString(),
+                maxFeePerGas: (this.config.gasPolicy?.maxFeePerGas || maxFeePerGas)?.toString(),
+                maxPriorityFeePerGas: (this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas)?.toString()
+              },
+              networkState: {
+                currentBlock: blockNumber,
+                balance: balance?.toString(),
+                networkGasPrice: {
+                  maxFeePerGas: networkGasPrice?.maxFeePerGas?.toString(),
+                  maxPriorityFeePerGas: networkGasPrice?.maxPriorityFeePerGas?.toString(),
+                  gasPrice: networkGasPrice?.gasPrice?.toString()
+                }
+              },
+              relayerConfig: {
+                address: this.config.address,
+                minBalance: this.config.minBalance.toString(),
+                maxPendingTransactions: this.config.maxPendingTransactions,
+                gasPolicyConfig: this.config.gasPolicy
+              }
+            });
+
+            // Check specific conditions that might cause 400 errors
+             if (balance) {
+               const balanceBigInt = BigInt(balance.toString());
+               if (balanceBigInt < this.config.minBalance) {
+                 throw new InsufficientBalanceError(balanceBigInt, this.config.minBalance);
+               }
+             }
+
+             // Add gas estimation validation
+             try {
+               // Try to estimate gas for the transaction
+               const estimatedGas = await this.lstContract.runner?.provider?.estimateGas({
+                 to: this.lstContract.target,
+                 data: this.lstContract.interface.encodeFunctionData(
+                   'claimAndDistributeReward',
+                   [signerAddress, optimalThreshold, depositIds]
+                 ),
+                 maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
+                 maxPriorityFeePerGas: this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas,
+               }).catch((estimateError: Error) => {
+                 this.logger.error('Gas estimation failed:', { 
+                   error: estimateError,
+                   message: estimateError.message,
+                   data: (estimateError as any)?.data
+                 });
+                 return null;
+               });
+
+               if (estimatedGas) {
+                 const estimatedGasBigInt = BigInt(estimatedGas.toString());
+                 if (estimatedGasBigInt > calculatedGasLimit) {
+                   throw new ExecutorError('Estimated gas exceeds calculated limit', {
+                     estimatedGas: estimatedGasBigInt.toString(),
+                     calculatedLimit: calculatedGasLimit.toString(),
+                     difference: (estimatedGasBigInt - calculatedGasLimit).toString()
+                   }, true);
+                 }
+               }
+             } catch (gasError) {
+               this.logger.error('Gas estimation error:', {
+                 error: gasError instanceof Error ? gasError.message : String(gasError),
+                 transaction: {
+                   recipient: signerAddress,
+                   minExpectedReward: optimalThreshold.toString(),
+                   depositIds: depositIds.map(String)
+                 }
+               });
+             }
+
+             if (networkGasPrice?.maxFeePerGas && maxFeePerGas) {
+               const networkMaxFee = BigInt(networkGasPrice.maxFeePerGas.toString());
+               if (networkMaxFee > maxFeePerGas) {
+                 throw new ExecutorError('Network gas price exceeds configured maximum', {
+                   networkMaxFee: networkMaxFee.toString(),
+                   configuredMaxFee: maxFeePerGas.toString(),
+                   difference: (networkMaxFee - maxFeePerGas).toString()
+                 }, true);
+               }
+             }
+
+             // Check if the error response contains specific Defender error codes
+             const defenderError = error?.response?.data?.error;
+             if (defenderError) {
+               switch(defenderError.code) {
+                 case 'NONCE_TOO_LOW':
+                   throw new ExecutorError('Nonce too low - transaction would be replaced', {
+                     suggestedNonce: defenderError.suggestedNonce
+                   }, true);
+                 case 'INSUFFICIENT_FUNDS':
+                   throw new InsufficientBalanceError(BigInt(balance?.toString() || '0'), this.config.minBalance);
+                 case 'GAS_LIMIT_TOO_LOW':
+                   throw new ExecutorError('Gas limit too low for complex transaction', {
+                     providedGasLimit: calculatedGasLimit.toString(),
+                     suggestedGasLimit: defenderError.suggestedGasLimit
+                   }, true);
+                 default:
+                   throw new ExecutorError(`Defender API Error: ${defenderError.message}`, {
+                     code: defenderError.code,
+                     details: defenderError
+                   }, false);
+               }
+             }
+          }
+
+          // If not a 400 error or no specific error code, throw the original error
+          throw error;
+        });
+
+        this.logger.info('Transaction submitted:', {
+          hash: response.hash,
+          nonce: response.nonce,
+          gasLimit: response.gasLimit.toString(),
+          maxFeePerGas: response.maxFeePerGas?.toString(),
+          maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
+        });
+
+        // Wait for transaction to be mined
+        this.logger.info('Waiting for transaction...');
+        try {
+          let receipt;
+          try {
+            receipt = await pollForReceipt(
+              response.hash,
+              this.relayProvider as unknown as ethers.Provider,
+              this.logger,
+              3,
+            );
+          } catch (confirmError: unknown) {
+            // If polling fails, just log the error
+            this.logger.warn('Transaction confirmation failed', {
+              error:
+                confirmError instanceof Error
+                  ? confirmError.message
+                  : String(confirmError),
+              hash: response.hash,
+              errorType:
+                typeof confirmError === 'object' && confirmError !== null
+                  ? confirmError.constructor?.name || 'Unknown'
+                  : typeof confirmError,
+            });
+
+            this.logger.info(
+              'Continuing execution despite confirmation error - transaction may still have succeeded',
+            );
+
+            // Skip polling and consider it a warning rather than error
+            this.logger.debug('Transaction details for debugging', {
+              transaction: {
+                hash: response.hash,
+                to: response.to,
+                from: response.from,
+                nonce: response.nonce,
+              },
+            });
+
+            // Continue without receipt - transaction might have gone through anyway
+            receipt = null;
+          }
+
+          // Process the transaction receipt and clean up queues
+          await this.processTransactionReceipt(tx, response, receipt);
+        } catch (waitError) {
+          this.logger.error('Failed waiting for transaction confirmation', {
+            error:
+              waitError instanceof Error ? waitError.message : String(waitError),
+            transactionId: tx.id,
+            depositIds: depositIds.map(String),
+          });
+          throw new ExecutorError(
+            'Failed waiting for transaction confirmation',
+            {
+              error:
+                waitError instanceof Error
+                  ? waitError.message
+                  : String(waitError),
+            },
+            false,
+          );
+        }
+      } catch (error) {
+        await this.handleExecutionError(tx, error);
       }
     } catch (error) {
       await this.handleExecutionError(tx, error);

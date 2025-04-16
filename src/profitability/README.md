@@ -2,12 +2,82 @@
 
 The Profitability Engine analyzes GovLst deposits to determine optimal grouping and profitability metrics for reward claiming. It provides detailed analysis of deposit groups, considering gas costs, reward rates, and market conditions.
 
+---
+
+## State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Analyzing: New deposit/event
+    Analyzing --> Caching: Update deposit/gas cache
+    Caching --> BatchOptimization: Optimize batches
+    BatchOptimization --> Queueing: Queue profitable claims
+    Queueing --> Idle
+    Queueing --> [*]: On unrecoverable error
+```
+
+---
+
+## Sequence Diagram: Batch Profitability Analysis
+
+```mermaid
+sequenceDiagram
+    participant Monitor
+    participant ProfitabilityEngine
+    participant Database
+    participant Executor
+
+    Monitor->>ProfitabilityEngine: Notify deposit update
+    ProfitabilityEngine->>Database: Read deposits
+    ProfitabilityEngine->>ProfitabilityEngine: Analyze profitability
+    alt Profitable
+        ProfitabilityEngine->>Executor: Queue claim tx
+        Executor-->>ProfitabilityEngine: Ack
+    end
+    ProfitabilityEngine->>Database: Update analysis/queue
+```
+
+---
+
 ## Core Functionality
 
 The engine performs two primary functions:
 
 1. Analyzing individual deposit groups for profitability
 2. Optimizing deposit batches for maximum profit
+
+## Architecture
+
+- **ProfitabilityEngineWrapper**: Orchestrates analysis, manages cache, and handles queueing
+- **GovLstProfitabilityEngine**: Core logic for profitability, gas, and batch optimization
+- **Integration**: Receives events from Monitor, queues claims for Executor
+
+---
+
+## Inputs & Outputs
+
+- **Inputs**: Deposit data, config, price feeds, gas prices
+- **Outputs**: Profitability analysis, batch queue, claim recommendations
+
+---
+
+## Error Handling
+
+- Early returns for invalid/missing data
+- Retries for transient errors
+- Logs and propagates context-rich errors
+
+---
+
+## Monitoring
+
+- Health/status via `getStatus()`
+- Metrics: queue size, cache hit rate, last update, profit stats
+
+---
+
+## See root README for system-level diagrams and configuration.
 
 ## System Architecture
 

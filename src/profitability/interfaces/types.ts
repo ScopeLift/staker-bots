@@ -83,6 +83,7 @@ export interface GovLstDepositGroup {
   total_payout: bigint;
   expected_profit: bigint;
   gas_estimate: bigint;
+  total_rewards: bigint;
 }
 
 export interface GovLstProfitabilityCheck {

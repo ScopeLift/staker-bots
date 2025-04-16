@@ -2,6 +2,8 @@
 node_modules/
 .pnpm-store/
 pnpm-lock.yaml
+
+# Cursor
 .cursor
 
 # Environment variables
