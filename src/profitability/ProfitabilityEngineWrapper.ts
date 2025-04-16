@@ -416,6 +416,7 @@ export class GovLstProfitabilityEngineWrapper
               estimates: {
                 expected_profit: group.expected_profit,
                 gas_estimate: group.gas_estimate,
+                gas_cost: group.gas_estimate,
                 total_shares: group.total_shares,
                 payout_amount: group.total_payout,
               },
@@ -476,6 +477,7 @@ export class GovLstProfitabilityEngineWrapper
               estimates: {
                 expected_profit: group.expected_profit,
                 gas_estimate: group.gas_estimate,
+                gas_cost: group.gas_estimate,
                 total_shares: group.total_shares,
                 payout_amount: group.total_payout,
               },

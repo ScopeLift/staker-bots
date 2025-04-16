@@ -228,6 +228,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         total_shares: totalShares,
         payout_amount: payoutAmount,
         gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
+        gas_cost: gasCostInRewardToken,
         expected_profit: expectedProfit,
       },
       deposit_details: depositDetails,
@@ -298,9 +299,15 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       const profitMarginAmount = (baseAmount * BigInt(profitMargin)) / BigInt(100);
       const optimalThreshold = baseAmount + profitMarginAmount;
 
-      this.logger.info('Bin optimization parameters:', {
-        optimalThreshold: ethers.formatEther(optimalThreshold),
-      });
+      // Always create a new bin - don't reuse the active bin
+      this.activeBin = {
+        deposit_ids: [],
+        total_rewards: BigInt(0),
+        total_shares: BigInt(0),
+        expected_profit: BigInt(0),
+        total_payout: payoutAmount,
+        gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
+      };
 
       // Fetch unclaimed rewards for all deposits in batch with retry
       const depositIds = deposits.map(d => d.deposit_id);
@@ -308,18 +315,6 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         () => this.batchFetchUnclaimedRewards(depositIds),
         'Fetching unclaimed rewards'
       );
-      
-      // Create or continue filling the active bin
-      if (!this.activeBin) {
-        this.activeBin = {
-          deposit_ids: [],
-          total_rewards: BigInt(0),
-          total_shares: BigInt(0),
-          expected_profit: BigInt(0),
-          total_payout: payoutAmount,
-          gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
-        };
-      }
       
       // Sort deposits by rewards in descending order for optimal filling
       const sortedDeposits = [...deposits].sort((a, b) => {
@@ -340,25 +335,12 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         // Skip deposits with zero rewards
         if (reward <= BigInt(0)) continue;
         
-        // Check if deposit already exists in the bin
-        if (this.activeBin?.deposit_ids.some(id => id === depositId)) continue;
-
         // Add deposit to active bin
         if (this.activeBin) {
           this.activeBin.deposit_ids.push(depositId);
           this.activeBin.total_rewards += reward;
           this.activeBin.total_shares += deposit.shares_of;
           addedDeposits.push(deposit);
-
-          // Only log when we're getting close to threshold or hit it
-          const percentComplete = Number((this.activeBin.total_rewards * BigInt(100)) / optimalThreshold);
-          if (percentComplete >= 90 || this.activeBin.total_rewards >= optimalThreshold) {
-            this.logger.info(`Bin accumulation progress:`, {
-              currentTotal: ethers.formatEther(this.activeBin.total_rewards),
-              percentComplete,
-              depositCount: this.activeBin.deposit_ids.length
-            });
-          }
 
           // Check if we've hit optimal threshold after adding this deposit
           if (this.activeBin.total_rewards >= optimalThreshold) {
@@ -371,19 +353,15 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       const readyBins: GovLstDepositGroup[] = [];
       
       if (this.activeBin?.total_rewards >= optimalThreshold) {
-        // Calculate expected profit
-        const expectedProfit = this.activeBin.total_rewards - gasCost;
+        // Calculate expected profit - should be equal to total rewards
+        const expectedProfit = this.activeBin.total_rewards;
         this.activeBin.expected_profit = expectedProfit;
         
-        this.logger.info('Bin ready for execution:', {
-          depositCount: this.activeBin.deposit_ids.length,
-          totalRewards: ethers.formatEther(this.activeBin.total_rewards),
-          expectedProfit: ethers.formatEther(expectedProfit)
-        });
-        
         readyBins.push(this.activeBin);
-        this.activeBin = null;
       }
+
+      // Always clear the active bin after analysis
+      this.activeBin = null;
 
       return {
         deposit_groups: readyBins,
@@ -398,10 +376,6 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         operation: 'analyze_and_group',
         error: error instanceof Error ? error.message : String(error),
         timestamp: new Date().toISOString(),
-        activeBinState: this.activeBin ? {
-          depositCount: this.activeBin.deposit_ids.length,
-          totalRewards: this.activeBin.total_rewards.toString(),
-        } : null
       };
 
       this.logger.error('Failed to analyze and group deposits:', errorContext);
@@ -454,10 +428,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     const gasCost = await this.estimateGasCostInRewardToken();
     const payoutAmount = await this.govLstContract.payoutAmount();
     
-    // Calculate expected profit
-    const expectedProfit = this.activeBin.total_rewards > gasCost
-      ? this.activeBin.total_rewards - gasCost
-      : BigInt(0);
+    // Expected profit should be equal to total rewards
+    const expectedProfit = this.activeBin.total_rewards;
     
     this.activeBin.expected_profit = expectedProfit;
     this.activeBin.gas_estimate = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
@@ -476,7 +448,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     
     // Check profitability constraints
     const meetsMinReward = this.activeBin.total_rewards >= this.config.minProfitMargin;
-    const meetsMinProfit = expectedProfit > BigInt(0);
+    const meetsMinProfit = this.activeBin.total_rewards > gasCost; // Compare total rewards with gas cost
     const hasEnoughShares = this.activeBin.total_shares >= CONTRACT_CONSTANTS.MIN_SHARES_THRESHOLD;
     
     return {
@@ -490,6 +462,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         total_shares: this.activeBin.total_shares,
         payout_amount: payoutAmount,
         gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
+        gas_cost: gasCost, // Add gas cost as separate field
         expected_profit: expectedProfit,
       },
       deposit_details: depositDetails,
@@ -519,43 +492,76 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     try {
       const rewardsMap = new Map<string, bigint>();
       const batchSize = GovLstProfitabilityEngine.BATCH_SIZE;
+      let retryCount = 0;
+      const maxRetries = 3;
       
       this.logger.info('Starting batch fetch of unclaimed rewards:', {
         totalDeposits: depositIds.length,
         batchSize
       });
+
+      // Function to process a batch with retries
+      const processBatchWithRetry = async (batchIds: bigint[]) => {
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+          try {
+            const results = await Promise.all(
+              batchIds.map(async (id) => {
+                const reward = await this.stakerContract.unclaimedReward(id);
+                return { id, reward };
+              })
+            );
+
+            // Check if all rewards are 0, might indicate we need to wait for chain update
+            const allZero = results.every(({ reward }) => reward === BigInt(0));
+            if (allZero && attempt < maxRetries - 1) {
+              this.logger.info('All rewards are 0, waiting for chain update...', {
+                attempt: attempt + 1,
+                batchIds: batchIds.map(id => id.toString())
+              });
+              await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1))); // Exponential backoff
+              continue;
+            }
+
+            // Store results
+            results.forEach(({ id, reward }) => {
+              rewardsMap.set(id.toString(), reward);
+              if (reward > BigInt(0)) {
+                this.logger.info('Fetched non-zero reward:', {
+                  depositId: id.toString(),
+                  reward: ethers.formatEther(reward)
+                });
+              }
+            });
+            break; // Success, exit retry loop
+          } catch (error) {
+            if (attempt === maxRetries - 1) throw error;
+            this.logger.warn('Error fetching rewards, retrying...', {
+              attempt: attempt + 1,
+              error: error instanceof Error ? error.message : String(error)
+            });
+            await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+          }
+        }
+      };
       
+      // Process batches
       for (let i = 0; i < depositIds.length; i += batchSize) {
         const batchIds = depositIds.slice(i, i + batchSize);
+        await processBatchWithRetry(batchIds);
         
-        if (i > 0) {
+        // Small delay between batches
+        if (i + batchSize < depositIds.length) {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
-        
-        await Promise.all(
-          batchIds.map(async (id) => {
-            try {
-              const reward = await this.stakerContract.unclaimedReward(id);
-              this.logger.info('Fetched reward for deposit:', {
-                depositId: id.toString(),
-                reward: reward.toString(),
-                rewardInEther: ethers.formatEther(reward)
-              });
-              rewardsMap.set(id.toString(), reward);
-            } catch (error) {
-              this.logger.error(`Error fetching reward for deposit ${id}:`, { 
-                error,
-                errorMessage: error instanceof Error ? error.message : String(error)
-              });
-            }
-          })
-        );
       }
       
       const totalRewards = Array.from(rewardsMap.values()).reduce((sum, reward) => sum + reward, BigInt(0));
+      const nonZeroRewards = Array.from(rewardsMap.values()).filter(reward => reward > BigInt(0));
+      
       this.logger.info('Completed batch fetch of unclaimed rewards:', {
         totalDeposits: depositIds.length,
         successfulFetches: rewardsMap.size,
+        nonZeroRewards: nonZeroRewards.length,
         totalRewardsInEther: ethers.formatEther(totalRewards)
       });
       
