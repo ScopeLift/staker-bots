@@ -279,14 +279,86 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     );
   }
 
-  async analyzeAndGroupDeposits(
-    deposits: GovLstDeposit[],
-  ): Promise<GovLstBatchAnalysis> {
+  // Add these helper functions at the top of the class
+  private convertDatabaseDeposit(deposit: {
+    deposit_id: string;
+    owner_address: string;
+    depositor_address?: string;
+    delegatee_address: string;
+    amount: string;
+    earning_power?: string;
+  }): GovLstDeposit {
+    return {
+      deposit_id: BigInt(deposit.deposit_id),
+      owner_address: deposit.owner_address,
+      depositor_address: deposit.depositor_address,
+      delegatee_address: deposit.delegatee_address || '',
+      amount: BigInt(deposit.amount),
+      shares_of: BigInt(deposit.amount), // Default to amount if not specified
+      payout_amount: BigInt(0), // Will be set during processing
+      rewards: BigInt(0), // Will be calculated
+      earning_power: deposit.earning_power ? BigInt(deposit.earning_power) : BigInt(0),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  private convertToQueueItem(deposit: GovLstDeposit, profitability: GovLstProfitabilityCheck): {
+    deposit_id: string;
+    status: string;
+    delegatee: string;
+    last_profitability_check: string;
+  } {
+    return {
+      deposit_id: deposit.deposit_id.toString(),
+      status: 'pending',
+      delegatee: deposit.delegatee_address,
+      last_profitability_check: JSON.stringify(profitability),
+    };
+  }
+
+  private convertToTransactionQueueItem(
+    depositId: string,
+    depositIds: bigint[],
+    profitability: GovLstProfitabilityCheck,
+  ): {
+    deposit_id: string;
+    status: string;
+    tx_data: string;
+  } {
+    return {
+      deposit_id: depositId,
+      status: 'pending',
+      tx_data: JSON.stringify({
+        depositIds: depositIds.map(String),
+        expectedProfit: profitability.estimates.expected_profit.toString(),
+        gasEstimate: profitability.estimates.gas_estimate.toString(),
+        totalShares: profitability.estimates.total_shares.toString(),
+      }),
+    };
+  }
+
+  async analyzeAndGroupDeposits(deposits: GovLstDeposit[]): Promise<GovLstBatchAnalysis> {
     if (!deposits.length) return this.createEmptyBatchAnalysis();
 
     try {
       this.logger.info('Starting single-bin accumulation analysis:', {
         depositCount: deposits.length,
+      });
+
+      // Convert any string values to BigInt if needed
+      const normalizedDeposits = deposits.map(deposit => {
+        if (typeof deposit.deposit_id === 'string') {
+          return this.convertDatabaseDeposit({
+            deposit_id: deposit.deposit_id,
+            owner_address: deposit.owner_address,
+            depositor_address: deposit.depositor_address,
+            delegatee_address: deposit.delegatee_address,
+            amount: deposit.amount.toString(),
+            earning_power: deposit.earning_power?.toString(),
+          });
+        }
+        return deposit;
       });
 
       // Get payoutAmount and estimate gas costs with retry
@@ -322,14 +394,14 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       };
 
       // Fetch unclaimed rewards for all deposits in batch with retry
-      const depositIds = deposits.map((d) => d.deposit_id);
+      const depositIds = normalizedDeposits.map((d) => d.deposit_id);
       const rewardsMap = await this.getContractDataWithRetry(
         () => this.batchFetchUnclaimedRewards(depositIds),
         'Fetching unclaimed rewards',
       );
 
       // Sort deposits by rewards in descending order for optimal filling
-      const sortedDeposits = [...deposits].sort((a, b) => {
+      const sortedDeposits = [...normalizedDeposits].sort((a, b) => {
         const rewardA = rewardsMap.get(a.deposit_id.toString()) || BigInt(0);
         const rewardB = rewardsMap.get(b.deposit_id.toString()) || BigInt(0);
         return Number(rewardB - rewardA);
