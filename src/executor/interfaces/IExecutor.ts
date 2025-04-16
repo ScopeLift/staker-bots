@@ -71,4 +71,9 @@ export interface IExecutor {
    * Clear the transaction queue
    */
   clearQueue(): Promise<void>;
+
+  /**
+   * Validate credentials
+   */
+  validateCredentials?(): Promise<void>;
 }

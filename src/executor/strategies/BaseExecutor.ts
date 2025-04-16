@@ -47,12 +47,6 @@ const BASE_EVENTS = {
   ERROR: EXECUTOR.EVENTS.ERROR,
 } as const;
 
-const GAS = {
-  MIN_LIMIT: EXECUTOR.GAS.MIN_GAS_LIMIT,
-  MAX_LIMIT: EXECUTOR.GAS.MAX_GAS_LIMIT,
-  BUFFER: EXECUTOR.GAS.GAS_LIMIT_BUFFER,
-} as const;
-
 const BASE_QUEUE = {
   PROCESSOR_INTERVAL: EXECUTOR.QUEUE.QUEUE_PROCESSOR_INTERVAL,
   MAX_BATCH_SIZE: EXECUTOR.QUEUE.MAX_BATCH_SIZE,
@@ -619,14 +613,15 @@ export class BaseExecutor implements IExecutor {
       const gasCost = 0n; // Set to 0 for now since we don't have actual values
       this.logger.info('Using default gas cost:', {
         value: gasCost.toString(),
-        type: typeof gasCost
+        type: typeof gasCost,
       });
 
       // Calculate optimal threshold
       const profitMargin = this.config.minProfitMargin;
       const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
       const baseAmount = payoutAmount + gasCost;
-      const profitMarginAmount = (baseAmount * profitMarginBasisPoints) / 10000n;
+      const profitMarginAmount =
+        (baseAmount * profitMarginBasisPoints) / 10000n;
       const optimalThreshold = payoutAmount + gasCost + profitMarginAmount;
 
       const depositIds = tx.depositIds;
@@ -654,9 +649,11 @@ export class BaseExecutor implements IExecutor {
 
       // Calculate gas parameters
       const gasEstimate = await this.estimateGas(depositIds, tx.profitability);
-      const { finalGasLimit, boostedGasPrice } = await this.calculateGasParameters(gasEstimate);
+      const { finalGasLimit, boostedGasPrice } =
+        await this.calculateGasParameters(gasEstimate);
 
-      const claimAndDistributeReward = this.govLstContract.claimAndDistributeReward as GovLstContractMethod;
+      const claimAndDistributeReward = this.govLstContract
+        .claimAndDistributeReward as GovLstContractMethod;
       if (!claimAndDistributeReward) {
         throw new ContractMethodError('claimAndDistributeReward');
       }
@@ -805,13 +802,16 @@ export class BaseExecutor implements IExecutor {
         isSuccess = receipt?.status === 1;
       } catch (waitError) {
         this.logger.warn('Transaction confirmation failed', {
-          error: waitError instanceof Error ? waitError.message : String(waitError),
+          error:
+            waitError instanceof Error ? waitError.message : String(waitError),
           hash: txResponse.hash,
         });
       }
 
       // Update transaction status
-      tx.status = isSuccess ? TransactionStatus.CONFIRMED : TransactionStatus.FAILED;
+      tx.status = isSuccess
+        ? TransactionStatus.CONFIRMED
+        : TransactionStatus.FAILED;
       tx.hash = txResponse.hash;
       tx.gasPrice = txResponse.gasPrice || 0n;
       tx.gasLimit = receipt?.gasUsed || 0n;

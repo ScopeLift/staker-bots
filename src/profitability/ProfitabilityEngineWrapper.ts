@@ -388,51 +388,56 @@ export class GovLstProfitabilityEngineWrapper
       }
 
       // Convert database deposits to GovLstDeposits
-      const govLstDeposits = depositsToCheck.map(deposit => this.convertToGovLstDeposit(deposit));
+      const govLstDeposits = depositsToCheck.map((deposit) =>
+        this.convertToGovLstDeposit(deposit),
+      );
 
       // Use GovLstProfitabilityEngine to analyze deposits
-      const analysis = await this.engine.analyzeAndGroupDeposits(govLstDeposits);
+      const analysis =
+        await this.engine.analyzeAndGroupDeposits(govLstDeposits);
 
       this.logger.info('Deposit analysis results:', {
         totalGroups: analysis.deposit_groups.length,
         totalExpectedProfit: ethers.formatEther(analysis.total_expected_profit),
         totalGasEstimate: analysis.total_gas_estimate.toString(),
-        totalDeposits: analysis.total_deposits
+        totalDeposits: analysis.total_deposits,
       });
 
       // Process each profitable group
       for (const group of analysis.deposit_groups) {
         try {
           // Validate the transaction first
-          await this.executor.validateTransaction(
-            group.deposit_ids,
-            {
-              is_profitable: true,
-              constraints: {
-                has_enough_shares: true,
-                meets_min_reward: true,
-                meets_min_profit: true,
-              },
-              estimates: {
-                expected_profit: group.expected_profit,
-                gas_estimate: group.gas_estimate,
-                gas_cost: group.gas_estimate,
-                total_shares: group.total_shares,
-                payout_amount: group.total_payout,
-              },
-              deposit_details: group.deposit_ids.map(id => ({
-                depositId: id,
-                rewards: BigInt(0), // Will be calculated by contract
-              })),
-            }
-          );
+          await this.executor.validateTransaction(group.deposit_ids, {
+            is_profitable: true,
+            constraints: {
+              has_enough_shares: true,
+              meets_min_reward: true,
+              meets_min_profit: true,
+            },
+            estimates: {
+              expected_profit: group.expected_profit,
+              gas_estimate: group.gas_estimate,
+              gas_cost: group.gas_estimate,
+              total_shares: group.total_shares,
+              payout_amount: group.total_payout,
+            },
+            deposit_details: group.deposit_ids.map((id) => ({
+              depositId: id,
+              rewards: BigInt(0), // Will be calculated by contract
+            })),
+          });
 
           // Create processing queue items for each deposit in the group
           for (const depositId of group.deposit_ids) {
-            const deposit = depositsToCheck.find(d => BigInt(d.deposit_id) === depositId);
+            const deposit = depositsToCheck.find(
+              (d) => BigInt(d.deposit_id) === depositId,
+            );
             if (!deposit) continue;
 
-            const existingItem = await this.db.getProcessingQueueItemByDepositId(deposit.deposit_id);
+            const existingItem =
+              await this.db.getProcessingQueueItemByDepositId(
+                deposit.deposit_id,
+              );
             if (existingItem) {
               await this.db.updateProcessingQueueItem(existingItem.id, {
                 status: ProcessingQueueStatus.PENDING,
@@ -448,7 +453,9 @@ export class GovLstProfitabilityEngineWrapper
           }
 
           // Create transaction queue item for the group
-          const firstDeposit = depositsToCheck.find(d => BigInt(d.deposit_id) === group.deposit_ids[0]);
+          const firstDeposit = depositsToCheck.find(
+            (d) => BigInt(d.deposit_id) === group.deposit_ids[0],
+          );
           if (!firstDeposit) {
             throw new Error('Invalid deposit data - missing first deposit');
           }
@@ -457,7 +464,7 @@ export class GovLstProfitabilityEngineWrapper
             deposit_id: firstDeposit.deposit_id,
             status: TransactionQueueStatus.PENDING,
             tx_data: JSON.stringify({
-              depositIds: group.deposit_ids.map(id => id.toString()),
+              depositIds: group.deposit_ids.map((id) => id.toString()),
               totalRewards: group.total_rewards.toString(),
               expectedProfit: group.expected_profit.toString(),
               gasEstimate: group.gas_estimate.toString(),
@@ -481,13 +488,13 @@ export class GovLstProfitabilityEngineWrapper
                 total_shares: group.total_shares,
                 payout_amount: group.total_payout,
               },
-              deposit_details: group.deposit_ids.map(id => ({
+              deposit_details: group.deposit_ids.map((id) => ({
                 depositId: id,
                 rewards: BigInt(0), // Will be calculated by contract
               })),
             },
             JSON.stringify({
-              depositIds: group.deposit_ids.map(id => id.toString()),
+              depositIds: group.deposit_ids.map((id) => id.toString()),
               totalRewards: group.total_rewards.toString(),
               expectedProfit: group.expected_profit.toString(),
               gasEstimate: group.gas_estimate.toString(),
@@ -501,7 +508,6 @@ export class GovLstProfitabilityEngineWrapper
             expectedProfit: ethers.formatEther(group.expected_profit),
             gasEstimate: group.gas_estimate.toString(),
           });
-
         } catch (error) {
           this.logger.error('Failed to process profitable group:', {
             error,
@@ -510,7 +516,6 @@ export class GovLstProfitabilityEngineWrapper
           // Continue with next group
         }
       }
-
     } catch (error) {
       this.logger.error('Error in reward check cycle:', {
         error,

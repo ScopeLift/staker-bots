@@ -22,10 +22,7 @@ import {
   PROCESSING_COMPONENT,
   EVENT_TYPES,
 } from './constants';
-import {
-  EventProcessingError,
-  MonitorError,
-} from '@/configuration/errors';
+import { EventProcessingError, MonitorError } from '@/configuration/errors';
 import { stakerAbi } from '@/configuration/abis';
 
 /**
@@ -478,7 +475,7 @@ export class StakerMonitor extends EventEmitter {
         }
 
         const result = await this.eventProcessor.processStakeDeposited(event);
-        
+
         if (result.success || !result.retryable) {
           return;
         }
