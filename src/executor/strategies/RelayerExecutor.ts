@@ -129,7 +129,7 @@ export class RelayerExecutor implements IExecutor {
     this.logger.info('Database set for executor');
     // Update the errorLogger with the database
     this.errorLogger = createErrorLogger('RelayerExecutor', db);
-    this.errorLogger.info('ErrorLogger initialized with database');
+    this.logger.info('ErrorLogger initialized with database');
   }
 
   async start(): Promise<void> {
@@ -139,7 +139,7 @@ export class RelayerExecutor implements IExecutor {
 
     this.isRunning = true;
     this.startQueueProcessor();
-    this.errorLogger.info('RelayerExecutor started');
+    this.logger.info('RelayerExecutor started');
   }
 
   async stop(): Promise<void> {
@@ -149,7 +149,7 @@ export class RelayerExecutor implements IExecutor {
 
     this.isRunning = false;
     this.stopQueueProcessor();
-    this.errorLogger.info('RelayerExecutor stopped');
+    this.logger.info('RelayerExecutor stopped');
   }
 
   async getStatus(): Promise<{
@@ -280,7 +280,7 @@ export class RelayerExecutor implements IExecutor {
 
   protected async executeTransaction(tx: QueuedTransaction): Promise<void> {
     // Log transaction execution start
-    this.errorLogger.info(`Starting transaction execution: ${tx.id}`, {
+    this.logger.info(`Starting transaction execution: ${tx.id}`, {
       txId: tx.id,
       depositCount: tx.depositIds.length,
       depositIds: tx.depositIds.map(String),
@@ -350,7 +350,7 @@ export class RelayerExecutor implements IExecutor {
           await this.db.updateTransactionQueueItem(queueItemId, {
             status: TransactionQueueStatus.PENDING,
           });
-          this.errorLogger.info(
+          this.logger.info(
             `Updated transaction queue item status to PENDING: ${queueItemId}`,
             {
               txId: tx.id,
@@ -366,8 +366,7 @@ export class RelayerExecutor implements IExecutor {
             error instanceof Error
               ? error
               : new Error(
-                  `Failed to update queue item status: ${String(error)}`,
-                ),
+                  `Failed to update queue item status: ${String(error)}`),
             {
               stage: 'executeTransaction',
               txId: tx.id,
@@ -397,13 +396,6 @@ export class RelayerExecutor implements IExecutor {
         rewardTokenAddress,
         contractAddress: this.lstContract.target.toString(),
       });
-      this.errorLogger.info(
-        `Retrieved reward token address: ${rewardTokenAddress}`,
-        {
-          txId: tx.id,
-          contractAddress: this.lstContract.target.toString(),
-        },
-      );
 
       const rewardTokenAbi = [
         'function approve(address spender, uint256 amount) returns (bool)',
@@ -450,7 +442,7 @@ export class RelayerExecutor implements IExecutor {
             value: payoutAmount.toString(),
             type: typeof payoutAmount,
           });
-          this.errorLogger.info(
+          this.logger.info(
             `Retrieved payout amount: ${payoutAmount.toString()}`,
             {
               txId: tx.id,
@@ -481,12 +473,6 @@ export class RelayerExecutor implements IExecutor {
           lstContractAddress,
           rewardToken: rewardTokenAddress,
         });
-        this.errorLogger.info(`Checking token allowance for ${signerAddress}`, {
-          txId: tx.id,
-          signerAddress,
-          lstContractAddress,
-          rewardToken: rewardTokenAddress,
-        });
 
         const allowance = BigInt(
           await rewardTokenContract.allowance(
@@ -497,10 +483,6 @@ export class RelayerExecutor implements IExecutor {
 
         this.logger.info('Current allowance', {
           allowance: allowance.toString(),
-          payoutAmount: payoutAmount.toString(),
-        });
-        this.errorLogger.info(`Current allowance: ${allowance.toString()}`, {
-          txId: tx.id,
           payoutAmount: payoutAmount.toString(),
         });
 
@@ -516,15 +498,6 @@ export class RelayerExecutor implements IExecutor {
             payoutAmount: payoutAmount.toString(),
             approvalAmount: approvalAmount.toString(),
           });
-          this.errorLogger.info(
-            `Approving reward token spend: ${approvalAmount.toString()}`,
-            {
-              txId: tx.id,
-              token: rewardTokenAddress,
-              spender: lstContractAddress,
-              currentAllowance: allowance.toString(),
-            },
-          );
 
           const approveTx = await rewardTokenContract.approve(
             lstContractAddress,
@@ -535,13 +508,6 @@ export class RelayerExecutor implements IExecutor {
             hash: approveTx.hash,
             gasLimit: approveTx.gasLimit.toString(),
           });
-          this.errorLogger.info(
-            `Approval transaction submitted: ${approveTx.hash}`,
-            {
-              txId: tx.id,
-              gasLimit: approveTx.gasLimit.toString(),
-            },
-          );
 
           // Wait for the transaction to be mined
           try {
@@ -567,18 +533,6 @@ export class RelayerExecutor implements IExecutor {
                     ? confirmError.constructor?.name || 'Unknown'
                     : typeof confirmError,
               });
-              this.errorLogger.warn(
-                confirmError instanceof Error
-                  ? confirmError
-                  : new Error(
-                      `Standard wait for approval failed: ${String(confirmError)}`,
-                    ),
-                {
-                  stage: 'executeTransaction_approvalWait',
-                  txId: tx.id,
-                  hash: approveTx.hash,
-                },
-              );
 
               this.logger.info(
                 'Continuing execution despite wait error - approval may still have succeeded',
@@ -599,13 +553,6 @@ export class RelayerExecutor implements IExecutor {
               hash: approveTx.hash,
               blockNumber: receipt?.blockNumber,
             });
-            this.errorLogger.info(
-              `Approval transaction confirmed: ${approveTx.hash}`,
-              {
-                txId: tx.id,
-                blockNumber: receipt?.blockNumber?.toString() || 'unknown',
-              },
-            );
           } catch (waitError) {
             this.logger.error('Failed waiting for approval transaction', {
               error:
@@ -614,18 +561,6 @@ export class RelayerExecutor implements IExecutor {
                   : String(waitError),
               hash: approveTx.hash,
             });
-            this.errorLogger.error(
-              waitError instanceof Error
-                ? waitError
-                : new Error(
-                    `Failed waiting for approval transaction: ${String(waitError)}`,
-                  ),
-              {
-                stage: 'executeTransaction_approvalConfirmation',
-                txId: tx.id,
-                hash: approveTx.hash,
-              },
-            );
             throw new ExecutorError(
               'Failed waiting for approval confirmation',
               {
@@ -645,17 +580,6 @@ export class RelayerExecutor implements IExecutor {
           rewardToken: rewardTokenAddress,
           contractAddress: this.lstContract.target.toString(),
         });
-        this.errorLogger.error(
-          error instanceof Error
-            ? error
-            : new Error(`Token approval error: ${String(error)}`),
-          {
-            stage: 'executeTransaction_tokenApproval',
-            txId: tx.id,
-            rewardToken: rewardTokenAddress,
-            contractAddress: this.lstContract.target.toString(),
-          },
-        );
         throw new ExecutorError(
           'Failed to approve reward token spend',
           { error: error instanceof Error ? error.message : String(error) },
@@ -761,7 +685,7 @@ export class RelayerExecutor implements IExecutor {
             profitMarginAmount: profitMarginAmount.toString(),
           },
         });
-        this.errorLogger.info(
+        this.logger.info(
           `Calculated optimal threshold: ${optimalThreshold.toString()}`,
           {
             txId: tx.id,
@@ -815,7 +739,7 @@ export class RelayerExecutor implements IExecutor {
             ? BigInt(feeData.maxPriorityFeePerGas.toString())
             : undefined;
 
-          this.errorLogger.info('Retrieved network fee data', {
+          this.logger.info('Retrieved network fee data', {
             txId: tx.id,
             maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
             maxPriorityFeePerGas:
@@ -857,15 +781,6 @@ export class RelayerExecutor implements IExecutor {
           depositIds: depositIds.map((id) => id.toString()),
           gasEstimate: tx.profitability.estimates.gas_estimate.toString(),
         });
-        this.errorLogger.info(
-          `Executing claimAndDistributeReward for ${depositIds.length} deposits`,
-          {
-            txId: tx.id,
-            recipient: signerAddress,
-            minExpectedReward: optimalThreshold.toString(),
-            depositIds: depositIds.map((id) => id.toString()),
-          },
-        );
 
         // Calculate gas limit with extra buffer for complex operations
         const gasEstimate = tx.profitability.estimates.gas_estimate;
@@ -882,7 +797,7 @@ export class RelayerExecutor implements IExecutor {
           finalGasLimit: calculatedGasLimit.toString(),
           depositCount: depositIds.length,
         });
-        this.errorLogger.info(
+        this.logger.info(
           `Calculated gas limit: ${calculatedGasLimit.toString()}`,
           {
             txId: tx.id,
@@ -935,8 +850,7 @@ export class RelayerExecutor implements IExecutor {
                   e instanceof Error
                     ? e
                     : new Error(
-                        `Failed to get network diagnostics: ${String(e)}`,
-                      ),
+                        `Failed to get network diagnostics: ${String(e)}`),
                   {
                     stage: 'executeTransaction_networkDiagnostics',
                     txId: tx.id,
@@ -1054,8 +968,7 @@ export class RelayerExecutor implements IExecutor {
                       estimateError instanceof Error
                         ? estimateError
                         : new Error(
-                            `Gas estimation failed: ${String(estimateError)}`,
-                          ),
+                            `Gas estimation failed: ${String(estimateError)}`),
                       {
                         stage: 'executeTransaction_gasEstimation',
                         txId: tx.id,
@@ -1223,12 +1136,6 @@ export class RelayerExecutor implements IExecutor {
           maxFeePerGas: response.maxFeePerGas?.toString(),
           maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
         });
-        this.errorLogger.info(`Transaction submitted: ${response.hash}`, {
-          txId: tx.id,
-          hash: response.hash,
-          nonce: response.nonce,
-          gasLimit: response.gasLimit.toString(),
-        });
 
         // Wait for transaction to be mined
         this.logger.info('Waiting for transaction...');
@@ -1241,7 +1148,7 @@ export class RelayerExecutor implements IExecutor {
               this.logger,
               3,
             );
-            this.errorLogger.info(
+            this.logger.info(
               `Transaction receipt received: ${response.hash}`,
               {
                 txId: tx.id,
@@ -1262,18 +1169,6 @@ export class RelayerExecutor implements IExecutor {
                   ? confirmError.constructor?.name || 'Unknown'
                   : typeof confirmError,
             });
-            this.errorLogger.warn(
-              confirmError instanceof Error
-                ? confirmError
-                : new Error(
-                    `Transaction confirmation failed: ${String(confirmError)}`,
-                  ),
-              {
-                stage: 'executeTransaction_confirmationFailed',
-                txId: tx.id,
-                hash: response.hash,
-              },
-            );
 
             this.logger.info(
               'Continuing execution despite confirmation error - transaction may still have succeeded',
@@ -1323,8 +1218,7 @@ export class RelayerExecutor implements IExecutor {
             waitError instanceof Error
               ? waitError
               : new Error(
-                  `Failed waiting for transaction confirmation: ${String(waitError)}`,
-                ),
+                  `Failed waiting for transaction confirmation: ${String(waitError)}`),
             {
               stage: 'executeTransaction_waitError',
               txId: tx.id,

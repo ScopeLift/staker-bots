@@ -471,45 +471,86 @@ export async function processTransactionReceipt(
   errorLogger: ErrorLogger,
   cleanupFunction: (tx: QueuedTransaction, txHash: string) => Promise<void>,
 ): Promise<void> {
-  const isSuccess = receipt && receipt.status === 1;
+  const txHash = response.hash;
 
-  // Update transaction status
-  tx.status = isSuccess
-    ? TransactionStatus.CONFIRMED
-    : TransactionStatus.FAILED;
-  tx.hash = response.hash;
-  tx.gasPrice = 0n; // Set default since it may not be available
-  tx.gasLimit = receipt ? BigInt(receipt.gasUsed.toString()) : 0n;
-  tx.executedAt = new Date();
+  try {
+    if (receipt === null) {
+      logger.warn('Transaction receipt is null, transaction may have failed', {
+        txId: tx.id,
+        txHash,
+      });
+      tx.status = TransactionStatus.FAILED;
+      tx.error = new Error('Transaction receipt is null');
+    } else if (receipt.status === 0) {
+      logger.error('Transaction failed on-chain', {
+        txId: tx.id,
+        txHash,
+        blockNumber: receipt.blockNumber,
+      });
+      errorLogger.error(new Error('Transaction failed on-chain'), {
+        txId: tx.id,
+        txHash,
+        blockNumber: receipt.blockNumber,
+      });
+      tx.status = TransactionStatus.FAILED;
+      tx.error = new Error('Transaction reverted on-chain');
+    } else {
+      logger.info('Transaction confirmed successfully', {
+        txId: tx.id,
+        txHash,
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString(),
+      });
+      tx.status = TransactionStatus.CONFIRMED;
+      tx.hash = txHash;
+      // Store block number and gas used in transaction metadata
+      if (!tx.metadata) {
+        tx.metadata = {};
+      }
+      tx.metadata.blockNumber = receipt.blockNumber.toString();
+      tx.metadata.gasUsed = receipt.gasUsed.toString();
+    }
 
-  // Logging based on status
-  if (isSuccess) {
-    logger.info(RELAYER_EVENTS.TRANSACTION_CONFIRMED, {
-      id: tx.id,
-      hash: response.hash,
-      blockNumber: receipt?.blockNumber,
-      gasUsed: receipt?.gasUsed.toString(),
+    // Process transaction in database if available
+    await cleanupFunction(tx, txHash);
+  } catch (error) {
+    logger.error('Error processing transaction receipt', {
+      error: error instanceof Error ? error.message : String(error),
+      txId: tx.id,
+      txHash,
     });
-    errorLogger.info(`Transaction confirmed: ${tx.id}`, {
-      id: tx.id,
-      hash: response.hash,
-      blockNumber: receipt?.blockNumber,
-      gasUsed: receipt?.gasUsed.toString(),
-    });
-  } else {
-    logger.warn(RELAYER_EVENTS.TRANSACTION_FAILED, {
-      id: tx.id,
-      hash: response.hash,
-    });
-    errorLogger.warn(`Transaction failed: ${tx.id}`, {
-      id: tx.id,
-      hash: response.hash,
-      receipt: receipt ? JSON.stringify(receipt) : 'null',
-    });
+    errorLogger.error(
+      error instanceof Error
+        ? error
+        : new Error(`Error processing transaction receipt: ${String(error)}`),
+      { txId: tx.id, txHash },
+    );
+    tx.status = TransactionStatus.FAILED;
+    tx.error = error as Error;
+    // Still try to clean up queue
+    try {
+      await cleanupFunction(tx, txHash);
+    } catch (cleanupError) {
+      logger.error('Failed to clean up after receipt processing error', {
+        error:
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError),
+        txId: tx.id,
+        txHash,
+      });
+      errorLogger.error(
+        cleanupError instanceof Error
+          ? cleanupError
+          : new Error(
+              `Failed to clean up after receipt processing: ${String(
+                cleanupError,
+              )}`,
+            ),
+        { txId: tx.id, txHash },
+      );
+    }
   }
-
-  // Clean up queue items regardless of success or failure
-  await cleanupFunction(tx, response.hash);
 }
 
 /**
@@ -617,7 +658,7 @@ export async function queueTransactionWithValidation(
     logger.info('Skipping queue transaction - cleanup in progress:', {
       depositIds: depositIdStrings,
     });
-    errorLogger.info('Skipping queue transaction - cleanup in progress', {
+    logger.info('Skipping queue transaction - cleanup in progress', {
       depositIds: depositIdStrings,
     });
     return {
@@ -634,11 +675,11 @@ export async function queueTransactionWithValidation(
   // Validate the transaction
   const { isValid, error } = await validateTx(depositIds, profitability);
   if (!isValid) {
-    errorLogger.error(error || new Error('Unknown validation error'), {
+    logger.error(error ? error.message : 'Unknown validation error', {
       stage: 'validateTransaction',
       depositIds: depositIds.map(String),
     });
-    throw error;
+    throw error || new Error('Transaction validation failed');
   }
 
   const tx: QueuedTransaction = {
@@ -657,7 +698,8 @@ export async function queueTransactionWithValidation(
     totalShares: profitability.estimates.total_shares.toString(),
     expectedProfit: profitability.estimates.expected_profit.toString(),
   });
-  errorLogger.info(`Transaction queued: ${tx.id}`, {
+  
+  logger.info(`Transaction queued: ${tx.id}`, {
     id: tx.id,
     depositCount: depositIds.length,
     totalShares: profitability.estimates.total_shares.toString(),
