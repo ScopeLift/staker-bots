@@ -9,6 +9,7 @@ const REQUIRED_ENV_VARS = [
   'RPC_URL',
   'STAKER_CONTRACT_ADDRESS',
   'CHAIN_ID',
+  'LST_ADDRESS',
 ] as const;
 
 // Validate required environment variables
@@ -87,10 +88,10 @@ export const CONFIG = {
   profitability: {
     includeGasCost: process.env.PROFITABILITY_INCLUDE_GAS_COST === 'true',
     rewardCheckInterval: parseInt(
-      process.env.GOVLST_REWARD_CHECK_INTERVAL || '60000',
+      process.env.PROFITABILITY_REWARD_CHECK_INTERVAL || '60000',
     ), // 1 minute
     minProfitMargin: parseFloat(
-      process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || '10',
+      process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT || '10',
     ), // 10% minimum profit margin by default
     gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,
@@ -102,10 +103,10 @@ export const CONFIG = {
     },
   },
   govlst: {
-    addresses: process.env.GOVLST_ADDRESSES?.split(',') || [],
+    address: process.env.LST_ADDRESS || '',
     payoutAmount: BigInt(process.env.GOVLST_PAYOUT_AMOUNT || 0),
     minProfitMargin: parseFloat(
-      process.env.GOVLST_MIN_PROFIT_MARGIN_PERCENT || '10',
+      process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT || '10',
     ), // 10% minimum profit margin by default
     maxBatchSize: parseInt(process.env.GOVLST_MAX_BATCH_SIZE || '10', 10),
     claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600', 10), // 1 hour default

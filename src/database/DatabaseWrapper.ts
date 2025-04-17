@@ -7,12 +7,14 @@ import {
   ProcessingQueueStatus,
   TransactionQueueStatus,
   GovLstClaimHistory,
+  ErrorLog,
 } from './interfaces/types';
 import * as supabaseDb from './supabase/deposits';
 import * as supabaseCheckpoints from './supabase/checkpoints';
 import * as supabaseProcessingQueue from './supabase/processing_queue';
 import * as supabaseTransactionQueue from './supabase/transaction_queue';
 import * as supabaseGovLstRewards from './supabase/govlst_rewards';
+import * as supabaseErrors from './supabase/errors';
 import { JsonDatabase } from './json/JsonDatabase';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 
@@ -115,6 +117,22 @@ export class DatabaseWrapper implements IDatabase {
         ),
         updateGovLstClaimHistory: this.wrapWithFallback(
           supabaseGovLstRewards.updateGovLstClaimHistory,
+        ),
+        // Error Logs Operations
+        createErrorLog: this.wrapWithFallback(
+          supabaseErrors.createErrorLog,
+        ),
+        getErrorLogs: this.wrapWithFallback(
+          supabaseErrors.getErrorLogs,
+        ),
+        getErrorLogsByService: this.wrapWithFallback(
+          supabaseErrors.getErrorLogsByService,
+        ),
+        getErrorLogsBySeverity: this.wrapWithFallback(
+          supabaseErrors.getErrorLogsBySeverity,
+        ),
+        deleteErrorLog: this.wrapWithFallback(
+          supabaseErrors.deleteErrorLog,
         ),
       };
     }
@@ -329,5 +347,26 @@ export class DatabaseWrapper implements IDatabase {
     >,
   ): Promise<void> {
     return this.db.updateGovLstClaimHistory(id, update);
+  }
+
+  // Error Logs Operations
+  async createErrorLog(errorLog: ErrorLog): Promise<ErrorLog> {
+    return this.db.createErrorLog(errorLog);
+  }
+
+  async getErrorLogs(limit?: number, offset?: number): Promise<ErrorLog[]> {
+    return this.db.getErrorLogs(limit, offset);
+  }
+
+  async getErrorLogsByService(serviceName: string, limit?: number, offset?: number): Promise<ErrorLog[]> {
+    return this.db.getErrorLogsByService(serviceName, limit, offset);
+  }
+
+  async getErrorLogsBySeverity(severity: string, limit?: number, offset?: number): Promise<ErrorLog[]> {
+    return this.db.getErrorLogsBySeverity(severity, limit, offset);
+  }
+
+  async deleteErrorLog(id: string): Promise<void> {
+    return this.db.deleteErrorLog(id);
   }
 }

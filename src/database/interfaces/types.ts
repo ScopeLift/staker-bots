@@ -71,3 +71,14 @@ export type GovLstClaimHistory = {
   created_at?: string;
   updated_at?: string;
 };
+
+export type ErrorLog = {
+  id?: string;
+  service_name: string;
+  error_message: string;
+  stack_trace?: string;
+  severity: 'info' | 'warn' | 'error' | 'fatal';
+  meta?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  created_at?: string;
+};

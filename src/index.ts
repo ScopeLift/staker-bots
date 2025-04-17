@@ -11,6 +11,14 @@ import { ethers } from 'ethers';
 import { govlstAbi } from './configuration/abis';
 import fs from 'fs/promises';
 import path from 'path';
+import { createErrorLogger, ErrorLogger, ErrorSeverity } from './configuration/errorLogger';
+
+// Initialize database first to enable error logging
+const database = new DatabaseWrapper({
+  type: CONFIG.monitor.databaseType as 'json' | 'supabase',
+  fallbackToJson: true,
+});
+
 // Initialize component-specific loggers with colors for better visual distinction
 const mainLogger = new ConsoleLogger('info');
 const monitorLogger = new ConsoleLogger('info', {
@@ -26,6 +34,12 @@ const executorLogger = new ConsoleLogger('info', {
   prefix: '[Executor]',
 });
 
+// Initialize error loggers for components
+const mainErrorLogger = createErrorLogger('main-service', database);
+const monitorErrorLogger = createErrorLogger('monitor-service', database);
+const profitabilityErrorLogger = createErrorLogger('profitability-service', database);
+const executorErrorLogger = createErrorLogger('executor-service', database);
+
 // Set up error logging path
 const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
 
@@ -34,7 +48,7 @@ const loadStakerAbi = async (): Promise<typeof stakerAbi> => {
   try {
     return stakerAbi;
   } catch (error) {
-    mainLogger.error('Failed to load staker ABI:', { error });
+    await mainErrorLogger.error(error as Error, { component: 'loadStakerAbi' });
     throw error;
   }
 };
@@ -49,7 +63,7 @@ function createProvider() {
   return new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
 }
 
-// Helper to log errors to file
+// Helper to log errors to file and database
 async function logError(error: unknown, context: string) {
   const timestamp = new Date().toISOString();
   const errorMessage = `[${timestamp}] ${context}: ${error instanceof Error ? error.message : String(error)}\n${error instanceof Error ? error.stack : ''}\n\n`;
@@ -60,13 +74,15 @@ async function logError(error: unknown, context: string) {
     console.error('Failed to write to error log:', writeError);
   }
 
-  mainLogger.error(context, { error });
+  // Use the error logger for the database
+  await mainErrorLogger.error(error instanceof Error ? error : new Error(String(error)), { context });
 }
 
 // Ensure checkpoints are not lower than START_BLOCK
 async function ensureCheckpointsAtStartBlock(
   database: DatabaseWrapper,
   logger: Logger,
+  errorLogger: ErrorLogger,
 ) {
   logger.info('Checking checkpoint blocks against configured START_BLOCK...');
 
@@ -82,41 +98,46 @@ async function ensureCheckpointsAtStartBlock(
   // List of components to check
   const componentTypes = ['staker-monitor', 'executor', 'profitability-engine'];
 
-  for (const componentType of componentTypes) {
-    const checkpoint = await database.getCheckpoint(componentType);
+  try {
+    for (const componentType of componentTypes) {
+      const checkpoint = await database.getCheckpoint(componentType);
 
-    if (!checkpoint) {
-      logger.info(
-        `No checkpoint found for ${componentType}, creating with START_BLOCK`,
-      );
-      await database.updateCheckpoint({
-        component_type: componentType,
-        last_block_number: startBlock,
-        block_hash:
-          '0x0000000000000000000000000000000000000000000000000000000000000000',
-        last_update: new Date().toISOString(),
-      });
-      continue;
+      if (!checkpoint) {
+        logger.info(
+          `No checkpoint found for ${componentType}, creating with START_BLOCK`,
+        );
+        await database.updateCheckpoint({
+          component_type: componentType,
+          last_block_number: startBlock,
+          block_hash:
+            '0x0000000000000000000000000000000000000000000000000000000000000000',
+          last_update: new Date().toISOString(),
+        });
+        continue;
+      }
+
+      if (checkpoint.last_block_number < startBlock) {
+        logger.info(
+          `Updating ${componentType} checkpoint from block ${checkpoint.last_block_number} to START_BLOCK ${startBlock}`,
+        );
+        await database.updateCheckpoint({
+          component_type: componentType,
+          last_block_number: startBlock,
+          block_hash: checkpoint.block_hash,
+          last_update: new Date().toISOString(),
+        });
+      } else {
+        logger.info(
+          `Checkpoint for ${componentType} (${checkpoint.last_block_number}) is already >= START_BLOCK (${startBlock})`,
+        );
+      }
     }
 
-    if (checkpoint.last_block_number < startBlock) {
-      logger.info(
-        `Updating ${componentType} checkpoint from block ${checkpoint.last_block_number} to START_BLOCK ${startBlock}`,
-      );
-      await database.updateCheckpoint({
-        component_type: componentType,
-        last_block_number: startBlock,
-        block_hash: checkpoint.block_hash,
-        last_update: new Date().toISOString(),
-      });
-    } else {
-      logger.info(
-        `Checkpoint for ${componentType} (${checkpoint.last_block_number}) is already >= START_BLOCK (${startBlock})`,
-      );
-    }
+    logger.info('Checkpoint verification completed');
+  } catch (error) {
+    await errorLogger.error(error as Error, { context: 'ensureCheckpointsAtStartBlock' });
+    throw error;
   }
-
-  logger.info('Checkpoint verification completed');
 }
 
 // Keep track of running components for graceful shutdown
@@ -149,7 +170,7 @@ async function shutdown(signal: string) {
     mainLogger.info('Shutdown completed successfully');
     process.exit(0);
   } catch (error) {
-    await logError(error, 'Error during shutdown');
+    await mainErrorLogger.error(error as Error, { context: 'shutdown', signal });
     process.exit(1);
   }
 }
@@ -158,6 +179,7 @@ async function shutdown(signal: string) {
 async function initializeMonitor(
   database: DatabaseWrapper,
   logger: Logger,
+  errorLogger: ErrorLogger,
 ): Promise<StakerMonitor> {
   logger.info('Initializing staker monitor...');
 
@@ -171,7 +193,7 @@ async function initializeMonitor(
       name: network.name,
     });
   } catch (error) {
-    logger.error('Failed to connect to provider:', { error });
+    await errorLogger.error(error as Error, { context: 'provider-connection' });
     throw error;
   }
 
@@ -193,7 +215,7 @@ async function initializeMonitor(
         lastProcessedBlock: status.lastProcessedBlock,
       });
     } catch (error) {
-      logger.error('Health check failed:', { error });
+      await errorLogger.error(error as Error, { context: 'monitor-health-check' });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
@@ -204,6 +226,7 @@ async function initializeMonitor(
 async function initializeExecutor(
   database: DatabaseWrapper,
   logger: Logger,
+  errorLogger: ErrorLogger,
 ): Promise<ExecutorWrapper> {
   logger.info('Initializing transaction executor...');
 
@@ -266,6 +289,7 @@ async function initializeExecutor(
           gasBoostPercentage: 30,
           concurrentTransactions: 3,
           gasPolicy: CONFIG.defender.relayer.gasPolicy,
+          errorLogger, // Pass the error logger to the config
         }
       : {
           wallet: {
@@ -274,6 +298,7 @@ async function initializeExecutor(
             maxPendingTransactions: 5,
           },
           defaultTipReceiver: CONFIG.executor.tipReceiver,
+          errorLogger, // Pass the error logger to the config
         };
 
   const executor = new ExecutorWrapper(
@@ -299,7 +324,7 @@ async function initializeExecutor(
         queueSize: status.queueSize,
       });
     } catch (error) {
-      logger.error('Executor health check failed:', { error });
+      await errorLogger.error(error as Error, { context: 'executor-health-check' });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
@@ -312,13 +337,14 @@ async function initializeProfitabilityEngine(
   executor: IExecutor,
   stakerAbi: ethers.InterfaceAbi,
   logger: Logger,
+  errorLogger: ErrorLogger,
 ): Promise<GovLstProfitabilityEngineWrapper> {
   logger.info('Initializing profitability engine...');
 
   const provider = createProvider();
 
   // Validate required addresses
-  const govLstAddress = CONFIG.govlst.addresses?.[0];
+  const govLstAddress = CONFIG.govlst.address;
   if (!govLstAddress) {
     throw new Error(
       'No GovLst contract address configured. Please set GOVLST_ADDRESSES environment variable.',
@@ -367,6 +393,7 @@ async function initializeProfitabilityEngine(
       priceFeed: {
         cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
       },
+      errorLogger, // Pass the error logger to the config
     },
     executor,
   );
@@ -386,7 +413,7 @@ async function initializeProfitabilityEngine(
         queueSize: status.queueSize,
       });
     } catch (error) {
-      logger.error('Profitability engine health check failed:', { error });
+      await errorLogger.error(error as Error, { context: 'profitability-engine-health-check' });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
@@ -401,15 +428,10 @@ async function main() {
     // Load staker ABI
     const stakerAbi = await loadStakerAbi();
 
-    // Initialize database
-    mainLogger.info('Initializing database...');
-    const database = new DatabaseWrapper({
-      type: CONFIG.monitor.databaseType as 'json' | 'supabase',
-      fallbackToJson: true,
-    });
+    // Database already initialized at top of file
 
     // Check and update checkpoints if needed
-    await ensureCheckpointsAtStartBlock(database, mainLogger);
+    await ensureCheckpointsAtStartBlock(database, mainLogger, mainErrorLogger);
 
     // Parse components to run
     const rawComponents = process.env.COMPONENTS?.split(',').map((c) =>
@@ -428,6 +450,7 @@ async function main() {
       runningComponents.monitor = await initializeMonitor(
         database,
         monitorLogger,
+        monitorErrorLogger,
       );
     }
 
@@ -440,6 +463,7 @@ async function main() {
       runningComponents.executor = await initializeExecutor(
         database,
         executorLogger,
+        executorErrorLogger,
       );
     }
 
@@ -458,6 +482,7 @@ async function main() {
           runningComponents.executor as IExecutor,
           stakerAbi,
           profitabilityLogger,
+          profitabilityErrorLogger,
         );
     }
 
@@ -470,7 +495,7 @@ async function main() {
 
     mainLogger.info('Application is now running. Press Ctrl+C to stop.');
   } catch (error) {
-    await logError(error, 'Error during application startup');
+    await mainErrorLogger.error(error as Error, { context: 'application-startup' });
     process.exit(1);
   }
 }
@@ -481,23 +506,23 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // Run the application
 main().catch(async (error) => {
-  await logError(error, 'Unhandled error in main function');
+  await mainErrorLogger.error(error as Error, { context: 'main-function' });
   process.exit(1);
 });
 
 // Add global error handlers to prevent crashes
 process.on('uncaughtException', async (error) => {
-  await logError(
-    error,
-    'UNCAUGHT EXCEPTION: Application will continue running',
-  );
+  await mainErrorLogger.error(error as Error, { 
+    context: 'uncaught-exception',
+    severity: ErrorSeverity.FATAL 
+  });
   // Don't exit the process - allow the application to continue running
 });
 
 process.on('unhandledRejection', async (reason) => {
-  await logError(
-    reason,
-    'UNHANDLED PROMISE REJECTION: Application will continue running',
-  );
+  await mainErrorLogger.error(reason instanceof Error ? reason : new Error(String(reason)), { 
+    context: 'unhandled-rejection',
+    severity: ErrorSeverity.FATAL
+  });
   // Don't exit the process - allow the application to continue running
 });

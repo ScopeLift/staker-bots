@@ -4,7 +4,7 @@ import {
   IGovLstProfitabilityEngine,
   ProfitabilityEngineConfig,
 } from './interfaces/IProfitabilityEngine';
-import { GovLstProfitabilityEngine } from './strategies/GovLstProfitabilityEngine';
+import { GovLstProfitabilityEngine, EnhancedProfitabilityConfig } from './strategies/GovLstProfitabilityEngine';
 import {
   GovLstDeposit,
   GovLstProfitabilityCheck,
@@ -24,6 +24,7 @@ import {
   ProcessingQueueStatus,
   TransactionQueueStatus,
 } from '@/database/interfaces/types';
+import { ErrorLogger } from '@/configuration/errorLogger';
 
 // Add component type constant
 const PROFITABILITY_COMPONENT = {
@@ -49,6 +50,13 @@ interface ProfitableTransaction {
 }
 
 /**
+ * Enhanced config to support error logger
+ */
+export interface EnhancedConfig extends ProfitabilityConfig {
+  errorLogger?: ErrorLogger;
+}
+
+/**
  * Wrapper for the GovLst profitability engine that handles analysis and processing
  */
 export class GovLstProfitabilityEngineWrapper
@@ -64,6 +72,7 @@ export class GovLstProfitabilityEngineWrapper
     CONFIG.profitability.rewardCheckInterval;
   private profitableTransactions: ProfitableTransaction[] = [];
   private readonly provider: ethers.Provider;
+  private readonly errorLogger?: ErrorLogger;
 
   constructor(
     private readonly db: DatabaseWrapper,
@@ -71,10 +80,13 @@ export class GovLstProfitabilityEngineWrapper
     stakerContract: ethers.Contract,
     provider: ethers.Provider,
     private readonly logger: Logger,
-    config: ProfitabilityConfig,
+    config: EnhancedConfig,
     private readonly executor: IExecutor,
   ) {
     this.provider = provider;
+    this.errorLogger = config.errorLogger;
+    
+    // Pass the error logger to the engine
     this.engine = new GovLstProfitabilityEngine(
       govLstContract as ethers.Contract & {
         payoutAmount(): Promise<bigint>;
@@ -97,14 +109,27 @@ export class GovLstProfitabilityEngineWrapper
         unclaimedReward(depositId: bigint): Promise<bigint>;
       },
       provider,
-      config,
+      {
+        ...config,
+        errorLogger: this.errorLogger, // Pass error logger to the engine
+      },
     );
   }
 
   async checkGroupProfitability(
     deposits: GovLstDeposit[],
   ): Promise<GovLstProfitabilityCheck> {
-    return this.engine.checkGroupProfitability(deposits);
+    try {
+      return await this.engine.checkGroupProfitability(deposits);
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'wrapper-checkGroupProfitability',
+          depositCount: deposits.length,
+        });
+      }
+      throw error;
+    }
   }
 
   async getProfitableTransactions(): Promise<ProfitableTransaction[]> {
@@ -118,55 +143,83 @@ export class GovLstProfitabilityEngineWrapper
   async start(): Promise<void> {
     if (this.isRunning) return;
 
-    // Load last checkpoint
-    const checkpoint = await this.db.getCheckpoint(
-      PROFITABILITY_COMPONENT.TYPE,
-    );
-    if (checkpoint) {
-      this.lastProcessedBlock = checkpoint.last_block_number;
-      this.logger.info('Resuming from checkpoint', {
-        lastProcessedBlock: this.lastProcessedBlock,
-      });
-    } else {
-      // Initialize checkpoint if none exists
-      const currentBlock = await this.provider.getBlockNumber();
-      this.lastProcessedBlock = currentBlock;
-      await this.db.updateCheckpoint({
-        component_type: PROFITABILITY_COMPONENT.TYPE,
-        last_block_number: currentBlock,
-        block_hash: PROFITABILITY_COMPONENT.INITIAL_BLOCK_HASH,
-        last_update: new Date().toISOString(),
-      });
-    }
+    try {
+      // Load last checkpoint
+      const checkpoint = await this.db.getCheckpoint(
+        PROFITABILITY_COMPONENT.TYPE,
+      );
+      if (checkpoint) {
+        this.lastProcessedBlock = checkpoint.last_block_number;
+        this.logger.info('Resuming from checkpoint', {
+          lastProcessedBlock: this.lastProcessedBlock,
+        });
+      } else {
+        // Initialize checkpoint if none exists
+        const currentBlock = await this.provider.getBlockNumber();
+        this.lastProcessedBlock = currentBlock;
+        await this.db.updateCheckpoint({
+          component_type: PROFITABILITY_COMPONENT.TYPE,
+          last_block_number: currentBlock,
+          block_hash: PROFITABILITY_COMPONENT.INITIAL_BLOCK_HASH,
+          last_update: new Date().toISOString(),
+        });
+      }
 
-    await this.engine.start();
-    this.isRunning = true;
-    this.startQueueProcessor();
-    this.startRewardChecker();
-    await this.requeuePendingItems();
-    this.logger.info(EVENTS.ENGINE_STARTED);
+      await this.engine.start();
+      this.isRunning = true;
+      this.startQueueProcessor();
+      this.startRewardChecker();
+      await this.requeuePendingItems();
+      this.logger.info(EVENTS.ENGINE_STARTED);
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'profitability-engine-start',
+        });
+      } else {
+        this.logger.error('Failed to start profitability engine:', {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
+      }
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
     if (!this.isRunning) return;
 
-    await this.engine.stop();
-    this.isRunning = false;
-    this.stopQueueProcessor();
-    this.stopRewardChecker();
+    try {
+      await this.engine.stop();
+      this.isRunning = false;
+      this.stopQueueProcessor();
+      this.stopRewardChecker();
 
-    // Log profitable transactions before stopping
-    if (this.profitableTransactions.length > 0) {
-      this.logger.info('Profitable transactions found:', {
-        transactions: this.profitableTransactions.map((tx) => ({
-          deposit_id: tx.deposit_id.toString(),
-          unclaimed_rewards: ethers.formatEther(tx.unclaimed_rewards),
-          expected_profit: ethers.formatEther(tx.expected_profit),
-        })),
-      });
+      // Log profitable transactions before stopping
+      if (this.profitableTransactions.length > 0) {
+        this.logger.info('Profitable transactions found:', {
+          transactions: this.profitableTransactions.map((tx) => ({
+            deposit_id: tx.deposit_id.toString(),
+            unclaimed_rewards: ethers.formatEther(tx.unclaimed_rewards),
+            expected_profit: ethers.formatEther(tx.expected_profit),
+          })),
+        });
+      }
+
+      this.logger.info(EVENTS.ENGINE_STOPPED);
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'profitability-engine-stop',
+        });
+      } else {
+        this.logger.error('Failed to stop profitability engine:', {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
+      }
+      throw error;
     }
-
-    this.logger.info(EVENTS.ENGINE_STOPPED);
   }
 
   async getStatus(): Promise<{
@@ -176,18 +229,37 @@ export class GovLstProfitabilityEngineWrapper
     queueSize: number;
     groupCount: number;
   }> {
-    const baseStatus = await this.engine.getStatus();
-    return {
-      ...baseStatus,
-      queueSize: this.processingQueue.size,
-      groupCount: 0,
-    };
+    try {
+      const baseStatus = await this.engine.getStatus();
+      return {
+        ...baseStatus,
+        queueSize: this.processingQueue.size,
+        groupCount: 0,
+      };
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'profitability-engine-getStatus',
+        });
+      }
+      throw error;
+    }
   }
 
   async analyzeAndGroupDeposits(
     deposits: GovLstDeposit[],
   ): Promise<GovLstBatchAnalysis> {
-    return this.engine.analyzeAndGroupDeposits(deposits);
+    try {
+      return await this.engine.analyzeAndGroupDeposits(deposits);
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'analyzeAndGroupDeposits',
+          depositCount: deposits.length,
+        });
+      }
+      throw error;
+    }
   }
 
   private startQueueProcessor(): void {
@@ -230,6 +302,12 @@ export class GovLstProfitabilityEngineWrapper
 
       this.logger.info(EVENTS.ITEMS_REQUEUED, { count: pendingItems.length });
     } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'requeue-pending-items',
+          operation: 'requeue'
+        });
+      }
       throw new QueueProcessingError(error as Error, { operation: 'requeue' });
     }
   }
@@ -245,7 +323,7 @@ export class GovLstProfitabilityEngineWrapper
       for (const id of Array.from(this.processingQueue)) {
         const deposit = await this.db.getDeposit(id);
         if (!deposit) throw new DepositNotFoundError(id);
-        deposits.push(this.convertToGovLstDeposit(deposit));
+        deposits.push(await this.convertToGovLstDeposit(deposit));
       }
 
       // Clear the processing queue since we've retrieved the deposits
@@ -294,12 +372,19 @@ export class GovLstProfitabilityEngineWrapper
         }
       }
     } catch (error) {
-      // Log the specific error details
-      this.logger.error('Queue processing error:', {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        queueSize: this.processingQueue.size,
-      });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-queue',
+          queueSize: this.processingQueue.size
+        });
+      } else {
+        // Log the specific error details
+        this.logger.error('Queue processing error:', {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          queueSize: this.processingQueue.size,
+        });
+      }
 
       // Re-add failed items back to the queue for retry
       const failedIds = Array.from(this.processingQueue);
@@ -316,10 +401,17 @@ export class GovLstProfitabilityEngineWrapper
             });
           }
         } catch (dbError) {
-          this.logger.error('Failed to update processing queue item:', {
-            error: dbError instanceof Error ? dbError.message : String(dbError),
-            depositId: id,
-          });
+          if (this.errorLogger) {
+            await this.errorLogger.error(dbError as Error, {
+              context: 'update-processing-queue-item',
+              depositId: id
+            });
+          } else {
+            this.logger.error('Failed to update processing queue item:', {
+              error: dbError instanceof Error ? dbError.message : String(dbError),
+              depositId: id,
+            });
+          }
         }
       }
 
@@ -329,7 +421,7 @@ export class GovLstProfitabilityEngineWrapper
     }
   }
 
-  private convertToGovLstDeposit(deposit: DatabaseDeposit): GovLstDeposit {
+  private async convertToGovLstDeposit(deposit: DatabaseDeposit): Promise<GovLstDeposit> {
     try {
       // Log the incoming deposit data for debugging
       this.logger.debug('Converting database deposit:', {
@@ -416,10 +508,17 @@ export class GovLstProfitabilityEngineWrapper
           }
         }
       } catch (error) {
-        this.logger.warn('Invalid earning_power format, defaulting to 0:', {
-          deposit_id: deposit.deposit_id,
-          earning_power: deposit.earning_power
-        });
+        if (this.errorLogger) {
+          await this.errorLogger.warn(`Invalid earning_power format, defaulting to 0: ${deposit.earning_power}`, {
+            context: 'convert-deposit',
+            deposit_id: deposit.deposit_id,
+          });
+        } else {
+          this.logger.warn('Invalid earning_power format, defaulting to 0:', {
+            deposit_id: deposit.deposit_id,
+            earning_power: deposit.earning_power
+          });
+        }
         earningPower = BigInt(0);
       }
 
@@ -448,13 +547,21 @@ export class GovLstProfitabilityEngineWrapper
       return govLstDeposit;
     } catch (error) {
       // Log detailed error information
-      this.logger.error('Failed to convert deposit data:', {
-        error: error instanceof Error ? error.message : String(error),
-        deposit_id: deposit.deposit_id,
-        owner_address: deposit.owner_address,
-        amount: deposit.amount,
-        stack: error instanceof Error ? error.stack : undefined
-      });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'convert-deposit',
+          deposit_id: deposit.deposit_id,
+          owner_address: deposit.owner_address ? deposit.owner_address.substring(0, 6) + '...' : undefined
+        });
+      } else {
+        this.logger.error('Failed to convert deposit data:', {
+          error: error instanceof Error ? error.message : String(error),
+          deposit_id: deposit.deposit_id,
+          owner_address: deposit.owner_address,
+          amount: deposit.amount,
+          stack: error instanceof Error ? error.stack : undefined
+        });
+      }
 
       // Re-throw with proper error type
       if (error instanceof InvalidDepositDataError) {
@@ -548,11 +655,19 @@ export class GovLstProfitabilityEngineWrapper
         firstDepositId: firstDeposit.deposit_id.toString(),
       });
     } catch (error) {
-      this.logger.error('Failed to create queue items:', {
-        error: error instanceof Error ? error.message : String(error),
-        depositCount: deposits.length,
-        firstDepositId: deposits[0]?.deposit_id.toString(),
-      });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'create-queue-items',
+          depositCount: deposits.length,
+          firstDepositId: deposits[0]?.deposit_id.toString(),
+        });
+      } else {
+        this.logger.error('Failed to create queue items:', {
+          error: error instanceof Error ? error.message : String(error),
+          depositCount: deposits.length,
+          firstDepositId: deposits[0]?.deposit_id.toString(),
+        });
+      }
       throw error;
     }
   }
@@ -607,7 +722,11 @@ export class GovLstProfitabilityEngineWrapper
       }
 
       // Convert database deposits to GovLstDeposits
-      const govLstDeposits = depositsToCheck.map(deposit => this.convertToGovLstDeposit(deposit));
+      const govLstDeposits = [];
+      for (const deposit of depositsToCheck) {
+        const govLstDeposit = await this.convertToGovLstDeposit(deposit);
+        govLstDeposits.push(govLstDeposit);
+      }
 
       // Use GovLstProfitabilityEngine to analyze deposits
       const analysis = await this.engine.analyzeAndGroupDeposits(govLstDeposits);
@@ -672,26 +791,47 @@ export class GovLstProfitabilityEngineWrapper
             gasEstimate: group.gas_estimate.toString(),
           });
         } catch (error) {
-          this.logger.error('Failed to process profitable group:', {
-            error: error instanceof Error ? error.message : String(error),
-            depositIds: group.deposit_ids.map(String),
-          });
+          if (this.errorLogger) {
+            await this.errorLogger.error(error as Error, {
+              context: 'process-profitable-group',
+              depositIds: group.deposit_ids.map(String),
+            });
+          } else {
+            this.logger.error('Failed to process profitable group:', {
+              error: error instanceof Error ? error.message : String(error),
+              depositIds: group.deposit_ids.map(String),
+            });
+          }
           // Continue with next group
         }
       }
     } catch (error) {
-      if (error instanceof InvalidDepositDataError) {
-        this.logger.error('Invalid deposit data encountered:', {
-          error: error.message,
-          context: error.context,
-          retryable: error.retryable
-        });
+      if (this.errorLogger) {
+        if (error instanceof InvalidDepositDataError) {
+          await this.errorLogger.error(error, {
+            context: 'check-process-rewards-invalid-deposit',
+            retryable: error.retryable
+          });
+        } else {
+          await this.errorLogger.error(error as Error, {
+            context: 'check-process-rewards',
+            type: error instanceof Error ? error.constructor.name : typeof error,
+          });
+        }
       } else {
-        this.logger.error('Error in reward check cycle:', {
-          error: error instanceof Error ? error.message : String(error),
-          type: error instanceof Error ? error.constructor.name : typeof error,
-          stack: error instanceof Error ? error.stack : undefined
-        });
+        if (error instanceof InvalidDepositDataError) {
+          this.logger.error('Invalid deposit data encountered:', {
+            error: error.message,
+            context: error.context,
+            retryable: error.retryable
+          });
+        } else {
+          this.logger.error('Error in reward check cycle:', {
+            error: error instanceof Error ? error.message : String(error),
+            type: error instanceof Error ? error.constructor.name : typeof error,
+            stack: error instanceof Error ? error.stack : undefined
+          });
+        }
       }
       
       // Continue to next cycle

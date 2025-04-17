@@ -20,7 +20,6 @@ import {
 import { EXECUTOR } from '@/configuration/constants';
 import {
   TransactionQueueStatus,
-  ProcessingQueueStatus,
 } from '@/database/interfaces/types';
 import {
   ContractMethodError,
@@ -31,16 +30,17 @@ import {
   TransactionReceiptError,
   TransactionValidationError,
   createExecutorError,
+  BaseError,
 } from '@/configuration/errors';
 import { CONFIG } from '@/configuration';
 import {
   calculateGasLimit,
   pollForReceipt,
   validateTransaction,
-  extractQueueItemInfo,
   calculateQueueStats,
 } from '@/configuration/helpers';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
+import { ErrorLogger, createErrorLogger } from '@/configuration/errorLogger';
 
 // Local constants used in this file
 const RELAYER_EVENTS = {
@@ -94,6 +94,7 @@ interface GasEstimationError extends Error {
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
+  private errorLogger: ErrorLogger;
   protected readonly queue: Map<string, QueuedTransaction>;
   protected readonly relayProvider: DefenderRelayProvider;
   protected readonly relaySigner: DefenderRelaySigner;
@@ -118,12 +119,15 @@ export class RelayerExecutor implements IExecutor {
     protected readonly config: RelayerExecutorConfig,
   ) {
     this.logger = new ConsoleLogger('info');
+    this.errorLogger = createErrorLogger('RelayerExecutor');
     this.queue = new Map();
     this.isRunning = false;
     this.processingInterval = null;
 
     if (!provider) {
-      throw new ExecutorError('Provider is required', {}, false);
+      const error = new ExecutorError('Provider is required', {}, false);
+      this.errorLogger.error(error, { stage: 'initialization' });
+      throw error;
     }
 
     // Set default maxQueueSize if not provided
@@ -153,17 +157,21 @@ export class RelayerExecutor implements IExecutor {
         this.relaySigner as unknown as ethers.Signer,
       ) as typeof this.lstContract;
     } catch (error) {
-      this.logger.error('Failed to initialize Defender SDK:', { error });
-      throw new ExecutorError(
+      const executorError = new ExecutorError(
         'Failed to initialize Defender SDK',
         { error: error instanceof Error ? error.message : String(error) },
         false,
       );
+      this.logger.error('Failed to initialize Defender SDK:', { error });
+      this.errorLogger.error(executorError);
+      throw executorError;
     }
 
     // Validate LST contract
     if (!this.lstContract.interface.hasFunction('claimAndDistributeReward')) {
-      throw new ContractMethodError('claimAndDistributeReward');
+      const error = new ContractMethodError('claimAndDistributeReward');
+      this.errorLogger.error(error, { contractAddress: lstContract.target });
+      throw error;
     }
 
     this.gasCostEstimator = new GasCostEstimator();
@@ -173,6 +181,9 @@ export class RelayerExecutor implements IExecutor {
   setDatabase(db: DatabaseWrapper): void {
     this.db = db;
     this.logger.info('Database set for executor');
+    // Update the errorLogger with the database
+    this.errorLogger = createErrorLogger('RelayerExecutor', db);
+    this.errorLogger.info('ErrorLogger initialized with database');
   }
 
   async start(): Promise<void> {
@@ -182,6 +193,7 @@ export class RelayerExecutor implements IExecutor {
 
     this.isRunning = true;
     this.startQueueProcessor();
+    this.errorLogger.info('RelayerExecutor started');
   }
 
   async stop(): Promise<void> {
@@ -191,6 +203,7 @@ export class RelayerExecutor implements IExecutor {
 
     this.isRunning = false;
     this.stopQueueProcessor();
+    this.errorLogger.info('RelayerExecutor stopped');
   }
 
   async getStatus(): Promise<{
@@ -220,13 +233,21 @@ export class RelayerExecutor implements IExecutor {
     txData?: string,
   ): Promise<QueuedTransaction> {
     if (!this.isRunning) {
-      throw new ExecutorError('Executor is not running', {}, false);
+      const error = new ExecutorError('Executor is not running', {}, false);
+      this.errorLogger.error(error, { stage: 'queueTransaction' });
+      throw error;
     }
 
     if (this.queue.size >= this.config.maxQueueSize) {
-      throw new QueueOperationError('queue', new Error('Queue is full'), {
+      const error = new QueueOperationError('queue', new Error('Queue is full'), {
         maxSize: this.config.maxQueueSize,
       });
+      this.errorLogger.error(error, { 
+        stage: 'queueTransaction', 
+        queueSize: this.queue.size,
+        maxQueueSize: this.config.maxQueueSize
+      });
+      throw error;
     }
 
     // Check if any of the deposit IDs are being cleaned up
@@ -234,6 +255,9 @@ export class RelayerExecutor implements IExecutor {
     const isCleaningUp = depositIdStrings.some(id => this.cleanupInProgress.has(id));
     if (isCleaningUp) {
       this.logger.info('Skipping queue transaction - cleanup in progress:', {
+        depositIds: depositIdStrings
+      });
+      this.errorLogger.info('Skipping queue transaction - cleanup in progress', {
         depositIds: depositIdStrings
       });
       return {
@@ -253,6 +277,10 @@ export class RelayerExecutor implements IExecutor {
       profitability,
     );
     if (!isValid) {
+      this.errorLogger.error(error || new Error('Unknown validation error'), {
+        stage: 'validateTransaction',
+        depositIds: depositIds.map(String)
+      });
       throw error;
     }
 
@@ -267,6 +295,12 @@ export class RelayerExecutor implements IExecutor {
 
     this.queue.set(tx.id, tx);
     this.logger.info(RELAYER_EVENTS.TRANSACTION_QUEUED, {
+      id: tx.id,
+      depositCount: depositIds.length,
+      totalShares: profitability.estimates.total_shares.toString(),
+      expectedProfit: profitability.estimates.expected_profit.toString(),
+    });
+    this.errorLogger.info(`Transaction queued: ${tx.id}`, {
       id: tx.id,
       depositCount: depositIds.length,
       totalShares: profitability.estimates.total_shares.toString(),
@@ -426,7 +460,7 @@ export class RelayerExecutor implements IExecutor {
     const balance = await this.relayProvider.getBalance(this.config.address);
     const balanceBigInt = BigInt(balance.toString());
 
-    if (balanceBigInt < this.config.transferOutThreshold) {
+    if (balanceBigInt < this.config.minBalance) {
       return null;
     }
 
@@ -566,7 +600,9 @@ export class RelayerExecutor implements IExecutor {
 
     try {
       if (!this.relayProvider) {
-        throw new ExecutorError('Relay provider not initialized', {}, false);
+        const error = new ExecutorError('Relay provider not initialized', {}, false);
+        this.errorLogger.error(error, { stage: 'processQueue' });
+        throw error;
       }
 
       // Check and wait for balance recovery
@@ -581,6 +617,13 @@ export class RelayerExecutor implements IExecutor {
 
           if (queuedTxs.length > 0) {
             this.logger.warn(
+              'Clearing stuck transactions due to insufficient balance',
+              {
+                queuedTransactions: queuedTxs.length,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+            this.errorLogger.warn(
               'Clearing stuck transactions due to insufficient balance',
               {
                 queuedTransactions: queuedTxs.length,
@@ -603,12 +646,30 @@ export class RelayerExecutor implements IExecutor {
                         : String(cleanupError),
                     txId: tx.id,
                   });
+                  this.errorLogger.error(
+                    cleanupError instanceof Error 
+                      ? cleanupError 
+                      : new Error(String(cleanupError)), 
+                    {
+                      stage: 'cleanupStuckTransaction',
+                      txId: tx.id,
+                    }
+                  );
                 }
               }),
             );
           }
+          this.errorLogger.error(error, { 
+            stage: 'processQueue',
+            balance: error instanceof InsufficientBalanceError ? error.context.currentBalance : 'unknown',
+            required: error instanceof InsufficientBalanceError ? error.context.requiredBalance : 'unknown'
+          });
           throw error;
         }
+        this.errorLogger.error(
+          error instanceof Error ? error : new Error(String(error)), 
+          { stage: 'processQueue' }
+        );
         throw error;
       }
 
@@ -616,11 +677,17 @@ export class RelayerExecutor implements IExecutor {
         (tx) => tx.status === TransactionStatus.PENDING,
       );
       if (pendingTxs.length >= this.config.maxPendingTransactions) {
-        throw new QueueOperationError(
+        const error = new QueueOperationError(
           'queue',
           new Error('Max pending transactions reached'),
-          { maxPending: this.config.maxPendingTransactions },
+          { maxPending: this.config.maxPendingTransactions }
         );
+        this.errorLogger.error(error, { 
+          stage: 'processQueue',
+          pendingCount: pendingTxs.length,
+          maxPending: this.config.maxPendingTransactions
+        });
+        throw error;
       }
 
       const queuedTxs = Array.from(this.queue.values())
@@ -644,21 +711,42 @@ export class RelayerExecutor implements IExecutor {
         ...executorError,
         ...executorError.context,
       });
+      this.errorLogger.error(executorError, {
+        stage: 'processQueue',
+        isPeriodicCheck,
+        queueSize: this.queue.size,
+      });
     }
   }
 
   protected async executeTransaction(tx: QueuedTransaction): Promise<void> {
+    // Log transaction execution start
+    this.errorLogger.info(`Starting transaction execution: ${tx.id}`, {
+      txId: tx.id,
+      depositCount: tx.depositIds.length,
+      depositIds: tx.depositIds.map(String),
+      expectedProfit: tx.profitability.estimates.expected_profit.toString()
+    });
+    
     try {
       if (!this.lstContract) {
-        throw new ExecutorError('LST contract not initialized', {}, false);
+        const error = new ExecutorError('LST contract not initialized', {}, false);
+        this.errorLogger.error(error, { stage: 'executeTransaction', txId: tx.id });
+        throw error;
       }
 
       if (!this.lstContract.REWARD_TOKEN) {
-        throw new ExecutorError(
+        const error = new ExecutorError(
           'LST contract missing REWARD_TOKEN method',
           {},
           false,
         );
+        this.errorLogger.error(error, { 
+          stage: 'executeTransaction', 
+          txId: tx.id,
+          contractAddress: this.lstContract.target?.toString() 
+        });
+        throw error;
       }
 
       tx.status = TransactionStatus.PENDING;
@@ -677,6 +765,14 @@ export class RelayerExecutor implements IExecutor {
             error: error instanceof Error ? error.message : String(error),
             txData: tx.tx_data,
           });
+          this.errorLogger.error(
+            error instanceof Error ? error : new Error(`Failed to parse txData: ${String(error)}`),
+            {
+              stage: 'executeTransaction',
+              txId: tx.id,
+              txData: tx.tx_data
+            }
+          );
         }
       }
 
@@ -686,27 +782,49 @@ export class RelayerExecutor implements IExecutor {
           await this.db.updateTransactionQueueItem(queueItemId, {
             status: TransactionQueueStatus.PENDING,
           });
+          this.errorLogger.info(`Updated transaction queue item status to PENDING: ${queueItemId}`, {
+            txId: tx.id,
+            queueItemId
+          });
         } catch (error) {
           this.logger.error('Failed to update transaction queue item status', {
             error: error instanceof Error ? error.message : String(error),
             queueItemId,
           });
+          this.errorLogger.error(
+            error instanceof Error ? error : new Error(`Failed to update queue item status: ${String(error)}`),
+            {
+              stage: 'executeTransaction',
+              txId: tx.id,
+              queueItemId
+            }
+          );
         }
       }
 
       // Get reward token and approve if needed
       const rewardTokenAddress = await this.lstContract.REWARD_TOKEN();
       if (!rewardTokenAddress) {
-        throw new ExecutorError(
+        const error = new ExecutorError(
           'Failed to get reward token address',
           {},
           false,
         );
+        this.errorLogger.error(error, {
+          stage: 'executeTransaction',
+          txId: tx.id,
+          contractAddress: this.lstContract.target?.toString()
+        });
+        throw error;
       }
 
       this.logger.info('Retrieved reward token address', {
         rewardTokenAddress,
         contractAddress: this.lstContract.target.toString(),
+      });
+      this.errorLogger.info(`Retrieved reward token address: ${rewardTokenAddress}`, {
+        txId: tx.id, 
+        contractAddress: this.lstContract.target.toString()
       });
 
       const rewardTokenAbi = [
@@ -732,8 +850,16 @@ export class RelayerExecutor implements IExecutor {
         // Get payout amount first to check against allowance
         let payoutAmount: bigint;
         try {
-          if (typeof this.lstContract.payoutAmount !== 'function')
-            throw new ContractMethodError('payoutAmount');
+          if (typeof this.lstContract.payoutAmount !== 'function') {
+            const error = new ContractMethodError('payoutAmount');
+            this.errorLogger.error(error, {
+              stage: 'executeTransaction',
+              txId: tx.id,
+              contractAddress: this.lstContract.target?.toString()
+            });
+            throw error;
+          }
+          
           const rawPayoutAmount = await this.lstContract.payoutAmount();
           this.logger.info('Raw payout amount details:', {
             value: rawPayoutAmount,
@@ -746,10 +872,20 @@ export class RelayerExecutor implements IExecutor {
             value: payoutAmount.toString(),
             type: typeof payoutAmount,
           });
+          this.errorLogger.info(`Retrieved payout amount: ${payoutAmount.toString()}`, {
+            txId: tx.id
+          });
         } catch (error) {
           this.logger.error('Failed to get payout amount for allowance check', {
             error: error instanceof Error ? error.message : String(error),
           });
+          this.errorLogger.error(
+            error instanceof Error ? error : new Error(`Failed to get payout amount: ${String(error)}`),
+            {
+              stage: 'executeTransaction_payoutAmount',
+              txId: tx.id
+            }
+          );
           throw new ContractMethodError('payoutAmount');
         }
 
@@ -762,6 +898,12 @@ export class RelayerExecutor implements IExecutor {
           lstContractAddress,
           rewardToken: rewardTokenAddress,
         });
+        this.errorLogger.info(`Checking token allowance for ${signerAddress}`, {
+          txId: tx.id,
+          signerAddress,
+          lstContractAddress,
+          rewardToken: rewardTokenAddress
+        });
 
         const allowance = BigInt(
           await rewardTokenContract.allowance(
@@ -773,6 +915,10 @@ export class RelayerExecutor implements IExecutor {
         this.logger.info('Current allowance', {
           allowance: allowance.toString(),
           payoutAmount: payoutAmount.toString(),
+        });
+        this.errorLogger.info(`Current allowance: ${allowance.toString()}`, {
+          txId: tx.id,
+          payoutAmount: payoutAmount.toString()
         });
 
         // Use approval amount from config
@@ -787,6 +933,12 @@ export class RelayerExecutor implements IExecutor {
             payoutAmount: payoutAmount.toString(),
             approvalAmount: approvalAmount.toString(),
           });
+          this.errorLogger.info(`Approving reward token spend: ${approvalAmount.toString()}`, {
+            txId: tx.id,
+            token: rewardTokenAddress,
+            spender: lstContractAddress,
+            currentAllowance: allowance.toString()
+          });
 
           const approveTx = await rewardTokenContract.approve(
             lstContractAddress,
@@ -796,6 +948,10 @@ export class RelayerExecutor implements IExecutor {
           this.logger.info('Approval transaction submitted', {
             hash: approveTx.hash,
             gasLimit: approveTx.gasLimit.toString(),
+          });
+          this.errorLogger.info(`Approval transaction submitted: ${approveTx.hash}`, {
+            txId: tx.id,
+            gasLimit: approveTx.gasLimit.toString()
           });
 
           // Wait for the transaction to be mined
@@ -822,6 +978,14 @@ export class RelayerExecutor implements IExecutor {
                     ? confirmError.constructor?.name || 'Unknown'
                     : typeof confirmError,
               });
+              this.errorLogger.warn(
+                confirmError instanceof Error ? confirmError : new Error(`Standard wait for approval failed: ${String(confirmError)}`),
+                {
+                  stage: 'executeTransaction_approvalWait',
+                  txId: tx.id,
+                  hash: approveTx.hash
+                }
+              );
 
               this.logger.info(
                 'Continuing execution despite wait error - approval may still have succeeded',
@@ -842,6 +1006,10 @@ export class RelayerExecutor implements IExecutor {
               hash: approveTx.hash,
               blockNumber: receipt?.blockNumber,
             });
+            this.errorLogger.info(`Approval transaction confirmed: ${approveTx.hash}`, {
+              txId: tx.id,
+              blockNumber: receipt?.blockNumber?.toString() || 'unknown'
+            });
           } catch (waitError) {
             this.logger.error('Failed waiting for approval transaction', {
               error:
@@ -850,6 +1018,14 @@ export class RelayerExecutor implements IExecutor {
                   : String(waitError),
               hash: approveTx.hash,
             });
+            this.errorLogger.error(
+              waitError instanceof Error ? waitError : new Error(`Failed waiting for approval transaction: ${String(waitError)}`),
+              {
+                stage: 'executeTransaction_approvalConfirmation',
+                txId: tx.id,
+                hash: approveTx.hash
+              }
+            );
             throw new ExecutorError(
               'Failed waiting for approval confirmation',
               {
@@ -869,6 +1045,15 @@ export class RelayerExecutor implements IExecutor {
           rewardToken: rewardTokenAddress,
           contractAddress: this.lstContract.target.toString(),
         });
+        this.errorLogger.error(
+          error instanceof Error ? error : new Error(`Token approval error: ${String(error)}`),
+          {
+            stage: 'executeTransaction_tokenApproval',
+            txId: tx.id,
+            rewardToken: rewardTokenAddress,
+            contractAddress: this.lstContract.target.toString()
+          }
+        );
         throw new ExecutorError(
           'Failed to approve reward token spend',
           { error: error instanceof Error ? error.message : String(error) },
@@ -880,8 +1065,15 @@ export class RelayerExecutor implements IExecutor {
       let payoutAmount: bigint = BigInt(0);
       try {
         // Verify the contract has the payoutAmount method
-        if (typeof this.lstContract.payoutAmount !== 'function')
-          throw new ContractMethodError('getPayoutAmount');
+        if (typeof this.lstContract.payoutAmount !== 'function') {
+          const error = new ContractMethodError('getPayoutAmount');
+          this.errorLogger.error(error, {
+            stage: 'executeTransaction_payoutAmount',
+            txId: tx.id,
+            contractAddress: this.lstContract.target?.toString()
+          });
+          throw error;
+        }
 
         const rawPayoutAmount = await this.lstContract.payoutAmount();
         this.logger.info('Raw payout amount details:', {
@@ -924,12 +1116,13 @@ export class RelayerExecutor implements IExecutor {
         });
 
         if (typeof profitMargin !== 'number' || isNaN(profitMargin)) {
-          this.logger.error('Invalid profit margin configuration:', {
-            value: profitMargin,
-            type: typeof profitMargin,
-            config: CONFIG.profitability.minProfitMargin,
+          const error = new Error(`Invalid profit margin value: ${profitMargin}`);
+          this.errorLogger.error(error, {
+            stage: 'executeTransaction_profitMargin',
+            txId: tx.id,
+            profitMargin
           });
-          throw new Error(`Invalid profit margin value: ${profitMargin}`);
+          throw error;
         }
 
         const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
@@ -964,6 +1157,12 @@ export class RelayerExecutor implements IExecutor {
             profitMarginAmount: profitMarginAmount.toString(),
           },
         });
+        this.errorLogger.info(`Calculated optimal threshold: ${optimalThreshold.toString()}`, {
+          txId: tx.id,
+          payoutAmount: payoutAmount.toString(),
+          gasCost: gasCost.toString(),
+          profitMarginAmount: profitMarginAmount.toString()
+        });
 
         this.logger.info('Calculated optimal threshold:', {
           payoutAmount: ethers.formatEther(payoutAmount),
@@ -979,7 +1178,7 @@ export class RelayerExecutor implements IExecutor {
 
         // Validate that optimal threshold is sufficient
         if (optimalThreshold <= payoutAmount) {
-          throw new TransactionValidationError(
+          const error = new TransactionValidationError(
             'Optimal threshold is less than or equal to payout amount',
             {
               optimalThreshold: optimalThreshold.toString(),
@@ -987,6 +1186,11 @@ export class RelayerExecutor implements IExecutor {
               depositIds: tx.depositIds.map(String),
             },
           );
+          this.errorLogger.error(error, {
+            stage: 'executeTransaction_thresholdValidation',
+            txId: tx.id
+          });
+          throw error;
         }
 
         const depositIds = tx.depositIds;
@@ -1003,10 +1207,23 @@ export class RelayerExecutor implements IExecutor {
           maxPriorityFeePerGas = feeData.maxPriorityFeePerGas
             ? BigInt(feeData.maxPriorityFeePerGas.toString())
             : undefined;
+            
+          this.errorLogger.info('Retrieved network fee data', {
+            txId: tx.id,
+            maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
+            maxPriorityFeePerGas: maxPriorityFeePerGas?.toString() || 'undefined'
+          });
         } catch (error) {
           this.logger.error('Failed to get fee data', {
             error: error instanceof Error ? error.message : String(error),
           });
+          this.errorLogger.error(
+            error instanceof Error ? error : new Error(`Failed to get fee data: ${String(error)}`),
+            {
+              stage: 'executeTransaction_feeData',
+              txId: tx.id
+            }
+          );
         }
 
         // Get the relayer's address for reward recipient
@@ -1014,7 +1231,13 @@ export class RelayerExecutor implements IExecutor {
 
         // Verify the contract has the claimAndDistributeReward method
         if (typeof this.lstContract.claimAndDistributeReward !== 'function') {
-          throw new ContractMethodError('claimAndDistributeReward');
+          const error = new ContractMethodError('claimAndDistributeReward');
+          this.errorLogger.error(error, {
+            stage: 'executeTransaction_contractMethod',
+            txId: tx.id,
+            contractAddress: this.lstContract.target?.toString()
+          });
+          throw error;
         }
 
         // Log transaction parameters before execution
@@ -1023,6 +1246,12 @@ export class RelayerExecutor implements IExecutor {
           minExpectedReward: optimalThreshold.toString(),
           depositIds: depositIds.map((id) => id.toString()),
           gasEstimate: tx.profitability.estimates.gas_estimate.toString(),
+        });
+        this.errorLogger.info(`Executing claimAndDistributeReward for ${depositIds.length} deposits`, {
+          txId: tx.id,
+          recipient: signerAddress,
+          minExpectedReward: optimalThreshold.toString(),
+          depositIds: depositIds.map((id) => id.toString())
         });
 
         // Calculate gas limit with extra buffer for complex operations
@@ -1039,6 +1268,12 @@ export class RelayerExecutor implements IExecutor {
           baseGasLimit: baseGasLimit.toString(),
           finalGasLimit: calculatedGasLimit.toString(),
           depositCount: depositIds.length,
+        });
+        this.errorLogger.info(`Calculated gas limit: ${calculatedGasLimit.toString()}`, {
+          txId: tx.id,
+          originalEstimate: gasEstimate.toString(),
+          baseGasLimit: baseGasLimit.toString(),
+          depositCount: depositIds.length
         });
 
         // Store depositIds in tx object for later use in receipt processing
@@ -1080,6 +1315,13 @@ export class RelayerExecutor implements IExecutor {
                 this.logger.error('Failed to get network diagnostics:', {
                   error: e,
                 });
+                this.errorLogger.error(
+                  e instanceof Error ? e : new Error(`Failed to get network diagnostics: ${String(e)}`),
+                  {
+                    stage: 'executeTransaction_networkDiagnostics',
+                    txId: tx.id
+                  }
+                );
                 return [null, null, null];
               });
 
@@ -1128,15 +1370,38 @@ export class RelayerExecutor implements IExecutor {
                   gasPolicyConfig: this.config.gasPolicy,
                 },
               });
+              this.errorLogger.error(
+                new Error(`Defender Relayer 400 Error: ${defenderError.message}`),
+                {
+                  stage: 'executeTransaction_defender400',
+                  txId: tx.id,
+                  responseStatus: defenderError.response?.status,
+                  responseData: JSON.stringify(defenderError.response?.data),
+                  currentBlock: blockNumber,
+                  balance: balance?.toString(),
+                  networkGasPrice: JSON.stringify({
+                    maxFeePerGas: networkGasPrice?.maxFeePerGas?.toString(),
+                    maxPriorityFeePerGas: networkGasPrice?.maxPriorityFeePerGas?.toString(),
+                    gasPrice: networkGasPrice?.gasPrice?.toString(),
+                  })
+                }
+              );
 
               // Check specific conditions that might cause 400 errors
               if (balance) {
                 const balanceBigInt = BigInt(balance.toString());
                 if (balanceBigInt < this.config.minBalance) {
-                  throw new InsufficientBalanceError(
+                  const insufficientBalanceError = new InsufficientBalanceError(
                     balanceBigInt,
                     this.config.minBalance,
                   );
+                  this.errorLogger.error(insufficientBalanceError, {
+                    stage: 'executeTransaction_insufficientBalance',
+                    txId: tx.id,
+                    balance: balanceBigInt.toString(),
+                    minBalance: this.config.minBalance.toString()
+                  });
+                  throw insufficientBalanceError;
                 }
               }
 
@@ -1162,13 +1427,21 @@ export class RelayerExecutor implements IExecutor {
                       message: estimateError.message,
                       data: estimateError.data,
                     });
+                    this.errorLogger.error(
+                      estimateError instanceof Error ? estimateError : new Error(`Gas estimation failed: ${String(estimateError)}`),
+                      {
+                        stage: 'executeTransaction_gasEstimation',
+                        txId: tx.id,
+                        data: JSON.stringify(estimateError.data)
+                      }
+                    );
                     return null;
                   });
 
                 if (estimatedGas) {
                   const estimatedGasBigInt = BigInt(estimatedGas.toString());
                   if (estimatedGasBigInt > calculatedGasLimit) {
-                    throw new ExecutorError(
+                    const gasLimitError = new ExecutorError(
                       'Estimated gas exceeds calculated limit',
                       {
                         estimatedGas: estimatedGasBigInt.toString(),
@@ -1179,6 +1452,11 @@ export class RelayerExecutor implements IExecutor {
                       },
                       true,
                     );
+                    this.errorLogger.error(gasLimitError, {
+                      stage: 'executeTransaction_gasLimitExceeded',
+                      txId: tx.id
+                    });
+                    throw gasLimitError;
                   }
                 }
               } catch (gasError) {
@@ -1193,6 +1471,15 @@ export class RelayerExecutor implements IExecutor {
                     depositIds: depositIds.map(String),
                   },
                 });
+                this.errorLogger.error(
+                  gasError instanceof Error ? gasError : new Error(`Gas estimation error: ${String(gasError)}`),
+                  {
+                    stage: 'executeTransaction_gasError',
+                    txId: tx.id,
+                    recipient: signerAddress,
+                    depositIds: depositIds.map(String).join(',')
+                  }
+                );
               }
 
               if (networkGasPrice?.maxFeePerGas && maxFeePerGas) {
@@ -1200,7 +1487,7 @@ export class RelayerExecutor implements IExecutor {
                   networkGasPrice.maxFeePerGas.toString(),
                 );
                 if (networkMaxFee > maxFeePerGas) {
-                  throw new ExecutorError(
+                  const gasPriceError = new ExecutorError(
                     'Network gas price exceeds configured maximum',
                     {
                       networkMaxFee: networkMaxFee.toString(),
@@ -1209,6 +1496,11 @@ export class RelayerExecutor implements IExecutor {
                     },
                     true,
                   );
+                  this.errorLogger.error(gasPriceError, {
+                    stage: 'executeTransaction_gasPriceExceeded',
+                    txId: tx.id
+                  });
+                  throw gasPriceError;
                 }
               }
 
@@ -1217,20 +1509,33 @@ export class RelayerExecutor implements IExecutor {
               if (defenderErrorData) {
                 switch (defenderErrorData.code) {
                   case 'NONCE_TOO_LOW':
-                    throw new ExecutorError(
+                    const nonceError = new ExecutorError(
                       'Nonce too low - transaction would be replaced',
                       {
                         suggestedNonce: defenderErrorData.suggestedNonce,
                       },
                       true,
                     );
+                    this.errorLogger.error(nonceError, {
+                      stage: 'executeTransaction_nonceTooLow',
+                      txId: tx.id,
+                      suggestedNonce: defenderErrorData.suggestedNonce
+                    });
+                    throw nonceError;
                   case 'INSUFFICIENT_FUNDS':
-                    throw new InsufficientBalanceError(
+                    const fundsError = new InsufficientBalanceError(
                       BigInt(balance?.toString() || '0'),
                       this.config.minBalance,
                     );
+                    this.errorLogger.error(fundsError, {
+                      stage: 'executeTransaction_insufficientFunds',
+                      txId: tx.id,
+                      balance: balance?.toString() || '0',
+                      minBalance: this.config.minBalance.toString()
+                    });
+                    throw fundsError;
                   case 'GAS_LIMIT_TOO_LOW':
-                    throw new ExecutorError(
+                    const gasLimitError = new ExecutorError(
                       'Gas limit too low for complex transaction',
                       {
                         providedGasLimit: calculatedGasLimit.toString(),
@@ -1238,8 +1543,15 @@ export class RelayerExecutor implements IExecutor {
                       },
                       true,
                     );
+                    this.errorLogger.error(gasLimitError, {
+                      stage: 'executeTransaction_gasLimitTooLow',
+                      txId: tx.id,
+                      providedGasLimit: calculatedGasLimit.toString(),
+                      suggestedGasLimit: defenderErrorData.suggestedGasLimit
+                    });
+                    throw gasLimitError;
                   default:
-                    throw new ExecutorError(
+                    const defaultError = new ExecutorError(
                       `Defender API Error: ${defenderErrorData.message}`,
                       {
                         code: defenderErrorData.code,
@@ -1247,11 +1559,25 @@ export class RelayerExecutor implements IExecutor {
                       },
                       false,
                     );
+                    this.errorLogger.error(defaultError, {
+                      stage: 'executeTransaction_defenderApiError',
+                      txId: tx.id,
+                      errorCode: defenderErrorData.code
+                    });
+                    throw defaultError;
                 }
               }
             }
 
             // If not a 400 error or no specific error code, throw the original error
+            this.errorLogger.error(
+              error instanceof Error ? error : new Error(`Transaction submission error: ${String(error)}`),
+              {
+                stage: 'executeTransaction_submissionError',
+                txId: tx.id,
+                depositIds: depositIds.map(String).join(',')
+              }
+            );
             throw error;
           });
 
@@ -1261,6 +1587,12 @@ export class RelayerExecutor implements IExecutor {
           gasLimit: response.gasLimit.toString(),
           maxFeePerGas: response.maxFeePerGas?.toString(),
           maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
+        });
+        this.errorLogger.info(`Transaction submitted: ${response.hash}`, {
+          txId: tx.id,
+          hash: response.hash,
+          nonce: response.nonce,
+          gasLimit: response.gasLimit.toString()
         });
 
         // Wait for transaction to be mined
@@ -1274,6 +1606,11 @@ export class RelayerExecutor implements IExecutor {
               this.logger,
               3,
             );
+            this.errorLogger.info(`Transaction receipt received: ${response.hash}`, {
+              txId: tx.id,
+              blockNumber: receipt?.blockNumber?.toString() || 'unknown',
+              status: receipt?.status?.toString() || 'unknown'
+            });
           } catch (confirmError: unknown) {
             // If polling fails, just log the error
             this.logger.warn('Transaction confirmation failed', {
@@ -1287,6 +1624,14 @@ export class RelayerExecutor implements IExecutor {
                   ? confirmError.constructor?.name || 'Unknown'
                   : typeof confirmError,
             });
+            this.errorLogger.warn(
+              confirmError instanceof Error ? confirmError : new Error(`Transaction confirmation failed: ${String(confirmError)}`),
+              {
+                stage: 'executeTransaction_confirmationFailed',
+                txId: tx.id,
+                hash: response.hash
+              }
+            );
 
             this.logger.info(
               'Continuing execution despite confirmation error - transaction may still have succeeded',
@@ -1317,6 +1662,15 @@ export class RelayerExecutor implements IExecutor {
             transactionId: tx.id,
             depositIds: depositIds.map(String),
           });
+          this.errorLogger.error(
+            waitError instanceof Error ? waitError : new Error(`Failed waiting for transaction confirmation: ${String(waitError)}`),
+            {
+              stage: 'executeTransaction_waitError',
+              txId: tx.id,
+              hash: response.hash,
+              depositIds: depositIds.map(String).join(',')
+            }
+          );
           throw new ExecutorError(
             'Failed waiting for transaction confirmation',
             {
@@ -1361,10 +1715,21 @@ export class RelayerExecutor implements IExecutor {
         blockNumber: receipt?.blockNumber,
         gasUsed: receipt?.gasUsed.toString(),
       });
+      this.errorLogger.info(`Transaction confirmed: ${tx.id}`, {
+        id: tx.id,
+        hash: response.hash,
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed.toString(),
+      });
     } else {
       this.logger.warn(RELAYER_EVENTS.TRANSACTION_FAILED, {
         id: tx.id,
         hash: response.hash,
+      });
+      this.errorLogger.warn(`Transaction failed: ${tx.id}`, {
+        id: tx.id,
+        hash: response.hash,
+        receipt: receipt ? JSON.stringify(receipt) : 'null',
       });
     }
 
@@ -1380,11 +1745,19 @@ export class RelayerExecutor implements IExecutor {
   private async cleanupQueueItems(tx: QueuedTransaction, txHash: string): Promise<void> {
     if (!this.db) {
       this.logger.warn('Database not initialized, skipping cleanup');
+      this.errorLogger.warn('Database not initialized, skipping cleanup', {
+        txId: tx.id,
+        txHash
+      });
       return;
     }
 
     if (!tx.depositIds || tx.depositIds.length === 0) {
       this.logger.warn('No deposit IDs in transaction, skipping cleanup');
+      this.errorLogger.warn('No deposit IDs in transaction, skipping cleanup', {
+        txId: tx.id,
+        txHash
+      });
       return;
     }
 
@@ -1398,78 +1771,114 @@ export class RelayerExecutor implements IExecutor {
         return;
       }
 
-      // First try to get queueItemId from tx metadata or tx_data
-      let queueItemId: string | undefined;
-      if (tx.metadata?.queueItemId) {
-        queueItemId = tx.metadata.queueItemId;
-      } else if (tx.tx_data && typeof tx.tx_data === 'string') {
-        try {
-          const txData = JSON.parse(tx.tx_data);
-          queueItemId = txData.queueItemId;
-        } catch (error) {
-          this.logger.warn('Failed to parse tx_data for queueItemId:', {
-            error: error instanceof Error ? error.message : String(error),
-            txData: tx.tx_data
-          });
+      // Mark deposit IDs as being cleaned up
+      const depositIdStrings = tx.depositIds.map(String);
+      depositIdStrings.forEach(id => this.cleanupInProgress.add(id));
+      
+      try {
+        // First try to get queueItemId from tx metadata or tx_data
+        let queueItemId: string | undefined;
+        if (tx.metadata?.queueItemId) {
+          queueItemId = tx.metadata.queueItemId;
+        } else if (tx.tx_data && typeof tx.tx_data === 'string') {
+          try {
+            const txData = JSON.parse(tx.tx_data);
+            queueItemId = txData.queueItemId;
+          } catch (error) {
+            this.logger.warn('Failed to parse tx_data for queueItemId:', {
+              error: error instanceof Error ? error.message : String(error),
+              txData: tx.tx_data
+            });
+            this.errorLogger.warn(
+              error instanceof Error ? error : new Error(`Failed to parse tx_data: ${String(error)}`), 
+              {
+                stage: 'cleanupQueueItems',
+                txId: tx.id,
+                txData: tx.tx_data
+              }
+            );
+          }
         }
-      }
 
-      // If we don't have a queueItemId, try to find it in the database
-      if (!queueItemId) {
-        // Try to find by transaction hash first
-        const itemsByHash = await this.db.getTransactionQueueItemsByHash(txHash);
-        if (itemsByHash.length > 0) {
-          queueItemId = itemsByHash[0]?.id;
-        } else {
-          // Try to find by deposit IDs
-          for (const depositId of tx.depositIds) {
-            const item = await this.db.getTransactionQueueItemByDepositId(depositId.toString());
-            if (item) {
-              queueItemId = item.id;
-              break;
+        // If we don't have a queueItemId, try to find it in the database
+        if (!queueItemId) {
+          // Try to find by transaction hash first
+          const itemsByHash = await this.db.getTransactionQueueItemsByHash(txHash);
+          if (itemsByHash.length > 0) {
+            queueItemId = itemsByHash[0]?.id;
+          } else {
+            // Try to find by deposit IDs
+            for (const depositId of tx.depositIds) {
+              const item = await this.db.getTransactionQueueItemByDepositId(depositId.toString());
+              if (item) {
+                queueItemId = item.id;
+                break;
+              }
             }
           }
         }
-      }
 
-      // If we found a queue item, delete it
-      if (queueItemId) {
-        this.logger.info('Deleting transaction queue item:', {
-          queueItemId,
-          txHash
-        });
-        
-        await this.db.deleteTransactionQueueItem(queueItemId);
-      } else {
-        this.logger.warn('Could not find transaction queue item to delete:', {
-          txHash,
-          depositIds: tx.depositIds.map(String)
-        });
-      }
-
-      // Clean up any associated processing queue items
-      for (const depositId of tx.depositIds) {
-        const processingItem = await this.db.getProcessingQueueItemByDepositId(depositId.toString());
-        if (processingItem) {
-          await this.db.deleteProcessingQueueItem(processingItem.id);
-          this.logger.info('Deleted processing queue item:', {
-            processingItemId: processingItem.id,
-            depositId: depositId.toString()
+        // If we found a queue item, delete it
+        if (queueItemId) {
+          this.logger.info('Deleting transaction queue item:', {
+            queueItemId,
+            txHash
+          });
+          
+          await this.db.deleteTransactionQueueItem(queueItemId);
+          this.errorLogger.info(`Deleted transaction queue item: ${queueItemId}`, {
+            txHash,
+            queueItemId
+          });
+        } else {
+          this.logger.warn('Could not find transaction queue item to delete:', {
+            txHash,
+            depositIds: tx.depositIds.map(String)
+          });
+          this.errorLogger.warn('Could not find transaction queue item to delete', {
+            txHash,
+            depositIds: tx.depositIds.map(String)
           });
         }
-      }
 
+        // Clean up any associated processing queue items
+        for (const depositId of tx.depositIds) {
+          const processingItem = await this.db.getProcessingQueueItemByDepositId(depositId.toString());
+          if (processingItem) {
+            await this.db.deleteProcessingQueueItem(processingItem.id);
+            this.logger.info('Deleted processing queue item:', {
+              processingItemId: processingItem.id,
+              depositId: depositId.toString()
+            });
+            this.errorLogger.info(`Deleted processing queue item: ${processingItem.id}`, {
+              depositId: depositId.toString()
+            });
+          }
+        }
+      } finally {
+        // Always remove from cleanupInProgress set, even if there was an error
+        depositIdStrings.forEach(id => this.cleanupInProgress.delete(id));
+      }
     } catch (error) {
       this.logger.error('Failed to delete confirmed transaction:', {
         error: error instanceof Error ? error.message : String(error),
         txHash,
         stack: error instanceof Error ? error.stack : undefined
       });
+      this.errorLogger.error(
+        error instanceof Error ? error : new Error(`Failed to delete confirmed transaction: ${String(error)}`),
+        {
+          stage: 'cleanupQueueItems',
+          txHash,
+          txId: tx.id,
+          depositIds: tx.depositIds.map(String)
+        }
+      );
       throw error;
     }
   }
 
-  // Update handleExecutionError to use the same cleanup logic
+  // Update handleExecutionError to use errorLogger
   private async handleExecutionError(
     tx: QueuedTransaction,
     error: unknown,
@@ -1490,6 +1899,17 @@ export class RelayerExecutor implements IExecutor {
       ...executorError,
       ...executorError.context,
     });
+    
+    // Log with errorLogger
+    this.errorLogger.error(
+      error instanceof BaseError ? error : executorError,
+      {
+        stage: 'executeTransaction',
+        txId: tx.id,
+        depositIds: tx.depositIds.map(String),
+        originalError: error instanceof Error ? error.message : String(error),
+      }
+    );
 
     // Clean up queue items using the same method
     await this.cleanupQueueItems(tx, tx.hash || '');
