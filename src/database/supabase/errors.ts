@@ -21,7 +21,7 @@ export async function createErrorLog(errorLog: ErrorLog): Promise<ErrorLog> {
 
   if (error) throw error;
   if (!data) throw new Error('Failed to create error log');
-  
+
   return data;
 }
 
@@ -30,7 +30,7 @@ export async function createErrorLog(errorLog: ErrorLog): Promise<ErrorLog> {
  */
 export async function getErrorLogs(
   limit = 50,
-  offset = 0
+  offset = 0,
 ): Promise<ErrorLog[]> {
   const client = supabase();
   if (!client) {
@@ -53,7 +53,7 @@ export async function getErrorLogs(
 export async function getErrorLogsByService(
   serviceName: string,
   limit = 50,
-  offset = 0
+  offset = 0,
 ): Promise<ErrorLog[]> {
   const client = supabase();
   if (!client) {
@@ -77,7 +77,7 @@ export async function getErrorLogsByService(
 export async function getErrorLogsBySeverity(
   severity: string,
   limit = 50,
-  offset = 0
+  offset = 0,
 ): Promise<ErrorLog[]> {
   const client = supabase();
   if (!client) {
@@ -106,4 +106,4 @@ export async function deleteErrorLog(id: string): Promise<void> {
 
   const { error } = await client.from('errors').delete().eq('id', id);
   if (error) throw error;
-} 
+}

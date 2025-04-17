@@ -230,7 +230,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
             depositor: deposit.depositor_address,
             owner: deposit.owner_address,
           });
-          
+
           if (this.errorLogger) {
             await this.errorLogger.error(error as Error, {
               context: 'checkGroupProfitability',
@@ -239,7 +239,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
               owner: deposit.owner_address,
             });
           }
-          
+
           throw error;
         }
       }
@@ -340,7 +340,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
 
     const errorMessage = `${context} failed after ${maxRetries} attempts: ${lastError?.message}`;
-    
+
     if (this.errorLogger) {
       await this.errorLogger.error(new Error(errorMessage), {
         context,
@@ -348,7 +348,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         method: 'getContractDataWithRetry',
       });
     }
-    
+
     throw new Error(errorMessage);
   }
 
@@ -371,7 +371,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         shares_of: BigInt(deposit.amount), // Default to amount if not specified
         payout_amount: BigInt(0), // Will be set during processing
         rewards: BigInt(0), // Will be calculated
-        earning_power: deposit.earning_power ? BigInt(deposit.earning_power) : BigInt(0),
+        earning_power: deposit.earning_power
+          ? BigInt(deposit.earning_power)
+          : BigInt(0),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -387,7 +389,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
   }
 
-  async analyzeAndGroupDeposits(deposits: GovLstDeposit[]): Promise<GovLstBatchAnalysis> {
+  async analyzeAndGroupDeposits(
+    deposits: GovLstDeposit[],
+  ): Promise<GovLstBatchAnalysis> {
     try {
       if (!deposits.length) return this.createEmptyBatchAnalysis();
 
@@ -396,7 +400,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       });
 
       // Convert any string values to BigInt if needed
-      const normalizedDeposits = deposits.map(deposit => {
+      const normalizedDeposits = deposits.map((deposit) => {
         if (typeof deposit.deposit_id === 'string') {
           return this.convertDatabaseDeposit({
             deposit_id: deposit.deposit_id,
@@ -513,11 +517,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       };
 
       this.logger.error('Failed to analyze and group deposits:', errorContext);
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, errorContext);
       }
-      
+
       throw new QueueProcessingError(error as Error, errorContext);
     }
   }
@@ -561,8 +565,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         await this.errorLogger.error(error as Error, {
           context: 'isActiveBinReady',
           method: 'GovLstProfitabilityEngine.isActiveBinReady',
-          activeBin: this.activeBin 
-            ? { depositCount: this.activeBin.deposit_ids.length } 
+          activeBin: this.activeBin
+            ? { depositCount: this.activeBin.deposit_ids.length }
             : null,
         });
       }
@@ -629,8 +633,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         await this.errorLogger.error(error as Error, {
           context: 'calculateActiveBinProfitability',
           method: 'GovLstProfitabilityEngine.calculateActiveBinProfitability',
-          activeBin: this.activeBin 
-            ? { depositCount: this.activeBin.deposit_ids.length } 
+          activeBin: this.activeBin
+            ? { depositCount: this.activeBin.deposit_ids.length }
             : null,
         });
       }
@@ -737,7 +741,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
                 method: 'batchFetchUnclaimedRewards',
               });
             }
-            
+
             if (attempt === maxRetries - 1) throw error;
             this.logger.warn('Error fetching rewards, retrying...', {
               attempt: attempt + 1,
@@ -785,7 +789,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           depositCount: depositIds.length,
         });
       }
-      
+
       throw new BatchFetchError(error as Error, {
         depositCount: depositIds.length,
         operation: 'batch_fetch_rewards',
@@ -829,11 +833,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         lastUpdateTimestamp: this.lastUpdateTimestamp,
         method: 'getGasPriceWithBuffer',
       };
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, errorContext);
       }
-      
+
       throw new GasEstimationError(error as Error, errorContext);
     }
   }

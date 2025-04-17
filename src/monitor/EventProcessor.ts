@@ -69,14 +69,14 @@ export class EventProcessor {
         depositId: event.depositId,
         amount: event.amount.toString(),
       };
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'process-stake-deposited',
-          ...context
+          ...context,
         });
       }
-      
+
       throw new EventProcessingError(
         EVENT_TYPES.STAKE_DEPOSITED,
         error as Error,
@@ -114,14 +114,14 @@ export class EventProcessor {
         depositId: event.depositId,
         withdrawnAmount: event.withdrawnAmount.toString(),
       };
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'process-stake-withdrawn',
-          ...context
+          ...context,
         });
       }
-      
+
       throw new EventProcessingError(
         EVENT_TYPES.STAKE_WITHDRAWN,
         error as Error,
@@ -156,14 +156,14 @@ export class EventProcessor {
         oldDelegatee: event.oldDelegatee,
         newDelegatee: event.newDelegatee,
       };
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'process-delegatee-altered',
-          ...context
+          ...context,
         });
       }
-      
+
       throw new EventProcessingError(
         EVENT_TYPES.DELEGATEE_ALTERED,
         error as Error,
@@ -231,14 +231,14 @@ export class EventProcessor {
         oldDepositId: event.oldDepositId.toString(),
         newDepositId: event.newDepositId.toString(),
       };
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'process-deposit-updated',
-          ...context
+          ...context,
         });
       }
-      
+
       throw new EventProcessingError(
         EVENT_TYPES.DEPOSIT_UPDATED,
         error as Error,

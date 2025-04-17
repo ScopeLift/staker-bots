@@ -68,7 +68,11 @@ export class StakerMonitor extends EventEmitter {
       config.provider,
     );
     this.logger = new ConsoleLogger(config.logLevel);
-    this.eventProcessor = new EventProcessor(this.db, this.logger, this.errorLogger);
+    this.eventProcessor = new EventProcessor(
+      this.db,
+      this.logger,
+      this.errorLogger,
+    );
     this.isRunning = false;
     this.lastProcessedBlock = config.startBlock;
   }
@@ -221,14 +225,14 @@ export class StakerMonitor extends EventEmitter {
         this.lastProcessedBlock = toBlock;
       } catch (error) {
         this.logger.error('Error in processing loop', { error });
-        
+
         if (this.errorLogger) {
           await this.errorLogger.error(error as Error, {
             context: 'processing-loop',
             fromBlock: this.lastProcessedBlock + 1,
           });
         }
-        
+
         await new Promise((resolve) =>
           setTimeout(resolve, this.config.pollInterval * 1000),
         );
@@ -250,7 +254,7 @@ export class StakerMonitor extends EventEmitter {
   ): Promise<void> {
     try {
       this.logger.info(`Processing blocks ${fromBlock} to ${toBlock}`);
-      
+
       const [
         lstDepositEvents,
         depositedEvents,
@@ -327,7 +331,10 @@ export class StakerMonitor extends EventEmitter {
       const eventsByTx = new Map<string, EventGroup>();
 
       // Group all events by transaction hash
-      const addEventsToGroup = (events: ethers.Log[], key: keyof EventGroup) => {
+      const addEventsToGroup = (
+        events: ethers.Log[],
+        key: keyof EventGroup,
+      ) => {
         for (const event of events) {
           const typedEvent = event as ethers.EventLog;
           const existing = eventsByTx.get(typedEvent.transactionHash) || {};
@@ -369,12 +376,12 @@ export class StakerMonitor extends EventEmitter {
       await this.processTransactions(txEntries);
       await this.processStandaloneEvents(sortedEvents);
     } catch (error) {
-      this.logger.error('Error processing block range:', { 
-        error, 
-        fromBlock, 
-        toBlock 
+      this.logger.error('Error processing block range:', {
+        error,
+        fromBlock,
+        toBlock,
       });
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'process-block-range',
@@ -382,13 +389,13 @@ export class StakerMonitor extends EventEmitter {
           toBlock,
         });
       }
-      
+
       throw new MonitorError(
         `Failed to process block range ${fromBlock}-${toBlock}: ${
           error instanceof Error ? error.message : String(error)
         }`,
         { fromBlock, toBlock },
-        true // This error is retryable
+        true, // This error is retryable
       );
     }
   }

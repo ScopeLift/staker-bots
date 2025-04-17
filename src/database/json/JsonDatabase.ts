@@ -480,9 +480,14 @@ export class JsonDatabase implements IDatabase {
     return errors.slice(offset, offset + limit);
   }
 
-  async getErrorLogsByService(serviceName: string, limit = 50, offset = 0): Promise<ErrorLog[]> {
-    const errors = Object.values(this.data.errors)
-      .filter(error => error.service_name === serviceName);
+  async getErrorLogsByService(
+    serviceName: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<ErrorLog[]> {
+    const errors = Object.values(this.data.errors).filter(
+      (error) => error.service_name === serviceName,
+    );
     // Sort by created_at in descending order (newest first)
     errors.sort((a, b) => {
       const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
@@ -492,9 +497,14 @@ export class JsonDatabase implements IDatabase {
     return errors.slice(offset, offset + limit);
   }
 
-  async getErrorLogsBySeverity(severity: string, limit = 50, offset = 0): Promise<ErrorLog[]> {
-    const errors = Object.values(this.data.errors)
-      .filter(error => error.severity === severity);
+  async getErrorLogsBySeverity(
+    severity: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<ErrorLog[]> {
+    const errors = Object.values(this.data.errors).filter(
+      (error) => error.severity === severity,
+    );
     // Sort by created_at in descending order (newest first)
     errors.sort((a, b) => {
       const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;

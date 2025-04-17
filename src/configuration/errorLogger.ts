@@ -46,10 +46,10 @@ export class ErrorLogger {
     try {
       const errorMessage = typeof error === 'string' ? error : error.message;
       const stackTrace = typeof error === 'string' ? undefined : error.stack;
-      
+
       // Extract context if available (from BaseError)
       const context = error instanceof BaseError ? error.context : undefined;
-      
+
       // Create error log object
       const errorLog: ErrorLog = {
         service_name: this.serviceName,
@@ -83,10 +83,7 @@ export class ErrorLogger {
   /**
    * Log an info-level message
    */
-  async info(
-    message: string, 
-    meta?: Record<string, unknown>,
-  ): Promise<void> {
+  async info(message: string, meta?: Record<string, unknown>): Promise<void> {
     return this.logError(message, ErrorSeverity.INFO, meta);
   }
 
@@ -94,7 +91,7 @@ export class ErrorLogger {
    * Log a warning-level message
    */
   async warn(
-    message: string | Error, 
+    message: string | Error,
     meta?: Record<string, unknown>,
   ): Promise<void> {
     return this.logError(message, ErrorSeverity.WARN, meta);
@@ -104,7 +101,7 @@ export class ErrorLogger {
    * Log an error-level message
    */
   async error(
-    error: Error | string, 
+    error: Error | string,
     meta?: Record<string, unknown>,
   ): Promise<void> {
     return this.logError(error, ErrorSeverity.ERROR, meta);
@@ -114,7 +111,7 @@ export class ErrorLogger {
    * Log a fatal-level message
    */
   async fatal(
-    error: Error | string, 
+    error: Error | string,
     meta?: Record<string, unknown>,
   ): Promise<void> {
     return this.logError(error, ErrorSeverity.FATAL, meta);
@@ -125,8 +122,8 @@ export class ErrorLogger {
  * Create a simple error logger for a service
  */
 export function createErrorLogger(
-  serviceName: string, 
-  databaseWrapper?: DatabaseWrapper
+  serviceName: string,
+  databaseWrapper?: DatabaseWrapper,
 ): ErrorLogger {
   return new ErrorLogger({
     serviceName,

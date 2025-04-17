@@ -269,7 +269,7 @@ await db.createErrorLog({
   severity: 'error',
   stack_trace: new Error().stack,
   meta: { additionalInfo: 'value' },
-  context: { requestId: '123' }
+  context: { requestId: '123' },
 });
 
 // Retrieve error logs with pagination

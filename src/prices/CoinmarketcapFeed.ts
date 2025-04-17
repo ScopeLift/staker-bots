@@ -189,14 +189,14 @@ export class CoinMarketCapFeed implements IPriceFeed {
         error,
         tokenAddress,
       });
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'coinmarketcap-get-token-id',
           tokenAddress,
         });
       }
-      
+
       throw error;
     }
   }
@@ -285,14 +285,14 @@ export class CoinMarketCapFeed implements IPriceFeed {
         error,
         tokenAddress,
       });
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'coinmarketcap-get-token-price',
           tokenAddress,
         });
       }
-      
+
       throw error;
     }
   }

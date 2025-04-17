@@ -55,6 +55,10 @@ export const CONFIG = {
     privateKey: process.env.PRIVATE_KEY || '',
     tipReceiver:
       process.env.TIP_RECEIVER || '0x0000000000000000000000000000000000000000',
+    staleTransactionThresholdMinutes: parseInt(
+      process.env.EXECUTOR_STALE_TX_THRESHOLD_MINUTES || '5',
+      10,
+    ),
   },
   defender: {
     apiKey: process.env.DEFENDER_API_KEY || '',

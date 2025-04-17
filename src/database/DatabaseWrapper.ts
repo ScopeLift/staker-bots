@@ -119,21 +119,15 @@ export class DatabaseWrapper implements IDatabase {
           supabaseGovLstRewards.updateGovLstClaimHistory,
         ),
         // Error Logs Operations
-        createErrorLog: this.wrapWithFallback(
-          supabaseErrors.createErrorLog,
-        ),
-        getErrorLogs: this.wrapWithFallback(
-          supabaseErrors.getErrorLogs,
-        ),
+        createErrorLog: this.wrapWithFallback(supabaseErrors.createErrorLog),
+        getErrorLogs: this.wrapWithFallback(supabaseErrors.getErrorLogs),
         getErrorLogsByService: this.wrapWithFallback(
           supabaseErrors.getErrorLogsByService,
         ),
         getErrorLogsBySeverity: this.wrapWithFallback(
           supabaseErrors.getErrorLogsBySeverity,
         ),
-        deleteErrorLog: this.wrapWithFallback(
-          supabaseErrors.deleteErrorLog,
-        ),
+        deleteErrorLog: this.wrapWithFallback(supabaseErrors.deleteErrorLog),
       };
     }
   }
@@ -358,11 +352,19 @@ export class DatabaseWrapper implements IDatabase {
     return this.db.getErrorLogs(limit, offset);
   }
 
-  async getErrorLogsByService(serviceName: string, limit?: number, offset?: number): Promise<ErrorLog[]> {
+  async getErrorLogsByService(
+    serviceName: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ErrorLog[]> {
     return this.db.getErrorLogsByService(serviceName, limit, offset);
   }
 
-  async getErrorLogsBySeverity(severity: string, limit?: number, offset?: number): Promise<ErrorLog[]> {
+  async getErrorLogsBySeverity(
+    severity: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ErrorLog[]> {
     return this.db.getErrorLogsBySeverity(severity, limit, offset);
   }
 

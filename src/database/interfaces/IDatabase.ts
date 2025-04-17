@@ -89,7 +89,15 @@ export interface IDatabase {
   // Error Logs
   createErrorLog(errorLog: ErrorLog): Promise<ErrorLog>;
   getErrorLogs(limit?: number, offset?: number): Promise<ErrorLog[]>;
-  getErrorLogsByService(serviceName: string, limit?: number, offset?: number): Promise<ErrorLog[]>;
-  getErrorLogsBySeverity(severity: string, limit?: number, offset?: number): Promise<ErrorLog[]>;
+  getErrorLogsByService(
+    serviceName: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ErrorLog[]>;
+  getErrorLogsBySeverity(
+    severity: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ErrorLog[]>;
   deleteErrorLog(id: string): Promise<void>;
 }

@@ -9,9 +9,11 @@ import { IExecutor } from './executor/interfaces/IExecutor';
 import { GovLstProfitabilityEngineWrapper } from './profitability';
 import { ethers } from 'ethers';
 import { govlstAbi } from './configuration/abis';
-import fs from 'fs/promises';
-import path from 'path';
-import { createErrorLogger, ErrorLogger, ErrorSeverity } from './configuration/errorLogger';
+import {
+  createErrorLogger,
+  ErrorLogger,
+  ErrorSeverity,
+} from './configuration/errorLogger';
 
 // Initialize database first to enable error logging
 const database = new DatabaseWrapper({
@@ -37,11 +39,11 @@ const executorLogger = new ConsoleLogger('info', {
 // Initialize error loggers for components
 const mainErrorLogger = createErrorLogger('main-service', database);
 const monitorErrorLogger = createErrorLogger('monitor-service', database);
-const profitabilityErrorLogger = createErrorLogger('profitability-service', database);
+const profitabilityErrorLogger = createErrorLogger(
+  'profitability-service',
+  database,
+);
 const executorErrorLogger = createErrorLogger('executor-service', database);
-
-// Set up error logging path
-const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
 
 // Load staker ABI from configuration
 const loadStakerAbi = async (): Promise<typeof stakerAbi> => {
@@ -61,21 +63,6 @@ function createProvider() {
     );
   }
   return new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
-}
-
-// Helper to log errors to file and database
-async function logError(error: unknown, context: string) {
-  const timestamp = new Date().toISOString();
-  const errorMessage = `[${timestamp}] ${context}: ${error instanceof Error ? error.message : String(error)}\n${error instanceof Error ? error.stack : ''}\n\n`;
-
-  try {
-    await fs.appendFile(ERROR_LOG_PATH, errorMessage);
-  } catch (writeError) {
-    console.error('Failed to write to error log:', writeError);
-  }
-
-  // Use the error logger for the database
-  await mainErrorLogger.error(error instanceof Error ? error : new Error(String(error)), { context });
 }
 
 // Ensure checkpoints are not lower than START_BLOCK
@@ -135,7 +122,9 @@ async function ensureCheckpointsAtStartBlock(
 
     logger.info('Checkpoint verification completed');
   } catch (error) {
-    await errorLogger.error(error as Error, { context: 'ensureCheckpointsAtStartBlock' });
+    await errorLogger.error(error as Error, {
+      context: 'ensureCheckpointsAtStartBlock',
+    });
     throw error;
   }
 }
@@ -170,7 +159,10 @@ async function shutdown(signal: string) {
     mainLogger.info('Shutdown completed successfully');
     process.exit(0);
   } catch (error) {
-    await mainErrorLogger.error(error as Error, { context: 'shutdown', signal });
+    await mainErrorLogger.error(error as Error, {
+      context: 'shutdown',
+      signal,
+    });
     process.exit(1);
   }
 }
@@ -215,7 +207,9 @@ async function initializeMonitor(
         lastProcessedBlock: status.lastProcessedBlock,
       });
     } catch (error) {
-      await errorLogger.error(error as Error, { context: 'monitor-health-check' });
+      await errorLogger.error(error as Error, {
+        context: 'monitor-health-check',
+      });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
@@ -289,6 +283,8 @@ async function initializeExecutor(
           gasBoostPercentage: 30,
           concurrentTransactions: 3,
           gasPolicy: CONFIG.defender.relayer.gasPolicy,
+          staleTransactionThresholdMinutes:
+            CONFIG.executor.staleTransactionThresholdMinutes,
           errorLogger, // Pass the error logger to the config
         }
       : {
@@ -298,6 +294,8 @@ async function initializeExecutor(
             maxPendingTransactions: 5,
           },
           defaultTipReceiver: CONFIG.executor.tipReceiver,
+          staleTransactionThresholdMinutes:
+            CONFIG.executor.staleTransactionThresholdMinutes,
           errorLogger, // Pass the error logger to the config
         };
 
@@ -324,7 +322,9 @@ async function initializeExecutor(
         queueSize: status.queueSize,
       });
     } catch (error) {
-      await errorLogger.error(error as Error, { context: 'executor-health-check' });
+      await errorLogger.error(error as Error, {
+        context: 'executor-health-check',
+      });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
@@ -413,7 +413,9 @@ async function initializeProfitabilityEngine(
         queueSize: status.queueSize,
       });
     } catch (error) {
-      await errorLogger.error(error as Error, { context: 'profitability-engine-health-check' });
+      await errorLogger.error(error as Error, {
+        context: 'profitability-engine-health-check',
+      });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
@@ -495,7 +497,9 @@ async function main() {
 
     mainLogger.info('Application is now running. Press Ctrl+C to stop.');
   } catch (error) {
-    await mainErrorLogger.error(error as Error, { context: 'application-startup' });
+    await mainErrorLogger.error(error as Error, {
+      context: 'application-startup',
+    });
     process.exit(1);
   }
 }
@@ -512,17 +516,20 @@ main().catch(async (error) => {
 
 // Add global error handlers to prevent crashes
 process.on('uncaughtException', async (error) => {
-  await mainErrorLogger.error(error as Error, { 
+  await mainErrorLogger.error(error as Error, {
     context: 'uncaught-exception',
-    severity: ErrorSeverity.FATAL 
+    severity: ErrorSeverity.FATAL,
   });
   // Don't exit the process - allow the application to continue running
 });
 
 process.on('unhandledRejection', async (reason) => {
-  await mainErrorLogger.error(reason instanceof Error ? reason : new Error(String(reason)), { 
-    context: 'unhandled-rejection',
-    severity: ErrorSeverity.FATAL
-  });
+  await mainErrorLogger.error(
+    reason instanceof Error ? reason : new Error(String(reason)),
+    {
+      context: 'unhandled-rejection',
+      severity: ErrorSeverity.FATAL,
+    },
+  );
   // Don't exit the process - allow the application to continue running
 });

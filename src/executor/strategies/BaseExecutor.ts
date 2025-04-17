@@ -13,11 +13,7 @@ import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
 import { DatabaseWrapper } from '@/database';
 import { Interface } from 'ethers';
-import {
-  TransactionQueueStatus,
-  ProcessingQueueStatus,
-} from '@/database/interfaces/types';
-import { EXECUTOR } from '@/configuration/constants';
+import { TransactionQueueStatus } from '@/database/interfaces/types';
 import {
   ContractMethodError,
   ExecutorError,
@@ -30,36 +26,24 @@ import {
 } from '@/configuration/errors';
 import { CONFIG } from '@/configuration';
 import {
-  calculateGasLimit,
   pollForReceipt,
   validateTransaction,
-  extractQueueItemInfo,
   calculateQueueStats,
 } from '@/configuration/helpers';
+import {
+  calculateGasParameters,
+  cleanupQueueItems,
+  calculateOptimalThreshold,
+  cleanupStaleTransactions,
+} from './helpers';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
 import { ErrorLogger } from '@/configuration/errorLogger';
+import { BASE_EVENTS, BASE_QUEUE } from './constants';
 
 // Extended executor config with error logger
 export interface ExtendedExecutorConfig extends ExecutorConfig {
   errorLogger?: ErrorLogger;
 }
-
-// Local constants used in this file
-const BASE_EVENTS = {
-  TRANSACTION_QUEUED: EXECUTOR.EVENTS.TRANSACTION_QUEUED,
-  TRANSACTION_CONFIRMED: EXECUTOR.EVENTS.TRANSACTION_CONFIRMED,
-  TRANSACTION_FAILED: EXECUTOR.EVENTS.TRANSACTION_FAILED,
-  TIPS_TRANSFERRED: EXECUTOR.EVENTS.TIPS_TRANSFERRED,
-  ERROR: EXECUTOR.EVENTS.ERROR,
-} as const;
-
-const BASE_QUEUE = {
-  PROCESSOR_INTERVAL: EXECUTOR.QUEUE.QUEUE_PROCESSOR_INTERVAL,
-  MAX_BATCH_SIZE: EXECUTOR.QUEUE.MAX_BATCH_SIZE,
-  MIN_BATCH_SIZE: EXECUTOR.QUEUE.MIN_BATCH_SIZE,
-  MAX_RETRIES: EXECUTOR.QUEUE.MAX_RETRIES,
-  RETRY_DELAY: EXECUTOR.QUEUE.RETRY_DELAY,
-} as const;
 
 interface GovLstContract extends BaseContract {
   estimateGas: {
@@ -149,13 +133,17 @@ export class BaseExecutor implements IExecutor {
       this.wallet,
     ) as unknown as GovLstContract;
 
-    if (!this.govLstContract.interface.hasFunction('claimAndDistributeReward')) {
+    if (
+      !this.govLstContract.interface.hasFunction('claimAndDistributeReward')
+    ) {
       const error = new ContractMethodError('claimAndDistributeReward');
       if (this.errorLogger) {
-        this.errorLogger.error(error, {
-          context: 'base-executor-initialization',
-          contractAddress,
-        }).catch(console.error);
+        this.errorLogger
+          .error(error, {
+            context: 'base-executor-initialization',
+            contractAddress,
+          })
+          .catch(console.error);
       }
       throw error;
     }
@@ -254,11 +242,15 @@ export class BaseExecutor implements IExecutor {
       }
       throw error;
     }
-    
+
     if (this.queue.size >= this.config.maxQueueSize) {
-      const error = new QueueOperationError('queue', new Error('Queue is full'), {
-        maxSize: this.config.maxQueueSize,
-      });
+      const error = new QueueOperationError(
+        'queue',
+        new Error('Queue is full'),
+        {
+          maxSize: this.config.maxQueueSize,
+        },
+      );
       if (this.errorLogger) {
         await this.errorLogger.warn(error, {
           context: 'base-executor-queue-full',
@@ -321,7 +313,7 @@ export class BaseExecutor implements IExecutor {
           baseValidation.error?.message || 'Transaction validation failed',
           {
             depositIds: depositIds.map(String),
-          }
+          },
         );
         if (this.errorLogger) {
           await this.errorLogger.warn(error, {
@@ -342,7 +334,7 @@ export class BaseExecutor implements IExecutor {
           'Failed to get gas price from provider',
           {
             feeData: feeData,
-          }
+          },
         );
         if (this.errorLogger) {
           await this.errorLogger.warn(error, {
@@ -354,7 +346,7 @@ export class BaseExecutor implements IExecutor {
           error,
         };
       }
-      
+
       const gasBoostMultiplier = BigInt(100 + this.config.gasBoostPercentage);
       const boostedGasPrice = (feeData.gasPrice * gasBoostMultiplier) / 100n;
       const estimatedGasCost =
@@ -373,7 +365,7 @@ export class BaseExecutor implements IExecutor {
             'Contract missing payoutAmount method',
             {
               contract: this.govLstContract,
-            }
+            },
           );
           if (this.errorLogger) {
             await this.errorLogger.error(error, {
@@ -390,7 +382,7 @@ export class BaseExecutor implements IExecutor {
         this.logger.warn('Using fallback payout amount', {
           error: error instanceof Error ? error.message : String(error),
         });
-        
+
         if (this.errorLogger) {
           await this.errorLogger.warn(error as Error, {
             context: 'base-executor-fallback-payout-amount',
@@ -424,7 +416,8 @@ export class BaseExecutor implements IExecutor {
 
       // Calculate the required profit value in wei
       const requiredProfitValue =
-        (baseAmountForMargin * BigInt(Math.round(minProfitMarginPercent * 100))) /
+        (baseAmountForMargin *
+          BigInt(Math.round(minProfitMarginPercent * 100))) /
         10000n; // Multiply by 100 for percentage, divide by 10000 (100*100)
 
       // Validate that expected reward is sufficient
@@ -441,14 +434,14 @@ export class BaseExecutor implements IExecutor {
             requiredProfitValue: requiredProfitValue.toString(),
             minProfitMarginPercent: `${minProfitMarginPercent}%`,
             depositIds: depositIds.map(String),
-          }
+          },
         );
         if (this.errorLogger) {
           await this.errorLogger.warn(error, {
             context: 'base-executor-insufficient-reward',
           });
         }
-        
+
         throw error;
       }
 
@@ -463,14 +456,14 @@ export class BaseExecutor implements IExecutor {
           depositIds: depositIds.map(String),
         });
       }
-      
+
       if (error instanceof TransactionValidationError) {
         return { isValid: false, error };
       }
-      
+
       const wrappedError = new TransactionValidationError(
         error instanceof Error ? error.message : String(error),
-        { depositIds: depositIds.map(String) }
+        { depositIds: depositIds.map(String) },
       );
       return { isValid: false, error: wrappedError };
     }
@@ -543,7 +536,9 @@ export class BaseExecutor implements IExecutor {
           transactionHash: hash,
         });
       }
-      throw new TransactionExecutionError('get_receipt', error as Error, { hash });
+      throw new TransactionExecutionError('get_receipt', error as Error, {
+        hash,
+      });
     }
   }
 
@@ -615,9 +610,13 @@ export class BaseExecutor implements IExecutor {
         'transfer_tips',
         error instanceof Error ? error : new Error(String(error)),
         {
-          amount: error instanceof Error && 'balance' in error 
-            ? ((error as any).balance - this.config.wallet.minBalance).toString() 
-            : 'unknown',
+          amount:
+            error instanceof Error && 'balance' in error
+              ? (
+                  (error as Error & { balance: bigint }).balance -
+                  this.config.wallet.minBalance
+                ).toString()
+              : 'unknown',
           receiver: this.config.defaultTipReceiver,
         },
       );
@@ -695,6 +694,24 @@ export class BaseExecutor implements IExecutor {
         queueSize: this.queue.size,
         timestamp: new Date().toISOString(),
       });
+
+      // Run stale transaction cleanup (default 5 minutes)
+      const staleThresholdMinutes =
+        this.config.staleTransactionThresholdMinutes || 5;
+      const cleanupResult = await cleanupStaleTransactions(
+        this.queue,
+        staleThresholdMinutes,
+        this.db,
+        this.logger,
+        this.errorLogger,
+      );
+
+      if (cleanupResult.staleCount > 0) {
+        this.logger.info('Cleaned up stale transactions', {
+          staleCount: cleanupResult.staleCount,
+          cleanedIds: cleanupResult.cleanedIds,
+        });
+      }
 
       const balance = await this.getWalletBalance();
       this.logger.info('Current wallet balance', {
@@ -791,12 +808,12 @@ export class BaseExecutor implements IExecutor {
       });
 
       // Calculate optimal threshold
-      const profitMargin = this.config.minProfitMargin;
-      const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
-      const baseAmount = payoutAmount + gasCost;
-      const profitMarginAmount =
-        (baseAmount * profitMarginBasisPoints) / 10000n;
-      const optimalThreshold = payoutAmount + gasCost + profitMarginAmount;
+      const optimalThreshold = calculateOptimalThreshold(
+        payoutAmount,
+        gasCost,
+        this.config.minProfitMargin,
+        this.logger,
+      );
 
       const depositIds = tx.depositIds;
 
@@ -932,7 +949,7 @@ export class BaseExecutor implements IExecutor {
                 : String(estimateError),
           },
         );
-        
+
         if (this.errorLogger) {
           await this.errorLogger.warn(estimateError as Error, {
             context: 'base-executor-estimate-gas-initial-failed',
@@ -958,7 +975,7 @@ export class BaseExecutor implements IExecutor {
               depositIds: depositIds.map(String),
             });
           }
-          
+
           throw new GasEstimationError(fallbackError as Error, {
             depositIds: depositIds.map((id) => id.toString()),
             payoutAmount: profitability.estimates.payout_amount.toString(),
@@ -973,7 +990,7 @@ export class BaseExecutor implements IExecutor {
           depositIds: depositIds.map(String),
         });
       }
-      
+
       throw new GasEstimationError(error as Error, {
         depositIds: depositIds.map((id) => id.toString()),
       });
@@ -989,13 +1006,12 @@ export class BaseExecutor implements IExecutor {
     finalGasLimit: bigint;
     boostedGasPrice: bigint;
   }> {
-    const finalGasLimit = calculateGasLimit(gasEstimate, 1, this.logger);
-    const feeData = await this.provider.getFeeData();
-    const baseGasPrice = feeData.gasPrice || 0n;
-    const gasBoostMultiplier = BigInt(100 + this.config.gasBoostPercentage);
-    const boostedGasPrice = (baseGasPrice * gasBoostMultiplier) / 100n;
-
-    return { finalGasLimit, boostedGasPrice };
+    return calculateGasParameters(
+      this.provider,
+      gasEstimate,
+      this.config.gasBoostPercentage,
+      this.logger,
+    );
   }
 
   /**
@@ -1025,7 +1041,7 @@ export class BaseExecutor implements IExecutor {
             waitError instanceof Error ? waitError.message : String(waitError),
           hash: txResponse.hash,
         });
-        
+
         if (this.errorLogger) {
           await this.errorLogger.warn(waitError as Error, {
             context: 'base-executor-poll-receipt-failed',
@@ -1056,7 +1072,7 @@ export class BaseExecutor implements IExecutor {
           id: tx.id,
           hash: txResponse.hash,
         });
-        
+
         if (this.errorLogger) {
           await this.errorLogger.error(new Error('Transaction failed'), {
             context: 'base-executor-transaction-failed',
@@ -1067,7 +1083,13 @@ export class BaseExecutor implements IExecutor {
       }
 
       // Clean up queue items and update queue
-      await this.cleanupQueueItems(tx, txResponse.hash);
+      await cleanupQueueItems(
+        tx,
+        txResponse.hash,
+        this.db,
+        this.logger,
+        this.errorLogger,
+      );
       this.queue.set(tx.id, tx);
       this.queue.delete(tx.id);
     } catch (error) {
@@ -1078,7 +1100,7 @@ export class BaseExecutor implements IExecutor {
           hash: txResponse.hash || 'unknown',
         });
       }
-      
+
       await this.handleTransactionError(tx, error);
     }
   }
@@ -1104,12 +1126,12 @@ export class BaseExecutor implements IExecutor {
         profitability: tx.profitability,
       },
     );
-    
+
     this.logger.error(BASE_EVENTS.ERROR, {
       ...executorError,
       ...executorError.context,
     });
-    
+
     if (this.errorLogger) {
       await this.errorLogger.error(executorError, {
         context: 'base-executor-transaction-execution-error',
@@ -1118,171 +1140,16 @@ export class BaseExecutor implements IExecutor {
     }
 
     // Clean up queue items
-    await this.cleanupQueueItems(tx, tx.hash || '');
+    await cleanupQueueItems(
+      tx,
+      tx.hash || '',
+      this.db,
+      this.logger,
+      this.errorLogger,
+    );
 
     // Remove from in-memory queue
     this.queue.delete(tx.id);
-  }
-
-  /**
-   * Cleans up queue items after transaction completion (success or failure)
-   * @param tx - Transaction that completed
-   * @param txHash - Transaction hash
-   */
-  private async cleanupQueueItems(
-    tx: QueuedTransaction,
-    txHash: string,
-  ): Promise<void> {
-    if (!this.db) return;
-
-    try {
-      // Use the centralized helper to extract queue item info
-      const { queueItemId, depositIds: extractedDepositIds } =
-        extractQueueItemInfo(tx);
-      let depositIdStrings = [...extractedDepositIds]; // Make a mutable copy
-
-      // If we have a specific queue item ID
-      if (queueItemId) {
-        // First try to get additional deposit IDs from the database if needed
-        if (depositIdStrings.length === 0) {
-          const queueItem = await this.db.getTransactionQueueItem(queueItemId);
-          if (queueItem) {
-            // Try to extract deposit IDs from the tx_data JSON
-            if (queueItem.tx_data) {
-              try {
-                const txData = JSON.parse(queueItem.tx_data);
-                if (Array.isArray(txData.depositIds)) {
-                  depositIdStrings = txData.depositIds.map(String);
-                  this.logger.info('Found deposit IDs in tx_data:', {
-                    depositIds: depositIdStrings,
-                  });
-                }
-              } catch (parseError) {
-                this.logger.error('Failed to parse tx_data JSON:', {
-                  error:
-                    parseError instanceof Error
-                      ? parseError.message
-                      : String(parseError),
-                });
-                
-                if (this.errorLogger) {
-                  await this.errorLogger.warn(parseError as Error, {
-                    context: 'base-executor-parse-tx-data-failed',
-                    queueItemId,
-                  });
-                }
-              }
-            }
-
-            // If we still have no deposit IDs, check if deposit_id field has a single ID
-            if (depositIdStrings.length === 0 && queueItem.deposit_id) {
-              // Use the deposit_id directly (will be a single ID in Supabase case)
-              depositIdStrings = [queueItem.deposit_id];
-              this.logger.info('Using single deposit ID from queue item:', {
-                depositId: queueItem.deposit_id,
-              });
-            }
-          }
-        }
-
-        // Update transaction queue item status first
-        await this.db.updateTransactionQueueItem(queueItemId, {
-          status:
-            tx.status === TransactionStatus.CONFIRMED
-              ? TransactionQueueStatus.CONFIRMED
-              : TransactionQueueStatus.FAILED,
-          hash: txHash,
-          error:
-            tx.status === TransactionStatus.FAILED
-              ? tx.error?.message || 'Transaction failed'
-              : undefined,
-        });
-
-        // Delete transaction queue item
-        await this.db.deleteTransactionQueueItem(queueItemId);
-
-        this.logger.info('Deleted transaction queue item', {
-          queueItemId,
-          txHash,
-        });
-      }
-
-      // Clean up processing queue items for all deposit IDs
-      if (depositIdStrings.length > 0) {
-        for (const depositId of depositIdStrings) {
-          try {
-            const processingItem =
-              await this.db.getProcessingQueueItemByDepositId(depositId);
-            if (processingItem) {
-              // Update status before deletion for record keeping
-              await this.db.updateProcessingQueueItem(processingItem.id, {
-                status:
-                  tx.status === TransactionStatus.CONFIRMED
-                    ? ProcessingQueueStatus.COMPLETED
-                    : ProcessingQueueStatus.FAILED,
-                error:
-                  tx.status === TransactionStatus.FAILED
-                    ? tx.error?.message || 'Transaction failed'
-                    : undefined,
-              });
-
-              // Then delete
-              await this.db.deleteProcessingQueueItem(processingItem.id);
-
-              this.logger.info('Deleted processing queue item', {
-                processingItemId: processingItem.id,
-                depositId,
-                txHash,
-              });
-            }
-          } catch (error) {
-            this.logger.error('Failed to clean up processing queue item', {
-              error: error instanceof Error ? error.message : String(error),
-              depositId,
-              txHash,
-            });
-            
-            if (this.errorLogger) {
-              await this.errorLogger.error(error as Error, {
-                context: 'base-executor-cleanup-processing-item-failed',
-                depositId,
-                txHash,
-              });
-            }
-          }
-        }
-      }
-
-      // If we couldn't find specific items, log a warning
-      if (!queueItemId && depositIdStrings.length === 0) {
-        this.logger.warn('Unable to identify queue items to clean up', {
-          txId: tx.id,
-          txHash,
-        });
-        
-        if (this.errorLogger) {
-          await this.errorLogger.warn(new Error('Unable to identify queue items to clean up'), {
-            context: 'base-executor-cleanup-no-items-found',
-            txId: tx.id,
-            txHash,
-          });
-        }
-      }
-    } catch (error) {
-      this.logger.error('Failed to clean up queue items', {
-        error: error instanceof Error ? error.message : String(error),
-        txId: tx.id,
-        txHash,
-      });
-      
-      if (this.errorLogger) {
-        await this.errorLogger.error(error as Error, {
-          context: 'base-executor-cleanup-queue-items-failed',
-          txId: tx.id,
-          txHash,
-        });
-      }
-    }
   }
 
   /**
@@ -1319,7 +1186,7 @@ export class BaseExecutor implements IExecutor {
             depositId: item.deposit_id,
             error: error instanceof Error ? error.message : String(error),
           });
-          
+
           if (this.errorLogger) {
             await this.errorLogger.error(error as Error, {
               context: 'base-executor-requeue-transaction-failed',
@@ -1335,12 +1202,12 @@ export class BaseExecutor implements IExecutor {
       executorError.context = {
         error: error instanceof Error ? error.message : String(error),
       };
-      
+
       this.logger.error(BASE_EVENTS.ERROR, {
         ...executorError,
         ...executorError.context,
       });
-      
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
           context: 'base-executor-requeue-pending-items-failed',
@@ -1352,16 +1219,19 @@ export class BaseExecutor implements IExecutor {
   protected async validateTipReceiver(): Promise<void> {
     try {
       if (!this.config.defaultTipReceiver) {
-        const error = new TransactionValidationError('No tip receiver configured', {
-          config: this.config,
-        });
-        
+        const error = new TransactionValidationError(
+          'No tip receiver configured',
+          {
+            config: this.config,
+          },
+        );
+
         if (this.errorLogger) {
           await this.errorLogger.warn(error, {
             context: 'base-executor-validate-tip-receiver-missing',
           });
         }
-        
+
         throw error;
       }
     } catch (error) {
@@ -1370,8 +1240,37 @@ export class BaseExecutor implements IExecutor {
           context: 'base-executor-validate-tip-receiver-error',
         });
       }
-      
+
       throw error;
     }
+  }
+
+  // Add helper function for BigInt serialization
+  private serializeBigIntValues(
+    obj: Record<string, unknown> | unknown[] | unknown,
+  ): Record<string, unknown> | unknown[] | unknown {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj === 'bigint') {
+      return obj.toString();
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map((item) => this.serializeBigIntValues(item));
+    }
+
+    if (typeof obj === 'object') {
+      const result: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(
+        obj as Record<string, unknown>,
+      )) {
+        result[key] = this.serializeBigIntValues(value);
+      }
+      return result;
+    }
+
+    return obj;
   }
 }
