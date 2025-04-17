@@ -6,6 +6,7 @@ import {
   ProcessingQueueStatus,
   TransactionQueueStatus,
   GovLstClaimHistory,
+  ErrorLog,
 } from './types';
 
 export interface IDatabase {
@@ -84,4 +85,19 @@ export interface IDatabase {
       Omit<GovLstClaimHistory, 'id' | 'created_at' | 'updated_at'>
     >,
   ): Promise<void>;
+
+  // Error Logs
+  createErrorLog(errorLog: ErrorLog): Promise<ErrorLog>;
+  getErrorLogs(limit?: number, offset?: number): Promise<ErrorLog[]>;
+  getErrorLogsByService(
+    serviceName: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ErrorLog[]>;
+  getErrorLogsBySeverity(
+    severity: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ErrorLog[]>;
+  deleteErrorLog(id: string): Promise<void>;
 }

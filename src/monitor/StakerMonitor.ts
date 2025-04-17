@@ -24,6 +24,14 @@ import {
 } from './constants';
 import { EventProcessingError, MonitorError } from '@/configuration/errors';
 import { stakerAbi } from '@/configuration/abis';
+import { ErrorLogger } from '@/configuration/errorLogger';
+
+/**
+ * Extended MonitorConfig that includes the error logger
+ */
+export interface ExtendedMonitorConfig extends MonitorConfig {
+  errorLogger?: ErrorLogger;
+}
 
 /**
  * StakerMonitor is responsible for monitoring staking events on the blockchain.
@@ -36,17 +44,19 @@ export class StakerMonitor extends EventEmitter {
   private readonly contract: ethers.Contract;
   private readonly lstContract: ethers.Contract;
   private readonly logger: Logger;
+  private readonly errorLogger?: ErrorLogger;
   private readonly eventProcessor: EventProcessor;
   private readonly config: MonitorConfig;
   private isRunning: boolean;
   private processingPromise?: Promise<void>;
   private lastProcessedBlock: number;
 
-  constructor(config: MonitorConfig) {
+  constructor(config: ExtendedMonitorConfig) {
     super();
     this.config = config;
     this.db = config.database;
     this.provider = config.provider;
+    this.errorLogger = config.errorLogger;
     this.contract = new ethers.Contract(
       config.stakerAddress,
       stakerAbi,
@@ -58,7 +68,11 @@ export class StakerMonitor extends EventEmitter {
       config.provider,
     );
     this.logger = new ConsoleLogger(config.logLevel);
-    this.eventProcessor = new EventProcessor(this.db, this.logger);
+    this.eventProcessor = new EventProcessor(
+      this.db,
+      this.logger,
+      this.errorLogger,
+    );
     this.isRunning = false;
     this.lastProcessedBlock = config.startBlock;
   }
@@ -73,22 +87,32 @@ export class StakerMonitor extends EventEmitter {
       return;
     }
 
-    this.isRunning = true;
-    const checkpoint = await this.db.getCheckpoint(PROCESSING_COMPONENT.TYPE);
+    try {
+      this.isRunning = true;
+      const checkpoint = await this.db.getCheckpoint(PROCESSING_COMPONENT.TYPE);
 
-    if (checkpoint) {
-      this.lastProcessedBlock = checkpoint.last_block_number;
-    } else {
-      this.lastProcessedBlock = this.config.startBlock;
-      await this.db.updateCheckpoint({
-        component_type: PROCESSING_COMPONENT.TYPE,
-        last_block_number: this.config.startBlock,
-        block_hash: PROCESSING_COMPONENT.INITIAL_BLOCK_HASH,
-        last_update: new Date().toISOString(),
-      });
+      if (checkpoint) {
+        this.lastProcessedBlock = checkpoint.last_block_number;
+      } else {
+        this.lastProcessedBlock = this.config.startBlock;
+        await this.db.updateCheckpoint({
+          component_type: PROCESSING_COMPONENT.TYPE,
+          last_block_number: this.config.startBlock,
+          block_hash: PROCESSING_COMPONENT.INITIAL_BLOCK_HASH,
+          last_update: new Date().toISOString(),
+        });
+      }
+
+      this.processingPromise = this.processLoop();
+    } catch (error) {
+      this.logger.error('Failed to start monitor:', { error });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'monitor-start',
+        });
+      }
+      throw error;
     }
-
-    this.processingPromise = this.processLoop();
   }
 
   /**
@@ -97,9 +121,19 @@ export class StakerMonitor extends EventEmitter {
   async stop(): Promise<void> {
     if (!this.isRunning) return;
 
-    this.isRunning = false;
-    if (this.processingPromise) {
-      await this.processingPromise;
+    try {
+      this.isRunning = false;
+      if (this.processingPromise) {
+        await this.processingPromise;
+      }
+    } catch (error) {
+      this.logger.error('Error stopping monitor:', { error });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'monitor-stop',
+        });
+      }
+      throw error;
     }
   }
 
@@ -113,25 +147,44 @@ export class StakerMonitor extends EventEmitter {
    * - Network status
    */
   async getMonitorStatus(): Promise<MonitorStatus> {
-    const currentBlock = await this.getCurrentBlock();
-    const checkpoint = await this.db.getCheckpoint(PROCESSING_COMPONENT.TYPE);
+    try {
+      const currentBlock = await this.getCurrentBlock();
+      const checkpoint = await this.db.getCheckpoint(PROCESSING_COMPONENT.TYPE);
 
-    return {
-      isRunning: this.isRunning,
-      lastProcessedBlock: this.lastProcessedBlock,
-      currentChainBlock: currentBlock,
-      processingLag: currentBlock - this.lastProcessedBlock,
-      lastCheckpoint: checkpoint!,
-      networkStatus: {
-        chainId: this.config.chainId,
-        networkName: this.config.networkName,
-        isConnected: true,
-      },
-    };
+      return {
+        isRunning: this.isRunning,
+        lastProcessedBlock: this.lastProcessedBlock,
+        currentChainBlock: currentBlock,
+        processingLag: currentBlock - this.lastProcessedBlock,
+        lastCheckpoint: checkpoint!,
+        networkStatus: {
+          chainId: this.config.chainId,
+          networkName: this.config.networkName,
+          isConnected: true,
+        },
+      };
+    } catch (error) {
+      this.logger.error('Error getting monitor status:', { error });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-monitor-status',
+        });
+      }
+      throw error;
+    }
   }
 
   private async getCurrentBlock(): Promise<number> {
-    return this.provider.getBlockNumber();
+    try {
+      return await this.provider.getBlockNumber();
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-current-block',
+        });
+      }
+      throw error;
+    }
   }
 
   /**
@@ -172,6 +225,14 @@ export class StakerMonitor extends EventEmitter {
         this.lastProcessedBlock = toBlock;
       } catch (error) {
         this.logger.error('Error in processing loop', { error });
+
+        if (this.errorLogger) {
+          await this.errorLogger.error(error as Error, {
+            context: 'processing-loop',
+            fromBlock: this.lastProcessedBlock + 1,
+          });
+        }
+
         await new Promise((resolve) =>
           setTimeout(resolve, this.config.pollInterval * 1000),
         );
@@ -191,123 +252,152 @@ export class StakerMonitor extends EventEmitter {
     fromBlock: number,
     toBlock: number,
   ): Promise<void> {
-    const [
-      lstDepositEvents,
-      depositedEvents,
-      withdrawnEvents,
-      alteredEvents,
-      stakedWithAttributionEvents,
-      unstakedEvents,
-      depositInitializedEvents,
-      depositUpdatedEvents,
-    ] = await Promise.all([
-      this.lstContract.queryFilter(
-        this.lstContract.filters.Staked!(),
-        fromBlock,
-        toBlock,
-      ),
-      this.contract.queryFilter(
-        this.contract.filters.StakeDeposited!(),
-        fromBlock,
-        toBlock,
-      ),
-      this.contract.queryFilter(
-        this.contract.filters.StakeWithdrawn!(),
-        fromBlock,
-        toBlock,
-      ),
-      this.contract.queryFilter(
-        this.contract.filters.DelegateeAltered!(),
-        fromBlock,
-        toBlock,
-      ),
-      this.lstContract.queryFilter(
-        this.lstContract.filters.StakedWithAttribution!(),
-        fromBlock,
-        toBlock,
-      ),
-      this.lstContract.queryFilter(
-        this.lstContract.filters.Unstaked!(),
-        fromBlock,
-        toBlock,
-      ),
-      this.lstContract.queryFilter(
-        this.lstContract.filters.DepositInitialized!(),
-        fromBlock,
-        toBlock,
-      ),
-      this.lstContract.queryFilter(
-        this.lstContract.filters.DepositUpdated!(),
-        fromBlock,
-        toBlock,
-      ),
-    ]);
+    try {
+      this.logger.info(`Processing blocks ${fromBlock} to ${toBlock}`);
 
-    const sortEvents = (events: ethers.Log[]) => {
-      return [...events].sort((a, b) => {
-        if (a.blockNumber !== b.blockNumber)
-          return a.blockNumber - b.blockNumber;
-        const indexA = 'index' in a ? (a.index ?? 0) : 0;
-        const indexB = 'index' in b ? (b.index ?? 0) : 0;
-        return indexA - indexB;
+      const [
+        lstDepositEvents,
+        depositedEvents,
+        withdrawnEvents,
+        alteredEvents,
+        stakedWithAttributionEvents,
+        unstakedEvents,
+        depositInitializedEvents,
+        depositUpdatedEvents,
+      ] = await Promise.all([
+        this.lstContract.queryFilter(
+          this.lstContract.filters.Staked!(),
+          fromBlock,
+          toBlock,
+        ),
+        this.contract.queryFilter(
+          this.contract.filters.StakeDeposited!(),
+          fromBlock,
+          toBlock,
+        ),
+        this.contract.queryFilter(
+          this.contract.filters.StakeWithdrawn!(),
+          fromBlock,
+          toBlock,
+        ),
+        this.contract.queryFilter(
+          this.contract.filters.DelegateeAltered!(),
+          fromBlock,
+          toBlock,
+        ),
+        this.lstContract.queryFilter(
+          this.lstContract.filters.StakedWithAttribution!(),
+          fromBlock,
+          toBlock,
+        ),
+        this.lstContract.queryFilter(
+          this.lstContract.filters.Unstaked!(),
+          fromBlock,
+          toBlock,
+        ),
+        this.lstContract.queryFilter(
+          this.lstContract.filters.DepositInitialized!(),
+          fromBlock,
+          toBlock,
+        ),
+        this.lstContract.queryFilter(
+          this.lstContract.filters.DepositUpdated!(),
+          fromBlock,
+          toBlock,
+        ),
+      ]);
+
+      const sortEvents = (events: ethers.Log[]) => {
+        return [...events].sort((a, b) => {
+          if (a.blockNumber !== b.blockNumber)
+            return a.blockNumber - b.blockNumber;
+          const indexA = 'index' in a ? (a.index ?? 0) : 0;
+          const indexB = 'index' in b ? (b.index ?? 0) : 0;
+          return indexA - indexB;
+        });
+      };
+
+      const sortedEvents = {
+        lstDeposit: sortEvents(lstDepositEvents),
+        deposited: sortEvents(depositedEvents),
+        withdrawn: sortEvents(withdrawnEvents),
+        altered: sortEvents(alteredEvents),
+        stakedWithAttribution: sortEvents(stakedWithAttributionEvents),
+        unstaked: sortEvents(unstakedEvents),
+        depositInitialized: sortEvents(depositInitializedEvents),
+        depositUpdated: sortEvents(depositUpdatedEvents),
+      };
+
+      const eventsByTx = new Map<string, EventGroup>();
+
+      // Group all events by transaction hash
+      const addEventsToGroup = (
+        events: ethers.Log[],
+        key: keyof EventGroup,
+      ) => {
+        for (const event of events) {
+          const typedEvent = event as ethers.EventLog;
+          const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+          eventsByTx.set(typedEvent.transactionHash, {
+            ...existing,
+            [key]: typedEvent,
+          });
+        }
+      };
+
+      addEventsToGroup(sortedEvents.deposited, 'deposited');
+      addEventsToGroup(sortedEvents.lstDeposit, 'lstDeposited');
+      addEventsToGroup(sortedEvents.altered, 'altered');
+      addEventsToGroup(
+        sortedEvents.stakedWithAttribution,
+        'stakedWithAttribution',
+      );
+      addEventsToGroup(sortedEvents.unstaked, 'unstaked');
+      addEventsToGroup(sortedEvents.depositInitialized, 'depositInitialized');
+      addEventsToGroup(sortedEvents.depositUpdated, 'depositUpdated');
+
+      // Process events chronologically
+      const txEntries = [...eventsByTx.entries()]
+        .map(([txHash, events]) => ({
+          txHash,
+          events,
+          blockNumber:
+            events.deposited?.blockNumber ||
+            events.lstDeposited?.blockNumber ||
+            events.altered?.blockNumber ||
+            events.stakedWithAttribution?.blockNumber ||
+            events.unstaked?.blockNumber ||
+            events.depositInitialized?.blockNumber ||
+            events.depositUpdated?.blockNumber ||
+            0,
+        }))
+        .sort((a, b) => a.blockNumber - b.blockNumber);
+
+      await this.processTransactions(txEntries);
+      await this.processStandaloneEvents(sortedEvents);
+    } catch (error) {
+      this.logger.error('Error processing block range:', {
+        error,
+        fromBlock,
+        toBlock,
       });
-    };
 
-    const sortedEvents = {
-      lstDeposit: sortEvents(lstDepositEvents),
-      deposited: sortEvents(depositedEvents),
-      withdrawn: sortEvents(withdrawnEvents),
-      altered: sortEvents(alteredEvents),
-      stakedWithAttribution: sortEvents(stakedWithAttributionEvents),
-      unstaked: sortEvents(unstakedEvents),
-      depositInitialized: sortEvents(depositInitializedEvents),
-      depositUpdated: sortEvents(depositUpdatedEvents),
-    };
-
-    const eventsByTx = new Map<string, EventGroup>();
-
-    // Group all events by transaction hash
-    const addEventsToGroup = (events: ethers.Log[], key: keyof EventGroup) => {
-      for (const event of events) {
-        const typedEvent = event as ethers.EventLog;
-        const existing = eventsByTx.get(typedEvent.transactionHash) || {};
-        eventsByTx.set(typedEvent.transactionHash, {
-          ...existing,
-          [key]: typedEvent,
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-block-range',
+          fromBlock,
+          toBlock,
         });
       }
-    };
 
-    addEventsToGroup(sortedEvents.deposited, 'deposited');
-    addEventsToGroup(sortedEvents.lstDeposit, 'lstDeposited');
-    addEventsToGroup(sortedEvents.altered, 'altered');
-    addEventsToGroup(
-      sortedEvents.stakedWithAttribution,
-      'stakedWithAttribution',
-    );
-    addEventsToGroup(sortedEvents.unstaked, 'unstaked');
-    addEventsToGroup(sortedEvents.depositInitialized, 'depositInitialized');
-    addEventsToGroup(sortedEvents.depositUpdated, 'depositUpdated');
-
-    // Process events chronologically
-    const txEntries = [...eventsByTx.entries()]
-      .map(([txHash, events]) => ({
-        txHash,
-        events,
-        blockNumber:
-          events.deposited?.blockNumber ||
-          events.lstDeposited?.blockNumber ||
-          events.altered?.blockNumber ||
-          events.stakedWithAttribution?.blockNumber ||
-          events.unstaked?.blockNumber ||
-          events.depositInitialized?.blockNumber ||
-          events.depositUpdated?.blockNumber ||
-          0,
-      }))
-      .sort((a, b) => a.blockNumber - b.blockNumber);
-
-    await this.processTransactions(txEntries);
-    await this.processStandaloneEvents(sortedEvents);
+      throw new MonitorError(
+        `Failed to process block range ${fromBlock}-${toBlock}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { fromBlock, toBlock },
+        true, // This error is retryable
+      );
+    }
   }
 
   /**

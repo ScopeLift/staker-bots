@@ -2,6 +2,12 @@ import axios, { AxiosInstance } from 'axios';
 import { BigNumberish, ethers } from 'ethers';
 import { IPriceFeed, PriceFeedConfig, TokenPrice } from './interface';
 import { Logger } from '@/monitor/logging';
+import { ErrorLogger } from '@/configuration/errorLogger';
+
+// Extend the PriceFeedConfig to include errorLogger
+export interface ExtendedPriceFeedConfig extends PriceFeedConfig {
+  errorLogger?: ErrorLogger;
+}
 
 interface CoinMarketCapQuote {
   USD: {
@@ -43,6 +49,7 @@ interface CoinMarketCapInfoResponse {
 export class CoinMarketCapFeed implements IPriceFeed {
   private readonly client: AxiosInstance;
   private readonly logger: Logger;
+  private readonly errorLogger?: ErrorLogger;
   private readonly cache: Map<string, TokenPrice>;
   private readonly cacheDuration: number = 10 * 60 * 1000; // 10 minutes cache
   private readonly rewardToken: string;
@@ -50,7 +57,7 @@ export class CoinMarketCapFeed implements IPriceFeed {
   private readonly idCache: Map<string, number>; // Cache for address -> CMC ID mapping
   private readonly symbolCache: Map<string, string>; // Cache for address -> symbol mapping
 
-  constructor(config: PriceFeedConfig, logger: Logger) {
+  constructor(config: ExtendedPriceFeedConfig, logger: Logger) {
     this.client = axios.create({
       baseURL: config.baseUrl || 'https://pro-api.coinmarketcap.com',
       timeout: config.timeout || 5000,
@@ -59,6 +66,7 @@ export class CoinMarketCapFeed implements IPriceFeed {
       },
     });
     this.logger = logger;
+    this.errorLogger = config.errorLogger;
     this.cache = new Map();
     this.idCache = new Map();
     this.symbolCache = new Map();
@@ -99,13 +107,28 @@ export class CoinMarketCapFeed implements IPriceFeed {
         Object.keys(infoResponse.data.data).length === 0 ||
         infoResponse.data.status.error_code !== 0
       ) {
-        throw new Error(`No info found for token address ${tokenAddress}`);
+        const errorMsg = `No info found for token address ${tokenAddress}`;
+        if (this.errorLogger) {
+          await this.errorLogger.error(new Error(errorMsg), {
+            context: 'coinmarketcap-get-token-info',
+            tokenAddress,
+            response: infoResponse.data,
+          });
+        }
+        throw new Error(errorMsg);
       }
 
       // Get the first entry from the data object
       const addrKeys = Object.keys(infoResponse.data.data);
       if (addrKeys.length === 0) {
-        throw new Error(`No token info returned for address ${tokenAddress}`);
+        const errorMsg = `No token info returned for address ${tokenAddress}`;
+        if (this.errorLogger) {
+          await this.errorLogger.error(new Error(errorMsg), {
+            context: 'coinmarketcap-token-info-empty',
+            tokenAddress,
+          });
+        }
+        throw new Error(errorMsg);
       }
 
       const addrKey = addrKeys[0];
@@ -113,22 +136,40 @@ export class CoinMarketCapFeed implements IPriceFeed {
         infoResponse.data.data[addrKey as keyof typeof infoResponse.data.data];
 
       if (!tokenInfoArray || tokenInfoArray.length === 0) {
-        throw new Error(`No token info returned for address ${tokenAddress}`);
+        const errorMsg = `No token info returned for address ${tokenAddress}`;
+        if (this.errorLogger) {
+          await this.errorLogger.error(new Error(errorMsg), {
+            context: 'coinmarketcap-token-info-empty',
+            tokenAddress,
+          });
+        }
+        throw new Error(errorMsg);
       }
 
       // Use the first token in the array
       const tokenInfo = tokenInfoArray[0];
       if (!tokenInfo) {
-        throw new Error(
-          `No token info data available for address ${tokenAddress}`,
-        );
+        const errorMsg = `No token info data available for address ${tokenAddress}`;
+        if (this.errorLogger) {
+          await this.errorLogger.error(new Error(errorMsg), {
+            context: 'coinmarketcap-token-info-missing',
+            tokenAddress,
+          });
+        }
+        throw new Error(errorMsg);
       }
 
       const tokenId = tokenInfo.id;
       if (!tokenId) {
-        throw new Error(
-          `Invalid token ID received for address ${tokenAddress}`,
-        );
+        const errorMsg = `Invalid token ID received for address ${tokenAddress}`;
+        if (this.errorLogger) {
+          await this.errorLogger.error(new Error(errorMsg), {
+            context: 'coinmarketcap-invalid-token-id',
+            tokenAddress,
+            tokenInfo,
+          });
+        }
+        throw new Error(errorMsg);
       }
 
       this.logger.info('Successfully got CoinMarketCap ID for token', {
@@ -148,6 +189,14 @@ export class CoinMarketCapFeed implements IPriceFeed {
         error,
         tokenAddress,
       });
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'coinmarketcap-get-token-id',
+          tokenAddress,
+        });
+      }
+
       throw error;
     }
   }
@@ -186,16 +235,30 @@ export class CoinMarketCapFeed implements IPriceFeed {
         !response.data.data[tokenId.toString()] ||
         response.data.status.error_code !== 0
       ) {
-        throw new Error(
-          `No price data available for token ID ${tokenId} (address: ${tokenAddress})`,
-        );
+        const errorMsg = `No price data available for token ID ${tokenId} (address: ${tokenAddress})`;
+        if (this.errorLogger) {
+          await this.errorLogger.error(new Error(errorMsg), {
+            context: 'coinmarketcap-price-data-missing',
+            tokenAddress,
+            tokenId,
+            response: response.data,
+          });
+        }
+        throw new Error(errorMsg);
       }
 
       const tokenData = response.data.data[tokenId.toString()];
       if (!tokenData?.quote?.USD) {
-        throw new Error(
-          `No USD quote available for token ID ${tokenId} (address: ${tokenAddress})`,
-        );
+        const errorMsg = `No USD quote available for token ID ${tokenId} (address: ${tokenAddress})`;
+        if (this.errorLogger) {
+          await this.errorLogger.error(new Error(errorMsg), {
+            context: 'coinmarketcap-usd-quote-missing',
+            tokenAddress,
+            tokenId,
+            tokenData,
+          });
+        }
+        throw new Error(errorMsg);
       }
 
       const price = tokenData.quote.USD.price;
@@ -222,6 +285,14 @@ export class CoinMarketCapFeed implements IPriceFeed {
         error,
         tokenAddress,
       });
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'coinmarketcap-get-token-price',
+          tokenAddress,
+        });
+      }
+
       throw error;
     }
   }
@@ -230,10 +301,21 @@ export class CoinMarketCapFeed implements IPriceFeed {
     tokenAddress: string,
     amount: BigNumberish,
   ): Promise<bigint> {
-    const price = await this.getTokenPrice(tokenAddress);
-    const amountInWei = ethers.parseEther(amount.toString());
-    const priceInWei = ethers.parseEther(price.usd.toString());
-    return (amountInWei * priceInWei) / ethers.parseEther('1');
+    try {
+      const price = await this.getTokenPrice(tokenAddress);
+      const amountInWei = ethers.parseEther(amount.toString());
+      const priceInWei = ethers.parseEther(price.usd.toString());
+      return (amountInWei * priceInWei) / ethers.parseEther('1');
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'coinmarketcap-get-token-price-in-wei',
+          tokenAddress,
+          amount: amount.toString(),
+        });
+      }
+      throw error;
+    }
   }
 
   /**
@@ -244,14 +326,25 @@ export class CoinMarketCapFeed implements IPriceFeed {
     rewardToken: TokenPrice;
     gasToken: TokenPrice;
   }> {
-    const [rewardTokenPrice, gasTokenPrice] = await Promise.all([
-      this.getTokenPrice(this.rewardToken),
-      this.getTokenPrice(this.gasToken),
-    ]);
+    try {
+      const [rewardTokenPrice, gasTokenPrice] = await Promise.all([
+        this.getTokenPrice(this.rewardToken),
+        this.getTokenPrice(this.gasToken),
+      ]);
 
-    return {
-      rewardToken: rewardTokenPrice,
-      gasToken: gasTokenPrice,
-    };
+      return {
+        rewardToken: rewardTokenPrice,
+        gasToken: gasTokenPrice,
+      };
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'coinmarketcap-get-token-prices',
+          rewardToken: this.rewardToken,
+          gasToken: this.gasToken,
+        });
+      }
+      throw error;
+    }
   }
 }

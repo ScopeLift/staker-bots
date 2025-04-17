@@ -199,6 +199,8 @@ export const EXECUTOR = {
     gasBoostPercentage: 30,
     concurrentTransactions: 3,
     defaultTipReceiver: '',
+    minProfitMargin: 10,
+    staleTransactionThresholdMinutes: 5, // Clean up stale transactions after 5 minutes
   } as ExecutorConfig,
 
   DEFAULT_RELAYER_CONFIG: {
@@ -219,6 +221,8 @@ export const EXECUTOR = {
     gasBoostPercentage: 30,
     concurrentTransactions: 3,
     defaultTipReceiver: '',
+    minProfitMargin: 10,
+    staleTransactionThresholdMinutes: 5, // Clean up stale transactions after 5 minutes
   } as RelayerExecutorConfig,
 } as const;
 

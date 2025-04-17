@@ -60,6 +60,7 @@ export interface ExecutorConfig {
   concurrentTransactions: number;
   defaultTipReceiver: string;
   minProfitMargin: number;
+  staleTransactionThresholdMinutes?: number;
 }
 
 export interface RelayerExecutorConfig {
@@ -81,6 +82,7 @@ export interface RelayerExecutorConfig {
   concurrentTransactions: number;
   defaultTipReceiver: string;
   minProfitMargin: number;
+  staleTransactionThresholdMinutes?: number;
 }
 
 export interface TransactionReceipt {
@@ -145,4 +147,34 @@ export interface EthersTransactionReceipt {
   status: number;
   type: number;
   byzantium: boolean;
+}
+
+// Add Defender API error interfaces
+export interface DefenderErrorResponse {
+  status: number;
+  statusText: string;
+  data: {
+    error?: {
+      code: string;
+      message: string;
+      suggestedNonce?: number;
+      suggestedGasLimit?: string;
+    };
+  };
+}
+
+export interface DefenderErrorConfig {
+  method?: string;
+  url?: string;
+  data?: unknown;
+}
+
+export interface DefenderError extends Error {
+  response?: DefenderErrorResponse;
+  config?: DefenderErrorConfig;
+}
+
+// Add gas estimation error interface
+export interface GasEstimationError extends Error {
+  data?: unknown;
 }

@@ -12,6 +12,7 @@ import {
   EventProcessingError,
   DepositNotFoundError,
 } from '@/configuration/errors';
+import { ErrorLogger } from '@/configuration/errorLogger';
 
 /**
  * Processes blockchain events related to staking operations.
@@ -21,6 +22,7 @@ export class EventProcessor {
   constructor(
     private readonly db: IDatabase,
     private readonly logger: Logger,
+    private readonly errorLogger?: ErrorLogger,
   ) {}
 
   /**
@@ -63,13 +65,22 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
+      const context = {
+        depositId: event.depositId,
+        amount: event.amount.toString(),
+      };
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-stake-deposited',
+          ...context,
+        });
+      }
+
       throw new EventProcessingError(
         EVENT_TYPES.STAKE_DEPOSITED,
         error as Error,
-        {
-          depositId: event.depositId,
-          amount: event.amount.toString(),
-        },
+        context,
       );
     }
   }
@@ -99,13 +110,22 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
+      const context = {
+        depositId: event.depositId,
+        withdrawnAmount: event.withdrawnAmount.toString(),
+      };
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-stake-withdrawn',
+          ...context,
+        });
+      }
+
       throw new EventProcessingError(
         EVENT_TYPES.STAKE_WITHDRAWN,
         error as Error,
-        {
-          depositId: event.depositId,
-          withdrawnAmount: event.withdrawnAmount.toString(),
-        },
+        context,
       );
     }
   }
@@ -131,14 +151,23 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
+      const context = {
+        depositId: event.depositId,
+        oldDelegatee: event.oldDelegatee,
+        newDelegatee: event.newDelegatee,
+      };
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-delegatee-altered',
+          ...context,
+        });
+      }
+
       throw new EventProcessingError(
         EVENT_TYPES.DELEGATEE_ALTERED,
         error as Error,
-        {
-          depositId: event.depositId,
-          oldDelegatee: event.oldDelegatee,
-          newDelegatee: event.newDelegatee,
-        },
+        context,
       );
     }
   }
@@ -197,14 +226,23 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
+      const context = {
+        holder: event.holder,
+        oldDepositId: event.oldDepositId.toString(),
+        newDepositId: event.newDepositId.toString(),
+      };
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-deposit-updated',
+          ...context,
+        });
+      }
+
       throw new EventProcessingError(
         EVENT_TYPES.DEPOSIT_UPDATED,
         error as Error,
-        {
-          holder: event.holder,
-          oldDepositId: event.oldDepositId.toString(),
-          newDepositId: event.newDepositId.toString(),
-        },
+        context,
       );
     }
   }

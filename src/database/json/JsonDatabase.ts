@@ -9,6 +9,7 @@ import {
   ProcessingQueueStatus,
   TransactionQueueStatus,
   GovLstClaimHistory,
+  ErrorLog,
 } from '../interfaces/types';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { v4 as uuidv4 } from 'uuid';
@@ -22,6 +23,7 @@ export class JsonDatabase implements IDatabase {
     processing_queue: Record<string, ProcessingQueueItem>;
     transaction_queue: Record<string, TransactionQueueItem>;
     govlst_claim_history: Record<string, GovLstClaimHistory>;
+    errors: Record<string, ErrorLog>;
   };
 
   constructor(dbPath = 'staker-monitor-db.json') {
@@ -46,6 +48,7 @@ export class JsonDatabase implements IDatabase {
       processing_queue: {},
       transaction_queue: {},
       govlst_claim_history: {},
+      errors: {},
     };
 
     this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
@@ -85,6 +88,7 @@ export class JsonDatabase implements IDatabase {
             processing_queue: loadedData.processing_queue || {},
             transaction_queue: loadedData.transaction_queue || {},
             govlst_claim_history: loadedData.govlst_claim_history || {},
+            errors: loadedData.errors || {},
           };
 
           this.logger.info('Successfully loaded existing database:', {
@@ -449,5 +453,69 @@ export class JsonDatabase implements IDatabase {
     return Object.values(this.data.deposits).filter(
       (deposit) => deposit.owner_address === ownerAddress,
     );
+  }
+
+  // Error Logs methods
+  async createErrorLog(errorLog: ErrorLog): Promise<ErrorLog> {
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const newErrorLog: ErrorLog = {
+      id,
+      ...errorLog,
+      created_at: now,
+    };
+    this.data.errors[id] = newErrorLog;
+    await this.saveToFile();
+    return newErrorLog;
+  }
+
+  async getErrorLogs(limit = 50, offset = 0): Promise<ErrorLog[]> {
+    const errors = Object.values(this.data.errors);
+    // Sort by created_at in descending order (newest first)
+    errors.sort((a, b) => {
+      const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return dateB - dateA;
+    });
+    return errors.slice(offset, offset + limit);
+  }
+
+  async getErrorLogsByService(
+    serviceName: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<ErrorLog[]> {
+    const errors = Object.values(this.data.errors).filter(
+      (error) => error.service_name === serviceName,
+    );
+    // Sort by created_at in descending order (newest first)
+    errors.sort((a, b) => {
+      const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return dateB - dateA;
+    });
+    return errors.slice(offset, offset + limit);
+  }
+
+  async getErrorLogsBySeverity(
+    severity: string,
+    limit = 50,
+    offset = 0,
+  ): Promise<ErrorLog[]> {
+    const errors = Object.values(this.data.errors).filter(
+      (error) => error.severity === severity,
+    );
+    // Sort by created_at in descending order (newest first)
+    errors.sort((a, b) => {
+      const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return dateB - dateA;
+    });
+    return errors.slice(offset, offset + limit);
+  }
+
+  async deleteErrorLog(id: string): Promise<void> {
+    delete this.data.errors[id];
+    await this.saveToFile();
   }
 }
