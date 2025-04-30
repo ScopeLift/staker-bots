@@ -237,3 +237,73 @@ Note that the JSON database is not recommended for production use cases that req
 - High performance
 - Data redundancy
 - Complex queries
+
+## Error Logging
+
+The database layer includes support for logging errors to both Supabase and the local JSON database.
+
+### Error Log Schema
+
+The error logs are stored in the `errors` table with the following schema:
+
+```
+id               - UUID (primary key)
+service_name     - Text (the name of the service generating the error)
+error_message    - Text (the main error message)
+stack_trace      - Text (optional stack trace from the error)
+severity         - Text ('info', 'warn', 'error', 'fatal')
+meta             - JSONB (additional metadata about the error)
+context          - JSONB (context information about where the error occurred)
+created_at       - Timestamp (when the error was logged)
+```
+
+### Error Logging Methods
+
+The following methods are available for error logging:
+
+```typescript
+// Create a new error log
+await db.createErrorLog({
+  service_name: 'my-service',
+  error_message: 'Something went wrong',
+  severity: 'error',
+  stack_trace: new Error().stack,
+  meta: { additionalInfo: 'value' },
+  context: { requestId: '123' },
+});
+
+// Retrieve error logs with pagination
+const recentErrors = await db.getErrorLogs(10, 0); // limit 10, offset 0
+
+// Get errors for a specific service
+const serviceErrors = await db.getErrorLogsByService('my-service', 50, 0);
+
+// Get errors by severity
+const criticalErrors = await db.getErrorLogsBySeverity('fatal', 20, 0);
+
+// Delete an error log
+await db.deleteErrorLog('error-id');
+```
+
+### Using the Error Logger
+
+For a higher-level API, you can use the `ErrorLogger` class in the `src/configuration/errorLogger.ts` file:
+
+```typescript
+import { createErrorLogger } from '@/configuration/errorLogger';
+import { dbWrapper } from '@/database';
+
+// Create an error logger for a specific service
+const logger = createErrorLogger('my-service', dbWrapper);
+
+// Log different severity levels
+await logger.info('Operation started', { operationId: '123' });
+await logger.warn('Resource usage high', { cpuUsage: 89 });
+await logger.error(new Error('Operation failed'), { operationId: '123' });
+await logger.fatal('Critical system failure', { component: 'auth' });
+
+// Or use the generic logError method
+await logger.logError(error, 'error', { additionalContext: 'value' });
+```
+
+The logger automatically extracts context from `BaseError` types, making it easy to integrate with the existing error system.

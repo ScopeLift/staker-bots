@@ -17,9 +17,15 @@ import {
   ExecutorError,
   TransactionValidationError,
 } from '@/configuration/errors';
+import { ErrorLogger } from '@/configuration/errorLogger';
+import {
+  serializeProfitabilityCheck,
+  getCurrentBlockNumberWithRetry,
+  sleep,
+} from './strategies/helpers';
 
 // Basic sleep function implementation if not available in utils
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Supported executor types
@@ -30,12 +36,24 @@ export enum ExecutorType {
 }
 
 /**
+ * Extended configs with error logger
+ */
+export interface ExtendedExecutorConfig extends ExecutorConfig {
+  errorLogger?: ErrorLogger;
+}
+
+export interface ExtendedRelayerExecutorConfig extends RelayerExecutorConfig {
+  errorLogger?: ErrorLogger;
+}
+
+/**
  * Wrapper class that manages different executor implementations
  * Provides a unified interface for interacting with executors
  */
 export class ExecutorWrapper {
   private executor: IExecutor;
   private readonly logger: Logger;
+  private readonly errorLogger?: ErrorLogger;
   private isRunning = false;
   private lastProcessedBlock = 0;
   private readonly provider: ethers.Provider;
@@ -54,7 +72,9 @@ export class ExecutorWrapper {
     lstContract: ethers.Contract,
     provider: ethers.Provider,
     type: ExecutorType = ExecutorType.WALLET,
-    config: Partial<ExecutorConfig | RelayerExecutorConfig> = {},
+    config: Partial<
+      ExtendedExecutorConfig | ExtendedRelayerExecutorConfig
+    > = {},
     private readonly db?: DatabaseWrapper,
   ) {
     if (!provider) {
@@ -70,18 +90,20 @@ export class ExecutorWrapper {
     }
 
     this.logger = new ConsoleLogger('info');
+    this.errorLogger = config.errorLogger;
     this.provider = provider;
     this.type = type; // Store the type
 
     if (type === ExecutorType.WALLET) {
       // Create a BaseExecutor with local wallet
-      const fullConfig: ExecutorConfig = {
+      const fullConfig: ExtendedExecutorConfig = {
         ...EXECUTOR.DEFAULT_CONFIG,
-        ...(config as Partial<ExecutorConfig>),
+        ...(config as Partial<ExtendedExecutorConfig>),
         wallet: {
           ...EXECUTOR.DEFAULT_CONFIG.wallet,
-          ...(config as Partial<ExecutorConfig>).wallet,
+          ...(config as Partial<ExtendedExecutorConfig>).wallet,
         },
+        errorLogger: this.errorLogger,
       };
 
       this.executor = new BaseExecutor({
@@ -92,9 +114,10 @@ export class ExecutorWrapper {
       });
     } else if (type === ExecutorType.DEFENDER) {
       // Create a RelayerExecutor with OpenZeppelin Defender
-      const fullConfig: RelayerExecutorConfig = {
+      const fullConfig: ExtendedRelayerExecutorConfig = {
         ...EXECUTOR.DEFAULT_RELAYER_CONFIG,
-        ...(config as Partial<RelayerExecutorConfig>),
+        ...(config as Partial<ExtendedRelayerExecutorConfig>),
+        errorLogger: this.errorLogger,
       };
 
       this.executor = new RelayerExecutor(lstContract, provider, fullConfig);
@@ -119,30 +142,40 @@ export class ExecutorWrapper {
   async start(): Promise<void> {
     if (this.isRunning) return;
 
-    // Load last checkpoint
-    const checkpoint = await this.db?.getCheckpoint('executor');
-    if (checkpoint) {
-      this.lastProcessedBlock = checkpoint.last_block_number;
-      this.logger.info('Executor resuming from checkpoint', {
-        lastProcessedBlock: this.lastProcessedBlock,
-      });
-    } else {
-      // Initialize checkpoint if none exists
-      const currentBlock = await this.provider.getBlockNumber();
-      this.lastProcessedBlock = currentBlock;
-      await this.db?.updateCheckpoint({
-        component_type: 'executor',
-        last_block_number: currentBlock,
-        block_hash: ethers.ZeroHash,
-        last_update: new Date().toISOString(),
-      });
-    }
-
-    this.isRunning = true;
-    this.logger.info('Executor started');
     try {
+      // Load last checkpoint
+      const checkpoint = await this.db?.getCheckpoint('executor');
+      if (checkpoint) {
+        this.lastProcessedBlock = checkpoint.last_block_number;
+        this.logger.info('Executor resuming from checkpoint', {
+          lastProcessedBlock: this.lastProcessedBlock,
+        });
+      } else {
+        // Initialize checkpoint if none exists
+        const currentBlock = await this.provider.getBlockNumber();
+        this.lastProcessedBlock = currentBlock;
+        await this.db?.updateCheckpoint({
+          component_type: 'executor',
+          last_block_number: currentBlock,
+          block_hash: ethers.ZeroHash,
+          last_update: new Date().toISOString(),
+        });
+      }
+
+      this.isRunning = true;
+      this.logger.info('Executor started');
       await this.executor.start();
     } catch (error) {
+      this.logger.error('Failed to start executor', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'executor-start',
+        });
+      }
+
       throw new ExecutorError(
         'Failed to start executor',
         { error: error instanceof Error ? error.message : String(error) },
@@ -156,11 +189,22 @@ export class ExecutorWrapper {
    */
   async stop(): Promise<void> {
     if (!this.isRunning) return;
-    this.isRunning = false;
-    this.logger.info('Executor stopped');
+
     try {
+      this.isRunning = false;
+      this.logger.info('Executor stopped');
       await this.executor.stop();
     } catch (error) {
+      this.logger.error('Failed to stop executor', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'executor-stop',
+        });
+      }
+
       throw new ExecutorError(
         'Failed to stop executor',
         { error: error instanceof Error ? error.message : String(error) },
@@ -191,8 +235,23 @@ export class ExecutorWrapper {
           'CRITICAL: Received 403 from Defender. Exiting process.',
           { error: error.message },
         );
+
+        if (this.errorLogger) {
+          await this.errorLogger.error(error as Error, {
+            context: 'defender-authentication-failure',
+            severity: 'fatal',
+          });
+        }
+
         process.exit(1);
       }
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-executor-status',
+        });
+      }
+
       throw new ExecutorError(
         'Failed to get executor status',
         { error: error instanceof Error ? error.message : String(error) },
@@ -224,6 +283,14 @@ export class ExecutorWrapper {
         error: null,
       };
     } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'validate-transaction',
+          depositIds: depositIds.map(String),
+          profitability,
+        });
+      }
+
       throw new ExecutorError(
         'Failed to validate transaction',
         {
@@ -234,31 +301,6 @@ export class ExecutorWrapper {
         false,
       );
     }
-  }
-
-  private serializeProfitabilityCheck(
-    check: GovLstProfitabilityCheck,
-  ): GovLstProfitabilityCheck {
-    // Convert string values back to BigInt if they were serialized
-    const parseBigInt = (value: string | bigint): bigint => {
-      return typeof value === 'string' ? BigInt(value) : value;
-    };
-
-    return {
-      ...check,
-      estimates: {
-        expected_profit: parseBigInt(check.estimates.expected_profit),
-        gas_estimate: parseBigInt(check.estimates.gas_estimate),
-        gas_cost: parseBigInt(check.estimates.gas_cost),
-        total_shares: parseBigInt(check.estimates.total_shares),
-        payout_amount: parseBigInt(check.estimates.payout_amount),
-      },
-      deposit_details: check.deposit_details.map((detail) => ({
-        ...detail,
-        depositId: parseBigInt(detail.depositId),
-        rewards: parseBigInt(detail.rewards),
-      })),
-    };
   }
 
   /**
@@ -318,10 +360,18 @@ export class ExecutorWrapper {
     txData?: string,
   ): Promise<QueuedTransaction | null> {
     if (!this.isRunning) {
-      throw new ExecutorError('Executor is not running', {
+      const error = new ExecutorError('Executor is not running', {
         depositIds: depositIds.map((id) => id.toString()),
         profitability,
       });
+
+      if (this.errorLogger) {
+        await this.errorLogger.warn(error, {
+          context: 'queue-transaction-not-running',
+        });
+      }
+
+      throw error;
     }
     try {
       // Parse txData if it's a string and contains profitability data
@@ -330,7 +380,7 @@ export class ExecutorWrapper {
         try {
           const parsedData = JSON.parse(txData);
           if (parsedData.profitability) {
-            processedProfitability = this.serializeProfitabilityCheck(
+            processedProfitability = serializeProfitabilityCheck(
               parsedData.profitability,
             );
           }
@@ -342,10 +392,20 @@ export class ExecutorWrapper {
                 : String(parseError),
             txData,
           });
+
+          if (this.errorLogger) {
+            await this.errorLogger.warn(parseError as Error, {
+              context: 'parse-tx-data',
+              txData,
+            });
+          }
         }
       }
 
-      const currentBlock = await this.provider.getBlockNumber();
+      const currentBlock = await getCurrentBlockNumberWithRetry(
+        this.provider,
+        this.logger,
+      );
       const result = await this.executor.queueTransaction(
         depositIds,
         processedProfitability,
@@ -364,14 +424,34 @@ export class ExecutorWrapper {
               `Failed to get block details for ${currentBlock} (attempt ${i + 1}/3)`,
               { error: blockError },
             );
+
+            if (this.errorLogger) {
+              await this.errorLogger.warn(blockError as Error, {
+                context: 'get-block-details',
+                blockNumber: currentBlock,
+                attempt: i + 1,
+              });
+            }
+
             await sleep(500 * (i + 1));
           }
         }
         if (!block) {
+          const blockError = new Error(
+            `Block ${currentBlock} not found after retries`,
+          );
           this.logger.error(
             `Block ${currentBlock} not found after retries. Cannot update checkpoint.`,
           );
-          throw new Error(`Block ${currentBlock} not found after retries`);
+
+          if (this.errorLogger) {
+            await this.errorLogger.error(blockError, {
+              context: 'update-checkpoint-block-not-found',
+              blockNumber: currentBlock,
+            });
+          }
+
+          throw blockError;
         }
 
         await this.db?.updateCheckpoint({
@@ -394,8 +474,24 @@ export class ExecutorWrapper {
           'CRITICAL: Received 403 from Defender. Exiting process.',
           { error: error.message },
         );
+
+        if (this.errorLogger) {
+          await this.errorLogger.fatal(error as Error, {
+            context: 'defender-authentication-failure',
+            operation: 'queue-transaction',
+          });
+        }
+
         process.exit(1);
       }
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'queue-transaction',
+          depositIds: depositIds.map(String),
+        });
+      }
+
       throw new ExecutorError(
         'Failed to queue transaction',
         {
@@ -415,6 +511,12 @@ export class ExecutorWrapper {
     try {
       return await this.executor.getQueueStats();
     } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-queue-stats',
+        });
+      }
+
       throw new ExecutorError(
         'Failed to get queue statistics',
         { error: error instanceof Error ? error.message : String(error) },
@@ -432,6 +534,13 @@ export class ExecutorWrapper {
     try {
       return await this.executor.getTransaction(id);
     } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-transaction',
+          transactionId: id,
+        });
+      }
+
       throw new ExecutorError(
         'Failed to get transaction',
         {
@@ -454,6 +563,13 @@ export class ExecutorWrapper {
     try {
       return await this.executor.getTransactionReceipt(hash);
     } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-transaction-receipt',
+          transactionHash: hash,
+        });
+      }
+
       throw new ExecutorError(
         'Failed to get transaction receipt',
         {
@@ -473,6 +589,12 @@ export class ExecutorWrapper {
     try {
       return await this.executor.transferOutTips();
     } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'transfer-out-tips',
+        });
+      }
+
       throw new ExecutorError(
         'Failed to transfer tips',
         { error: error instanceof Error ? error.message : String(error) },
@@ -488,34 +610,17 @@ export class ExecutorWrapper {
     try {
       await this.executor.clearQueue();
     } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'clear-queue',
+        });
+      }
+
       throw new ExecutorError(
         'Failed to clear queue',
         { error: error instanceof Error ? error.message : String(error) },
         true,
       );
     }
-  }
-
-  private async getCurrentBlockNumberWithRetry(
-    retries = 3,
-    delayMs = 1000,
-  ): Promise<number> {
-    for (let i = 0; i < retries; i++) {
-      try {
-        return await this.provider.getBlockNumber();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to get block number (attempt ${i + 1}/${retries})`,
-          { error },
-        );
-        if (i === retries - 1) throw error;
-        await sleep(delayMs * (i + 1));
-      }
-    }
-    throw new ExecutorError(
-      'Failed to get block number after retries',
-      {},
-      true,
-    );
   }
 }
