@@ -10,7 +10,7 @@ import {
   ProfitabilityConfig,
 } from './interfaces/types';
 import { STAKER_ABI } from './constants';
-import { CONFIG } from '@/config';
+import { CONFIG } from '@/configuration/constants';
 import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
 import { Logger } from '@/monitor/logging';
 import {
@@ -29,6 +29,19 @@ interface IExecutor {
   getStatus: () => Promise<unknown>;
   getQueueStats: () => Promise<unknown>;
   getTransaction: (id: string) => Promise<unknown>;
+}
+
+// Define a more specific type for BaseProfitabilityEngine
+interface BaseProfitabilityEngineType {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  getStatus(): Promise<{
+    isRunning: boolean;
+    lastGasPrice: bigint;
+    lastUpdateTimestamp: number;
+  }>;
+  checkProfitability(deposit: ProfitabilityDeposit): Promise<ProfitabilityCheck>;
+  analyzeBatchProfitability(deposits: ProfitabilityDeposit[]): Promise<BatchAnalysis>;
 }
 
 /**
@@ -60,7 +73,7 @@ function serializeBigInts(obj: unknown): unknown {
 }
 
 export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
-  private engine: IProfitabilityEngine;
+  private engine: BaseProfitabilityEngineType;
   private db: IDatabase;
   private logger: Logger;
   private isRunning: boolean = false;
@@ -71,7 +84,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
   private executor: IExecutor | null = null; // Will be set later via setExecutor method
   private provider: ethers.Provider;
   private stakerAddress: string;
-  private config: ProfitabilityConfig;
+  config: ProfitabilityConfig;
   private priceFeed: CoinMarketCapFeed;
   private stakerContract: ethers.Contract & {
     deposits(depositId: bigint): Promise<{

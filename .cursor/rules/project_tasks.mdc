@@ -1,0 +1,51 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+1. Anytime you get a request to complete a task you will fill this and create a new file with the name of the task in .tasks:   # {name-of-task}-task.md
+
+## Status: [NOT STARTED | IN PROGRESS | COMPLETED | BLOCKED]
+
+## Task Description
+[Brief description of the task and its objectives]
+
+## Subtasks
+- [ ] Subtask 1: [Description of the first step]
+- [ ] Subtask 2: [Description of the second step]
+- [ ] Subtask 3: [Description of the third step]
+- [ ] Subtask 4: [Description of the fourth step]
+- [ ] Subtask 5: [Description of the fifth step]
+
+## Progress Log
+### [Date] - [Status Update]
+[Notes about what was done, challenges encountered, and decisions made]
+
+### [Date] - [Status Update]
+[Notes about what was done, challenges encountered, and decisions made]
+
+## Completion Report
+### Summary of Work Completed
+[Overview of all completed tasks and their outcomes]
+
+### Challenges Encountered
+[Description of any obstacles or issues faced during the process]
+
+### Solutions Implemented
+[Explanation of how challenges were addressed]
+
+### Results Achieved
+[Detailed account of what was accomplished and how it meets the task's objectives]
+
+### Next Steps
+[If applicable, what follows after this task is completed]
+
+### Lessons Learned
+[Insights gained that could improve future tasks]
+
+## Goal Assessment
+- [ ] Goal Reached
+- [ ] Goal Not Reached - Requires Further Action
+
+### Action Plan (if goal not reached)
+[Outline of additional steps needed to achieve the goal]

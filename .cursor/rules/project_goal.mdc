@@ -1,0 +1,108 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Project Goal for GovLst Rewards Claimer
+
+## Primary Objective
+
+The system will monitor LST deposits, analyze accumulated rewards, and execute the `claimAndDistributeReward` function in an optimized, gas-efficient manner.
+
+## Context from GovLst Contract
+
+The GovLst contract (a liquid staking token implementation) contains a key method that our system will interact with:
+
+```solidity
+function claimAndDistributeReward(
+  address _recipient,
+  uint256 _minExpectedReward,
+  Staker.DepositIdentifier[] calldata _depositIds
+) external virtual {
+  // Transfer stake token from caller to LST
+  STAKE_TOKEN.safeTransferFrom(msg.sender, address(this), _rewardParams.payoutAmount);
+  
+  // Stake the rewards with default delegatee
+  STAKER.stakeMore(DEFAULT_DEPOSIT_ID, _rewardParams.payoutAmount);
+
+  // Claim reward tokens for each deposit
+  uint256 _rewards;
+  for (uint256 _index = 0; _index < _depositIds.length; _index++) {
+    _rewards += STAKER.claimReward(_depositIds[_index]);
+  }
+
+  // Ensure rewards meet expectations
+  if (_rewards < _minExpectedReward) {
+    revert GovLst__InsufficientRewards();
+  }
+  
+  // Transfer reward tokens to recipient
+  REWARD_TOKEN.safeTransfer(_recipient, _rewards);
+}
+```
+
+Key points from this function:
+1. The caller must provide `_rewardParams.payoutAmount` of stake token
+2. The caller receives `_rewards` amount of reward token
+3. The transaction is profitable when `value_of_rewards > value_of_payout + gas_cost`
+
+## Detailed Goals
+
+### 1. Seamless Integration with Existing System
+
+- Maintain the existing monitor, profitability engine, and executor components
+- Replace the calculator component with the new GovLst rewards claimer
+- Reuse the existing database structure and extend it as needed
+- Maintain consistent logging, monitoring, and error handling patterns
+
+### 2. Deposit Monitoring and Reward Analysis
+
+- Identify all deposits owned by GovLst contracts
+- Track and store these deposits in the database
+- Calculate accumulated unclaimed rewards for each deposit
+- Group deposits based on ownership (which GovLst contract owns them)
+
+### 3. Profitability Optimization
+
+- Calculate the gas cost of claiming rewards for different batch sizes
+- Determine when claiming is profitable based on:
+  - Unclaimed reward amount and token price
+  - Current payout amount and token price
+  - Gas costs for the transaction
+  - Configurable profit margin requirements
+- Group deposits into optimally sized batches for maximum profitability
+
+### 4. Batched Reward Claiming
+
+- Implement intelligent batching of deposits for gas efficiency
+- Execute `claimAndDistributeReward` for profitable batches
+- Set appropriate `_minExpectedReward` values to prevent frontrunning
+- Handle transaction failures and implement retry mechanisms
+
+### 5. Monitoring and Reporting
+
+- Track successful and failed claim attempts
+- Maintain a history of claimed rewards
+- Calculate and report total claimed rewards
+- Monitor profitability metrics over time
+
+## Success Criteria
+
+The GovLst Rewards Claimer will be considered successful when it:
+
+1. Fully replaces the calculator component without disrupting other system functionality
+2. Autonomously identifies and claims rewards when profitable
+3. Consistently generates positive returns (reward value > payout value + gas costs)
+4. Efficiently batches deposits to minimize gas costs
+5. Maintains accurate records of claim history and reward distribution
+6. Demonstrates robustness against network conditions and MEV attacks
+7. Provides clear monitoring and reporting on reward claiming activities
+
+## Technical Implementation Focus
+
+1. Develop a robust algorithm for determining optimal batch composition
+2. Implement accurate reward calculation and profitability analysis
+3. Create a flexible system that can handle multiple GovLst contract instances
+4. Build efficient database queries for deposit and reward tracking
+5. Design a resilient execution flow with proper error handling and recovery
+6. Ensure gas-efficient transaction execution with appropriate parameters

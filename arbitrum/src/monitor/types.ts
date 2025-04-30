@@ -1,6 +1,9 @@
 import { BigNumberish, ethers } from 'ethers';
 import { IDatabase, ProcessingCheckpoint } from '@/database';
 
+/**
+ * Configuration for the monitor component
+ */
 export interface MonitorConfig {
   provider: ethers.Provider;
   stakerAddress: string;
@@ -21,6 +24,9 @@ export interface MonitorConfig {
   databaseType: 'json' | 'supabase';
 }
 
+/**
+ * Event data for StakeDeposited events
+ */
 export interface StakeDepositedEvent {
   depositId: string;
   ownerAddress: string;
@@ -30,13 +36,19 @@ export interface StakeDepositedEvent {
   transactionHash: string;
 }
 
+/**
+ * Event data for StakeWithdrawn events
+ */
 export interface StakeWithdrawnEvent {
   depositId: string;
+  withdrawnAmount: BigNumberish;
   blockNumber: number;
   transactionHash: string;
-  withdrawnAmount: bigint;
 }
 
+/**
+ * Event data for DelegateeAltered events
+ */
 export interface DelegateeAlteredEvent {
   depositId: string;
   oldDelegatee: string;
@@ -45,14 +57,9 @@ export interface DelegateeAlteredEvent {
   transactionHash: string;
 }
 
-export interface ProcessingResult {
-  success: boolean;
-  error?: Error;
-  retryable: boolean;
-  blockNumber: number;
-  eventHash: string;
-}
-
+/**
+ * Status of the monitor component
+ */
 export interface MonitorStatus {
   isRunning: boolean;
   lastProcessedBlock: number;
@@ -64,4 +71,32 @@ export interface MonitorStatus {
     networkName: string;
     isConnected: boolean;
   };
+}
+
+/**
+ * Result of processing an event
+ */
+export interface ProcessingResult {
+  success: boolean;
+  blockNumber: number;
+  eventHash: string;
+  error?: Error;
+  retryable: boolean;
+}
+
+/**
+ * A group of related events from the same transaction
+ */
+export interface EventGroup {
+  deposited?: ethers.Log;
+  altered?: ethers.Log;
+}
+
+/**
+ * Entry for a transaction containing related events
+ */
+export interface TransactionEntry {
+  transactionHash: string;
+  blockNumber: number;
+  events: EventGroup;
 }

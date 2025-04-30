@@ -4,19 +4,30 @@ import { ethers } from 'ethers';
 // Load environment variables
 config();
 
-// Validate required environment variables
-const requiredEnvVars = [
-  'RPC_URL',
-  'STAKER_CONTRACT_ADDRESS',
-  'CHAIN_ID',
-] as const;
+/**
+ * Validates required environment variables
+ * @throws Error if any required variables are missing
+ */
+function validateEnvVars() {
+  const requiredEnvVars = [
+    'RPC_URL',
+    'STAKER_CONTRACT_ADDRESS',
+    'CHAIN_ID',
+  ] as const;
 
-for (const envVar of requiredEnvVars) {
-  if (!process.env[envVar]) {
-    throw new Error(`Missing required environment variable: ${envVar}`);
+  for (const envVar of requiredEnvVars) {
+    if (!process.env[envVar]) {
+      throw new Error(`Missing required environment variable: ${envVar}`);
+    }
   }
 }
 
+// Validate environment variables
+validateEnvVars();
+
+/**
+ * Central configuration object for the application
+ */
 export const CONFIG = {
   supabase: {
     url: process.env.SUPABASE_URL,
@@ -59,7 +70,7 @@ export const CONFIG = {
   },
   profitability: {
     minProfitMargin: ethers.parseEther('0'), // 0 tokens minimum profit
-    gasPriceBuffer: 50, // 50% buffer for gas price volatility (increased from 20%)
+    gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,
     defaultTipReceiver: process.env.TIP_RECEIVER_ADDRESS || '',
     rewardTokenAddress: process.env.REWARD_TOKEN_ADDRESS || '',
@@ -70,10 +81,17 @@ export const CONFIG = {
   },
 } as const;
 
-// Helper to create provider
-export const createProvider = () => {
-  return new ethers.JsonRpcProvider(
-    CONFIG.monitor.rpcUrl,
-    CONFIG.monitor.chainId,
-  );
-};
+/**
+ * Default delegatee address when none is provided
+ */
+export const DEFAULT_DELEGATEE_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+/**
+ * Constants for processing components
+ */
+export const PROCESSING_COMPONENT = {
+  MONITOR: 'staker-monitor',
+  PROFITABILITY: 'profitability-engine',
+  EXECUTOR: 'transaction-executor',
+  INITIAL_BLOCK_HASH: '0x0000000000000000000000000000000000000000000000000000000000000000',
+} as const; 

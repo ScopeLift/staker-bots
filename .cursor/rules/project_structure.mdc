@@ -1,0 +1,146 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Staker Bots Monorepo Structure
+
+## Repository Organization
+
+This monorepo contains various implementations of staker bots for different protocols and chains, currently focusing on Obol and Arbitrum:
+
+```
+staker-bots/
+├── obol/                              # Obol staker bot implementation (reference)
+│   ├── src/                           # Source code
+│   │   ├── configuration/             # Configuration management
+│   │   ├── database/                  # Database layer
+│   │   │   ├── interfaces/            # Database interfaces and types
+│   │   │   ├── json/                  # JSON file storage implementation
+│   │   │   └── supabase/              # Supabase storage implementation
+│   │   │       └── migrations/        # Database schema migrations
+│   │   ├── executor/                  # Transaction executor
+│   │   │   ├── interfaces/            # Executor interfaces
+│   │   │   └── strategies/            # Execution strategies (wallet, relayer)
+│   │   ├── monitor/                   # On-chain event monitoring
+│   │   ├── prices/                    # Price feed implementations
+│   │   ├── profitability/             # Profitability analysis
+│   │   │   ├── interfaces/            # Profitability interfaces
+│   │   │   └── strategies/            # Analysis strategies
+│   │   └── tests/                     # Tests
+│   │       └── integration/           # Integration tests
+│   ├── .gitignore                     # Git ignore rules
+│   ├── package.json                   # Package configuration
+│   ├── tsconfig.json                  # TypeScript configuration
+│   └── README.md                      # Detailed documentation
+├── arbitrum/                          # Arbitrum staker bot implementation (needs refactoring)
+│   ├── src/                           # Source code
+│   │   ├── calculator/                # Calculator component (to be evaluated/refactored)
+│   │   │   ├── interfaces/            # Calculator interfaces
+│   │   │   └── strategies/            # Calculator strategies
+│   │   ├── database/                  # Database layer
+│   │   │   ├── interfaces/            # Database interfaces and types
+│   │   │   ├── json/                  # JSON file storage implementation
+│   │   │   └── supabase/              # Supabase storage implementation
+│   │   │       └── migrations/        # Database schema migrations
+│   │   ├── executor/                  # Transaction executor
+│   │   │   ├── interfaces/            # Executor interfaces
+│   │   │   └── strategies/            # Execution strategies
+│   │   ├── monitor/                   # On-chain event monitoring
+│   │   ├── profitability/             # Profitability analysis
+│   │   │   ├── interfaces/            # Profitability interfaces
+│   │   │   └── strategies/            # Analysis strategies
+│   │   ├── shared/                    # Shared utilities
+│   │   │   └── price-feeds/           # Price feed implementations
+│   │   │       └── coinmarketcap/     # CoinMarketCap price feed
+│   │   └── tests/                     # Tests
+│   │       └── abis/                  # Contract ABIs for testing
+│   ├── .gitignore                     # Git ignore rules
+│   ├── package.json                   # Package configuration
+│   ├── tsconfig.json                  # TypeScript configuration
+│   └── README.md                      # Documentation (needs enhancement)
+├── .cursor/                           # Cursor IDE configuration
+│   └── rules/                         # Project rules for development
+├── .github/                           # GitHub configuration
+│   └── workflows/                     # GitHub Actions workflows
+├── .gitignore                         # Root Git ignore rules
+├── package.json                       # Root package configuration
+├── pnpm-lock.yaml                     # PNPM lock file
+├── pnpm-workspace.yaml                # PNPM workspace configuration
+├── README.md                          # Root documentation
+└── tsconfig.json                      # Root TypeScript configuration
+```
+
+## Key Architectural Components
+
+Each staker bot implementation (e.g., Obol, Arbitrum) consists of these core components:
+
+### 1. Monitor Component
+
+- **Purpose**: Tracks on-chain events related to staking activities
+- **Functionality**:
+  - Polls blockchain for new events
+  - Processes stake deposits/withdrawals
+  - Maintains processing checkpoints
+  - Handles network reorgs
+
+### 2. Profitability Engine
+
+- **Purpose**: Analyzes deposits for profitable actions
+- **Functionality**:
+  - Calculates potential rewards
+  - Estimates gas costs
+  - Determines profitability
+  - Queues profitable transactions
+
+### 3. Executor Component
+
+- **Purpose**: Executes on-chain transactions
+- **Functionality**:
+  - Manages transaction queue
+  - Handles gas optimization
+  - Supports multiple execution strategies (wallet, defender)
+  - Implements retry logic
+
+### 4. Database Component
+
+- **Purpose**: Provides persistent storage for system state
+- **Functionality**:
+  - Stores deposits, events, checkpoints
+  - Manages processing and transaction queues
+  - Supports multiple backends (Supabase, JSON)
+
+### 5. Configuration System
+
+- **Purpose**: Manages application configuration
+- **Functionality**:
+  - Environment variable handling
+  - Default configuration values
+  - Validation and type safety
+
+## Refactoring Focus Areas
+
+When refactoring the Arbitrum implementation to match Obol:
+
+1. Ensure all components follow the same interfaces and patterns
+2. Align directory structures between implementations
+3. Standardize configuration approach
+4. Match the README detail level and documentation quality
+5. Implement consistent error handling and logging
+6. Use the same functional programming patterns throughout
+
+## Difference Between Implementations
+
+1. **Obol**:
+   - Reference implementation with latest standards
+   - Cleaner functional programming approach
+   - More detailed documentation
+   - Dedicated configuration directory
+   - Integration tests in `tests/integration/`
+
+2. **Arbitrum**:
+   - Earlier implementation that needs updating
+   - Has a `calculator` component that may need evaluation
+   - Uses `shared/` directory for utilities instead of dedicated directories
+   - Documentation needs enhancement
+   - Directory structure needs standardization

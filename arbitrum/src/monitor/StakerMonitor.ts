@@ -10,88 +10,206 @@ import {
   StakeWithdrawnEvent,
   DelegateeAlteredEvent,
 } from './types';
-import { STAKER_ABI } from './constants';
+import { 
+  MONITOR_EVENTS, 
+  PROCESSING_COMPONENT
+} from './constants';
+import { MonitorError } from './errors';
+import { ErrorLogger } from '@/configuration/errorLogger';
+import { stakerAbi } from '@/configuration/abis';
 
+/**
+ * Extended MonitorConfig that includes the error logger
+ */
+export interface ExtendedMonitorConfig extends MonitorConfig {
+  errorLogger?: ErrorLogger;
+}
+
+/**
+ * StakerMonitor is responsible for monitoring staking events on the blockchain.
+ * It processes StakeDeposited, StakeWithdrawn, and DelegateeAltered events,
+ * maintains state in a database, and emits events for other components.
+ */
 export class StakerMonitor extends EventEmitter {
   private readonly db: IDatabase;
   private readonly provider: ethers.Provider;
   private readonly contract: ethers.Contract;
   private readonly logger: Logger;
+  private readonly errorLogger?: ErrorLogger;
   private readonly eventProcessor: EventProcessor;
   private readonly config: MonitorConfig;
   private isRunning: boolean;
   private processingPromise?: Promise<void>;
   private lastProcessedBlock: number;
 
-  constructor(config: MonitorConfig) {
+  constructor(config: ExtendedMonitorConfig) {
     super();
     this.config = config;
     this.db = config.database;
     this.provider = config.provider;
+    this.errorLogger = config.errorLogger;
     this.contract = new ethers.Contract(
       config.stakerAddress,
-      STAKER_ABI,
+      stakerAbi,
       config.provider,
     );
     this.logger = new ConsoleLogger(config.logLevel);
-    this.eventProcessor = new EventProcessor(this.db, this.logger);
+    this.eventProcessor = new EventProcessor(
+      this.db, 
+      this.logger,
+      this.errorLogger
+    );
     this.isRunning = false;
     this.lastProcessedBlock = config.startBlock;
   }
 
+  /**
+   * Starts the monitor process. If already running, logs a warning and returns.
+   * Resumes from last checkpoint if available, otherwise starts from configured block.
+   */
   async start(): Promise<void> {
     if (this.isRunning) {
       this.logger.warn('Monitor is already running');
       return;
     }
 
-    this.isRunning = true;
-    this.logger.info('Starting Staker Monitor', {
-      network: this.config.networkName,
-      chainId: this.config.chainId,
-      address: this.config.stakerAddress,
-    });
+    try {
+      this.isRunning = true;
+      const checkpoint = await this.db.getCheckpoint(PROCESSING_COMPONENT.TYPE);
 
-    // Check for existing checkpoint first
-    const checkpoint = await this.db.getCheckpoint('staker-monitor');
+      if (checkpoint) {
+        this.lastProcessedBlock = checkpoint.last_block_number;
+        this.logger.info('Resuming from checkpoint', {
+          blockNumber: this.lastProcessedBlock,
+          blockHash: checkpoint.block_hash,
+          lastUpdate: checkpoint.last_update,
+        });
+      } else {
+        // Initialize with start block if no checkpoint exists
+        this.lastProcessedBlock = this.config.startBlock;
+        await this.db.updateCheckpoint({
+          component_type: PROCESSING_COMPONENT.TYPE,
+          last_block_number: this.config.startBlock,
+          block_hash: PROCESSING_COMPONENT.INITIAL_BLOCK_HASH,
+          last_update: new Date().toISOString(),
+        });
+        this.logger.info('Starting from initial block', {
+          blockNumber: this.lastProcessedBlock,
+        });
+      }
 
-    if (checkpoint) {
-      this.lastProcessedBlock = checkpoint.last_block_number;
-      this.logger.info('Resuming from checkpoint', {
-        blockNumber: this.lastProcessedBlock,
-        blockHash: checkpoint.block_hash,
-        lastUpdate: checkpoint.last_update,
-      });
-    } else {
-      // Initialize with start block if no checkpoint exists
-      this.lastProcessedBlock = this.config.startBlock;
-      await this.db.updateCheckpoint({
-        component_type: 'staker-monitor',
-        last_block_number: this.config.startBlock,
-        block_hash:
-          '0x0000000000000000000000000000000000000000000000000000000000000000',
-        last_update: new Date().toISOString(),
-      });
-      this.logger.info('Starting from initial block', {
-        blockNumber: this.lastProcessedBlock,
-      });
+      this.processingPromise = this.processLoop();
+    } catch (error) {
+      this.logger.error('Failed to start monitor:', { error });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'monitor-start',
+        });
+      }
+      throw error;
     }
-
-    this.processingPromise = this.processLoop();
   }
 
+  /**
+   * Stops the monitor process gracefully.
+   */
   async stop(): Promise<void> {
-    if (!this.isRunning) {
-      return;
-    }
+    if (!this.isRunning) return;
 
-    this.isRunning = false;
-    if (this.processingPromise) {
-      await this.processingPromise;
+    try {
+      this.isRunning = false;
+      if (this.processingPromise) {
+        await this.processingPromise;
+      }
+      this.logger.info('Staker Monitor stopped');
+    } catch (error) {
+      this.logger.error('Error stopping monitor:', { error });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'monitor-stop',
+        });
+      }
+      throw error;
     }
-    this.logger.info('Staker Monitor stopped');
   }
 
+  /**
+   * Returns the current status of the monitor including:
+   * - Running state
+   * - Last processed block
+   * - Current chain block
+   * - Processing lag
+   * - Last checkpoint
+   * - Network status
+   */
+  async getMonitorStatus(): Promise<MonitorStatus> {
+    try {
+      const currentBlock = await this.getCurrentBlock();
+      const processingLag = await this.getProcessingLag();
+      const checkpoint = await this.db.getCheckpoint(PROCESSING_COMPONENT.TYPE);
+
+      return {
+        isRunning: this.isRunning,
+        lastProcessedBlock: this.lastProcessedBlock,
+        currentChainBlock: currentBlock,
+        processingLag,
+        lastCheckpoint: checkpoint!,
+        networkStatus: {
+          chainId: this.config.chainId,
+          networkName: this.config.networkName,
+          isConnected: true,
+        },
+      };
+    } catch (error) {
+      this.logger.error('Error getting monitor status:', { error });
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-monitor-status',
+        });
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Gets the current block number from the provider
+   */
+  async getCurrentBlock(): Promise<number> {
+    try {
+      return await this.provider.getBlockNumber();
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'get-current-block',
+        });
+      }
+      throw new MonitorError(
+        'Failed to get current block number', 
+        { error },
+        true
+      );
+    }
+  }
+
+  /**
+   * Gets the last processed block number
+   */
+  async getLastProcessedBlock(): Promise<number> {
+    return this.lastProcessedBlock;
+  }
+
+  /**
+   * Calculates the processing lag (difference between current chain block and last processed block)
+   */
+  async getProcessingLag(): Promise<number> {
+    const currentBlock = await this.getCurrentBlock();
+    return currentBlock - this.lastProcessedBlock;
+  }
+
+  /**
+   * Main processing loop that continuously monitors for new blocks and processes events.
+   * Handles block range processing, checkpointing, and error recovery.
+   */
   private async processLoop(): Promise<void> {
     while (this.isRunning) {
       try {
@@ -99,11 +217,6 @@ export class StakerMonitor extends EventEmitter {
         const targetBlock = currentBlock - this.config.confirmations;
 
         if (targetBlock <= this.lastProcessedBlock) {
-          this.logger.debug('Waiting for new blocks', {
-            currentBlock,
-            targetBlock,
-            lastProcessedBlock: this.lastProcessedBlock,
-          });
           await new Promise((resolve) =>
             setTimeout(resolve, this.config.pollInterval * 1000),
           );
@@ -121,9 +234,8 @@ export class StakerMonitor extends EventEmitter {
         const block = await this.provider.getBlock(toBlock);
         if (!block) throw new Error(`Block ${toBlock} not found`);
 
-        // Update checkpoint
         await this.db.updateCheckpoint({
-          component_type: 'staker-monitor',
+          component_type: PROCESSING_COMPONENT.TYPE,
           last_block_number: toBlock,
           block_hash: block.hash!,
           last_update: new Date().toISOString(),
@@ -135,6 +247,14 @@ export class StakerMonitor extends EventEmitter {
           error,
           lastProcessedBlock: this.lastProcessedBlock,
         });
+
+        if (this.errorLogger) {
+          await this.errorLogger.error(error as Error, {
+            context: 'processing-loop',
+            fromBlock: this.lastProcessedBlock + 1,
+          });
+        }
+
         await new Promise((resolve) =>
           setTimeout(resolve, this.config.pollInterval * 1000),
         );
@@ -142,283 +262,289 @@ export class StakerMonitor extends EventEmitter {
     }
   }
 
+  /**
+   * Processes events within a specified block range.
+   * Fetches and processes StakeDeposited, StakeWithdrawn, and DelegateeAltered events.
+   * Groups related events by transaction for atomic processing.
+   *
+   * @param fromBlock - Starting block number
+   * @param toBlock - Ending block number
+   */
   private async processBlockRange(
     fromBlock: number,
     toBlock: number,
   ): Promise<void> {
-    const [depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all(
-      [
-        this.contract.queryFilter(
-          this.contract.filters.StakeDeposited!(),
-          fromBlock,
-          toBlock,
-        ),
-        this.contract.queryFilter(
-          this.contract.filters.StakeWithdrawn!(),
-          fromBlock,
-          toBlock,
-        ),
-        this.contract.queryFilter(
-          this.contract.filters.DelegateeAltered!(),
-          fromBlock,
-          toBlock,
-        ),
-      ],
-    );
+    try {
+      this.logger.info('Processing block range', { fromBlock, toBlock });
 
-    // Group events by transaction hash for correlation
-    const eventsByTx = new Map<
-      string,
-      {
-        deposited?: ethers.EventLog;
-        altered?: ethers.EventLog;
-      }
-    >();
-
-    // Group StakeDeposited events
-    for (const event of depositedEvents) {
-      const typedEvent = event as ethers.EventLog;
-      const existing = eventsByTx.get(typedEvent.transactionHash) || {};
-      this.logger.debug('Adding StakeDeposited event to transaction group', {
-        txHash: typedEvent.transactionHash,
-        depositId: typedEvent.args.depositId.toString(),
-        blockNumber: typedEvent.blockNumber,
-        hasExistingAltered: !!existing.altered,
-      });
-      eventsByTx.set(typedEvent.transactionHash, {
-        ...existing,
-        deposited: typedEvent,
-      });
-    }
-
-    // Group DelegateeAltered events
-    for (const event of alteredEvents) {
-      const typedEvent = event as ethers.EventLog;
-      const existing = eventsByTx.get(typedEvent.transactionHash) || {};
-      this.logger.debug('Adding DelegateeAltered event to transaction group', {
-        txHash: typedEvent.transactionHash,
-        depositId: typedEvent.args.depositId.toString(),
-        blockNumber: typedEvent.blockNumber,
-        hasExistingDeposit: !!existing.deposited,
-        oldDelegatee: typedEvent.args.oldDelegatee,
-        newDelegatee: typedEvent.args.newDelegatee,
-      });
-      eventsByTx.set(typedEvent.transactionHash, {
-        ...existing,
-        altered: typedEvent,
-      });
-    }
-
-    // If we found any events, fetch and log the full blocks
-    const eventBlocks = new Set([
-      ...depositedEvents.map((e) => e.blockNumber),
-      ...withdrawnEvents.map((e) => e.blockNumber),
-      ...alteredEvents.map((e) => e.blockNumber),
-    ]);
-
-    for (const blockNumber of eventBlocks) {
-      const block = await this.provider.getBlock(blockNumber!, true);
-      if (!block) continue;
-
-      const txs = await Promise.all(
-        block.transactions.map(async (txHash) => {
-          const tx = await this.provider.getTransaction(txHash as string);
-          return tx
-            ? {
-                hash: tx.hash,
-                from: tx.from,
-                to: tx.to,
-                index: tx.blockNumber,
-              }
-            : null;
-        }),
+      const [depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all(
+        [
+          this.contract.queryFilter(
+            this.contract.filters.StakeDeposited!(),
+            fromBlock,
+            toBlock,
+          ),
+          this.contract.queryFilter(
+            this.contract.filters.StakeWithdrawn!(),
+            fromBlock,
+            toBlock,
+          ),
+          this.contract.queryFilter(
+            this.contract.filters.DelegateeAltered!(),
+            fromBlock,
+            toBlock,
+          ),
+        ],
       );
 
-      this.logger.info('Full block details for block with events:', {
-        blockNumber,
-        blockHash: block.hash,
-        timestamp: block.timestamp,
-        transactions: txs.filter((tx) => tx !== null),
-      });
-    }
+      // Group events by transaction hash for correlation
+      const eventsByTx = new Map<
+        string,
+        {
+          deposited?: ethers.EventLog;
+          altered?: ethers.EventLog;
+        }
+      >();
 
-    // Process events by transaction
-    for (const [txHash, events] of eventsByTx) {
-      if (events.deposited) {
-        const depositEvent = events.deposited;
-        const { depositId, owner: ownerAddress, amount } = depositEvent.args;
-
-        // Get the delegatee from the DelegateeAltered event if it exists, otherwise use owner
-        const delegateeAddress = events.altered
-          ? events.altered.args.newDelegatee
-          : ownerAddress;
-
-        this.logger.info('Processing deposit transaction group', {
-          txHash,
-          depositId: depositId.toString(),
-          ownerAddress,
-          delegateeAddress,
-          amount: amount.toString(),
-          blockNumber: depositEvent.blockNumber,
-          hasAlteredEvent: !!events.altered,
-          originalDelegatee: events.altered
-            ? events.altered.args.oldDelegatee
-            : null,
+      // Group StakeDeposited events
+      for (const event of depositedEvents) {
+        const typedEvent = event as ethers.EventLog;
+        const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+        this.logger.debug('Adding StakeDeposited event to transaction group', {
+          txHash: typedEvent.transactionHash,
+          depositId: typedEvent.args.depositId.toString(),
+          blockNumber: typedEvent.blockNumber,
+          hasExistingAltered: !!existing.altered,
         });
-
-        await this.handleStakeDeposited({
-          depositId: depositId.toString(),
-          ownerAddress,
-          delegateeAddress,
-          amount,
-          blockNumber: depositEvent.blockNumber!,
-          transactionHash: depositEvent.transactionHash!,
+        eventsByTx.set(typedEvent.transactionHash, {
+          ...existing,
+          deposited: typedEvent,
         });
       }
-    }
 
-    // Process remaining events (StakeWithdrawn and standalone DelegateeAltered)
-    for (const event of withdrawnEvents) {
-      const typedEvent = event as ethers.EventLog;
-      const { depositId, amount } = typedEvent.args;
-      this.logger.debug('Processing StakeWithdrawn event', {
-        depositId: depositId.toString(),
-        amount: amount.toString(),
-        blockNumber: typedEvent.blockNumber,
-        txHash: typedEvent.transactionHash,
-      });
-      await this.handleStakeWithdrawn({
-        depositId: depositId.toString(),
-        withdrawnAmount: amount,
-        blockNumber: typedEvent.blockNumber!,
-        transactionHash: typedEvent.transactionHash!,
-      });
-    }
-
-    // Only process DelegateeAltered events that weren't part of a deposit
-    for (const event of alteredEvents) {
-      const typedEvent = event as ethers.EventLog;
-      const txEvents = eventsByTx.get(typedEvent.transactionHash);
-      // Skip if this was part of a deposit transaction
-      if (txEvents?.deposited) continue;
-
-      const { depositId, oldDelegatee, newDelegatee } = typedEvent.args;
-      this.logger.debug('Processing DelegateeAltered event', {
-        depositId,
-        oldDelegatee,
-        newDelegatee,
-        blockNumber: typedEvent.blockNumber,
-        txHash: typedEvent.transactionHash,
-      });
-      await this.handleDelegateeAltered({
-        depositId,
-        oldDelegatee,
-        newDelegatee,
-        blockNumber: typedEvent.blockNumber!,
-        transactionHash: typedEvent.transactionHash!,
-      });
-    }
-  }
-
-  async handleStakeDeposited(event: StakeDepositedEvent): Promise<void> {
-    let attempts = 0;
-    while (attempts < this.config.maxRetries) {
-      const result = await this.eventProcessor.processStakeDeposited(event);
-      if (result.success || !result.retryable) {
-        return;
+      // Group DelegateeAltered events
+      for (const event of alteredEvents) {
+        const typedEvent = event as ethers.EventLog;
+        const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+        this.logger.debug('Adding DelegateeAltered event to transaction group', {
+          txHash: typedEvent.transactionHash,
+          depositId: typedEvent.args.depositId.toString(),
+          blockNumber: typedEvent.blockNumber,
+          hasExistingDeposit: !!existing.deposited,
+          oldDelegatee: typedEvent.args.oldDelegatee,
+          newDelegatee: typedEvent.args.newDelegatee,
+        });
+        eventsByTx.set(typedEvent.transactionHash, {
+          ...existing,
+          altered: typedEvent,
+        });
       }
-      attempts++;
-      if (attempts < this.config.maxRetries) {
-        this.logger.warn(
-          `Retrying StakeDeposited event (attempt ${attempts + 1}/${this.config.maxRetries})`,
-          { event },
+
+      // If we found any events, fetch and log the full blocks
+      const eventBlocks = new Set([
+        ...depositedEvents.map((e) => e.blockNumber),
+        ...withdrawnEvents.map((e) => e.blockNumber),
+        ...alteredEvents.map((e) => e.blockNumber),
+      ]);
+
+      for (const blockNumber of eventBlocks) {
+        const block = await this.provider.getBlock(blockNumber!, true);
+        if (!block) continue;
+
+        const txs = await Promise.all(
+          block.transactions.map(async (txHash) => {
+            const tx = await this.provider.getTransaction(txHash as string);
+            return tx
+              ? {
+                  hash: tx.hash,
+                  from: tx.from,
+                  to: tx.to,
+                  index: tx.blockNumber,
+                }
+              : null;
+          }),
         );
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempts)); // Exponential backoff
+
+        this.logger.info('Full block details for block with events:', {
+          blockNumber,
+          blockHash: block.hash,
+          timestamp: block.timestamp,
+          transactions: txs.filter((tx) => tx !== null),
+        });
       }
+
+      // Process events by transaction
+      for (const [txHash, events] of eventsByTx) {
+        if (events.deposited) {
+          const depositEvent = events.deposited;
+          const { depositId, owner: ownerAddress, amount } = depositEvent.args;
+          
+          const delegateeAddress = events.altered
+            ? events.altered.args.newDelegatee
+            : ownerAddress;
+
+          const depositedEvent: StakeDepositedEvent = {
+            depositId: depositId.toString(),
+            ownerAddress,
+            delegateeAddress,
+            amount: amount,
+            blockNumber: depositEvent.blockNumber!,
+            transactionHash: txHash,
+          };
+
+          await this.handleStakeDeposited(depositedEvent);
+        }
+      }
+
+      // Process standalone StakeWithdrawn events
+      for (const event of withdrawnEvents) {
+        const { depositId, amount } = (event as ethers.EventLog).args;
+        const withdrawnEvent: StakeWithdrawnEvent = {
+          depositId: depositId.toString(),
+          withdrawnAmount: amount,
+          blockNumber: event.blockNumber!,
+          transactionHash: event.transactionHash!,
+        };
+        await this.handleStakeWithdrawn(withdrawnEvent);
+      }
+
+      // Process standalone DelegateeAltered events
+      for (const event of alteredEvents) {
+        // Skip events that were processed with deposits
+        const txHash = event.transactionHash!;
+        if (eventsByTx.has(txHash) && eventsByTx.get(txHash)!.deposited) {
+          continue;
+        }
+
+        const { depositId, oldDelegatee, newDelegatee } = (
+          event as ethers.EventLog
+        ).args;
+        const alteredEvent: DelegateeAlteredEvent = {
+          depositId: depositId.toString(),
+          oldDelegatee,
+          newDelegatee,
+          blockNumber: event.blockNumber!,
+          transactionHash: txHash,
+        };
+        await this.handleDelegateeAltered(alteredEvent);
+      }
+
+      this.logger.info('Processed block range', {
+        fromBlock,
+        toBlock,
+        depositedEvents: depositedEvents.length,
+        withdrawnEvents: withdrawnEvents.length,
+        alteredEvents: alteredEvents.length,
+      });
+    } catch (error) {
+      this.logger.error('Error processing block range', {
+        error,
+        fromBlock,
+        toBlock,
+      });
+      
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-block-range',
+          fromBlock,
+          toBlock,
+        });
+      }
+      
+      throw error;
     }
-    this.logger.error(
-      'Failed to process StakeDeposited event after max retries',
-      { event },
-    );
   }
 
-  async handleStakeWithdrawn(event: StakeWithdrawnEvent): Promise<void> {
-    let attempts = 0;
-    while (attempts < this.config.maxRetries) {
-      const result = await this.eventProcessor.processStakeWithdrawn(event);
-      if (result.success || !result.retryable) {
-        return;
+  /**
+   * Handles StakeDeposited event processing
+   * @param event - The StakeDeposited event to process
+   */
+  private async handleStakeDeposited(event: StakeDepositedEvent): Promise<void> {
+    try {
+      await this.eventProcessor.processStakeDeposited(event);
+      this.emit(MONITOR_EVENTS.DEPOSIT_CREATED, {
+        depositId: event.depositId,
+        ownerAddress: event.ownerAddress,
+        delegateeAddress: event.delegateeAddress,
+        amount: event.amount.toString(),
+        blockNumber: event.blockNumber,
+        transactionHash: event.transactionHash,
+      });
+    } catch (error) {
+      this.logger.error('Failed to handle StakeDeposited event', {
+        error,
+        depositId: event.depositId,
+      });
+      
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'handle-stake-deposited',
+          depositId: event.depositId,
+        });
       }
-      attempts++;
-      if (attempts < this.config.maxRetries) {
-        this.logger.warn(
-          `Retrying StakeWithdrawn event (attempt ${attempts + 1}/${this.config.maxRetries})`,
-          { event },
-        );
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempts));
-      }
+      
+      throw error;
     }
-    this.logger.error(
-      'Failed to process StakeWithdrawn event after max retries',
-      { event },
-    );
   }
 
-  async handleDelegateeAltered(event: DelegateeAlteredEvent): Promise<void> {
-    let attempts = 0;
-    while (attempts < this.config.maxRetries) {
-      const result = await this.eventProcessor.processDelegateeAltered(event);
-      if (result.success || !result.retryable) {
-        this.emit('delegateEvent', event);
-        return;
+  /**
+   * Handles StakeWithdrawn event processing
+   * @param event - The StakeWithdrawn event to process
+   */
+  private async handleStakeWithdrawn(event: StakeWithdrawnEvent): Promise<void> {
+    try {
+      await this.eventProcessor.processStakeWithdrawn(event);
+      this.emit(MONITOR_EVENTS.DEPOSIT_WITHDRAWN, {
+        depositId: event.depositId,
+        withdrawnAmount: event.withdrawnAmount.toString(),
+        blockNumber: event.blockNumber,
+        transactionHash: event.transactionHash,
+      });
+    } catch (error) {
+      this.logger.error('Failed to handle StakeWithdrawn event', {
+        error,
+        depositId: event.depositId,
+      });
+      
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'handle-stake-withdrawn',
+          depositId: event.depositId,
+        });
       }
-      attempts++;
-      if (attempts < this.config.maxRetries) {
-        this.logger.warn(
-          `Retrying DelegateeAltered event (attempt ${attempts + 1}/${this.config.maxRetries})`,
-          { event },
-        );
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempts));
-      }
+      
+      throw error;
     }
-    this.logger.error(
-      'Failed to process DelegateeAltered event after max retries',
-      { event },
-    );
-    this.emit(
-      'error',
-      new Error('Failed to process DelegateeAltered event after max retries'),
-    );
   }
 
-  async getCurrentBlock(): Promise<number> {
-    return this.provider.getBlockNumber();
-  }
-
-  async getLastProcessedBlock(): Promise<number> {
-    return this.lastProcessedBlock;
-  }
-
-  async getMonitorStatus(): Promise<MonitorStatus> {
-    const currentBlock = await this.getCurrentBlock();
-    const checkpoint = await this.db.getCheckpoint('staker-monitor');
-
-    return {
-      isRunning: this.isRunning,
-      lastProcessedBlock: this.lastProcessedBlock,
-      currentChainBlock: currentBlock,
-      processingLag: currentBlock - this.lastProcessedBlock,
-      lastCheckpoint: checkpoint!,
-      networkStatus: {
-        chainId: this.config.chainId,
-        networkName: this.config.networkName,
-        isConnected: true, // You might want to implement a more sophisticated check
-      },
-    };
-  }
-
-  async getProcessingLag(): Promise<number> {
-    const currentBlock = await this.getCurrentBlock();
-    return currentBlock - this.lastProcessedBlock;
+  /**
+   * Handles DelegateeAltered event processing
+   * @param event - The DelegateeAltered event to process
+   */
+  private async handleDelegateeAltered(event: DelegateeAlteredEvent): Promise<void> {
+    try {
+      await this.eventProcessor.processDelegateeAltered(event);
+      this.emit(MONITOR_EVENTS.DELEGATEE_CHANGED, {
+        depositId: event.depositId,
+        oldDelegatee: event.oldDelegatee,
+        newDelegatee: event.newDelegatee,
+        blockNumber: event.blockNumber,
+        transactionHash: event.transactionHash,
+      });
+    } catch (error) {
+      this.logger.error('Failed to handle DelegateeAltered event', {
+        error,
+        depositId: event.depositId,
+      });
+      
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'handle-delegatee-altered',
+          depositId: event.depositId,
+        });
+      }
+      
+      throw error;
+    }
   }
 }

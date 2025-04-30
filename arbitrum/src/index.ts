@@ -1,16 +1,27 @@
 import { DatabaseWrapper } from './database';
-import { CONFIG } from './config';
-import { ConsoleLogger } from './monitor/logging';
+import { CONFIG } from './configuration/constants';
+import { ConsoleLogger, Logger } from './monitor/logging';
 import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
+import { stakerAbi } from './configuration/abis';
 import { CalculatorWrapper } from './calculator/CalculatorWrapper';
 import { ExecutorWrapper, ExecutorType } from './executor';
 import { ProfitabilityEngineWrapper } from './profitability/ProfitabilityEngineWrapper';
 import { ethers } from 'ethers';
 import fs from 'fs/promises';
 import path from 'path';
+import {
+  createErrorLogger,
+  ErrorLogger
+} from './configuration/errorLogger';
 
-// Create component-specific loggers with colors
+// Initialize database first to enable error logging
+const database = new DatabaseWrapper({
+  type: CONFIG.monitor.databaseType as 'json' | 'supabase'
+});
+
+// Create component-specific loggers with colors for better visual distinction
+const mainLogger = new ConsoleLogger('info');
 const monitorLogger = new ConsoleLogger('info', {
   color: '\x1b[34m', // Blue
   prefix: '[Monitor]',
@@ -24,128 +35,286 @@ const profitabilityLogger = new ConsoleLogger('info', {
   prefix: '[Profitability]',
 });
 const executorLogger = new ConsoleLogger('info', {
-  color: '\x1b[31m', // Red
+  color: '\x1b[33m', // Yellow
   prefix: '[Executor]',
 });
-const logger = new ConsoleLogger('info');
 
+// Initialize error loggers for components
+const mainErrorLogger = createErrorLogger({ appName: 'main-service' });
+const monitorErrorLogger = createErrorLogger({ appName: 'monitor-service' });
+const calculatorErrorLogger = createErrorLogger({ appName: 'calculator-service' });
+const profitabilityErrorLogger = createErrorLogger({ appName: 'profitability-service' });
+const executorErrorLogger = createErrorLogger({ appName: 'executor-service' });
+
+/**
+ * Path for error log file
+ */
 const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
 
-// Load full staker ABI from tests
-const STAKER_ABI = JSON.parse(
-  await fs.readFile('./src/tests/abis/staker.json', 'utf8'),
-);
-
-// Create provider helper function
+/**
+ * Creates an Ethereum provider using the configured RPC URL
+ * @returns {ethers.JsonRpcProvider} The configured providerŔ
+ * @throws {Error} If RPC URL is not configured
+ */
 function createProvider() {
+  if (!CONFIG.monitor.rpcUrl) {
+    throw new Error(
+      'RPC URL is not configured. Please set RPC_URL environment variable.'
+    );
+  }
   return new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
 }
 
-// Function removed because it's unused: convertDeposit
-
-async function logError(error: unknown, context: string) {
-  const timestamp = new Date().toISOString();
-  const errorMessage = `[${timestamp}] ${context}: ${error instanceof Error ? error.message : String(error)}\n${error instanceof Error ? error.stack : ''}\n\n`;
-  await fs.appendFile(ERROR_LOG_PATH, errorMessage);
-  logger.error(context, { error });
+/**
+ * Loads the staker ABI from the tests directory
+ * @returns {Promise<ethers.InterfaceAbi>} The staker ABI
+ */
+async function loadStakerAbi(): Promise<ethers.InterfaceAbi> {
+  try {
+    return JSON.parse(
+      await fs.readFile('./src/tests/abis/staker.json', 'utf8')
+    );
+  } catch (error) {
+    await mainErrorLogger.error(error as Error, { component: 'loadStakerAbi' });
+    // Fallback to the predefined ABI from configuration
+    return stakerAbi;
+  }
 }
 
+/**
+ * Ensure checkpoints are not lower than the configured START_BLOCK
+ * @param {DatabaseWrapper} database - The database instance
+ * @param {Logger} logger - Logger instance
+ * @param {ErrorLogger} errorLogger - Error logger instance
+ */
+async function ensureCheckpointsAtStartBlock(
+  database: DatabaseWrapper,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+) {
+  logger.info('Checking checkpoint blocks against configured START_BLOCK...');
+
+  // Get START_BLOCK from config
+  const startBlock = CONFIG.monitor.startBlock;
+  if (!startBlock) {
+    logger.info('No START_BLOCK configured, skipping checkpoint check');
+    return;
+  }
+
+  logger.info(`Using START_BLOCK: ${startBlock}`);
+
+  // List of components to check
+  const componentTypes = ['staker-monitor', 'executor', 'profitability-engine', 'calculator'];
+
+  try {
+    for (const componentType of componentTypes) {
+      const checkpoint = await database.getCheckpoint(componentType);
+
+      if (!checkpoint) {
+        logger.info(
+          `No checkpoint found for ${componentType}, creating with START_BLOCK`
+        );
+        await database.updateCheckpoint({
+          component_type: componentType,
+          last_block_number: startBlock,
+          block_hash:
+            '0x0000000000000000000000000000000000000000000000000000000000000000',
+          last_update: new Date().toISOString(),
+        });
+        continue;
+      }
+
+      if (checkpoint.last_block_number < startBlock) {
+        logger.info(
+          `Updating ${componentType} checkpoint from block ${checkpoint.last_block_number} to START_BLOCK ${startBlock}`
+        );
+        await database.updateCheckpoint({
+          component_type: componentType,
+          last_block_number: startBlock,
+          block_hash: checkpoint.block_hash,
+          last_update: new Date().toISOString(),
+        });
+      } else {
+        logger.info(
+          `Checkpoint for ${componentType} (${checkpoint.last_block_number}) is already >= START_BLOCK (${startBlock})`
+        );
+      }
+    }
+
+    logger.info('Checkpoint verification completed');
+  } catch (error) {
+    await errorLogger.error(error as Error, {
+      context: 'ensureCheckpointsAtStartBlock',
+    });
+    throw error;
+  }
+}
+
+/**
+ * Checks if there are any deposits in the database
+ * @param {DatabaseWrapper} database - The database instance
+ * @returns {Promise<boolean>} True if deposits exist, false otherwise
+ */
 async function waitForDeposits(database: DatabaseWrapper): Promise<boolean> {
   try {
     const deposits = await database.getAllDeposits();
     return deposits.length > 0;
   } catch (error) {
-    await logError(error, 'Error checking deposits');
+    await mainErrorLogger.error(error as Error, {
+      context: 'waitForDeposits',
+    });
     return false;
   }
 }
 
+// Keep track of running components for graceful shutdown
 const runningComponents: {
   monitor?: StakerMonitor;
   calculator?: CalculatorWrapper;
   profitabilityEngine?: ProfitabilityEngineWrapper;
-  transactionExecutor?: ExecutorWrapper;
+  executor?: ReturnType<typeof ExecutorWrapper>;
 } = {};
 
+/**
+ * Gracefully shuts down all running components
+ * @param {string} signal - The signal that triggered the shutdown
+ */
 async function shutdown(signal: string) {
-  logger.info(`Received ${signal}. Starting graceful shutdown...`);
+  mainLogger.info(`Received ${signal}. Starting graceful shutdown...`);
   try {
-    if (runningComponents.monitor) {
-      await runningComponents.monitor.stop();
-    }
-    if (runningComponents.calculator) {
-      await runningComponents.calculator.stop();
-    }
+    // Stop components in reverse order of initialization
     if (runningComponents.profitabilityEngine) {
+      mainLogger.info('Stopping profitability engine...');
       await runningComponents.profitabilityEngine.stop();
     }
-    if (runningComponents.transactionExecutor) {
-      await runningComponents.transactionExecutor.stop();
+
+    if (runningComponents.executor) {
+      mainLogger.info('Stopping executor...');
+      await runningComponents.executor.stop();
     }
-    logger.info('Shutdown completed successfully');
+
+    if (runningComponents.calculator) {
+      mainLogger.info('Stopping calculator...');
+      await runningComponents.calculator.stop();
+    }
+
+    if (runningComponents.monitor) {
+      mainLogger.info('Stopping monitor...');
+      await runningComponents.monitor.stop();
+    }
+
+    mainLogger.info('Shutdown completed successfully');
     process.exit(0);
   } catch (error) {
-    await logError(error, 'Error during shutdown');
+    await mainErrorLogger.error(error as Error, {
+      context: 'shutdown',
+      signal,
+    });
     process.exit(1);
   }
 }
 
-async function runMonitor(database: DatabaseWrapper) {
+/**
+ * Initializes and starts the StakerMonitor component
+ * @param {DatabaseWrapper} database - The database instance
+ * @param {Logger} logger - Logger instance
+ * @param {ErrorLogger} errorLogger - Error logger instance
+ * @returns {Promise<StakerMonitor>} The initialized monitor
+ */
+async function initializeMonitor(
+  database: DatabaseWrapper,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+): Promise<StakerMonitor> {
+  logger.info('Initializing staker monitor...');
+
   const provider = createProvider();
 
   // Test provider connection
   try {
-    await provider.getNetwork();
+    const network = await provider.getNetwork();
+    logger.info('Connected to network:', {
+      chainId: network.chainId.toString(),
+      name: network.name,
+    });
   } catch (error) {
-    monitorLogger.error('Failed to connect to provider:', { error });
+    await errorLogger.error(error as Error, { context: 'provider-connection' });
     throw error;
   }
 
+  // Create monitor with config
   const monitor = new StakerMonitor(createMonitorConfig(provider, database));
 
   // Start monitor
   await monitor.start();
+  logger.info('Monitor started successfully');
 
-  // Health check logging
+  // Set up health check interval
   setInterval(async () => {
     try {
       const status = await monitor.getMonitorStatus();
-      monitorLogger.info('Monitor Status:', {
+      logger.info('Monitor health check:', {
         isRunning: status.isRunning,
         processingLag: status.processingLag,
         currentBlock: status.currentChainBlock,
         lastProcessedBlock: status.lastProcessedBlock,
       });
     } catch (error) {
-      monitorLogger.error('Health check failed:', { error });
+      await errorLogger.error(error as Error, {
+        context: 'monitor-health-check',
+      });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
   return monitor;
 }
 
-async function runCalculator(database: DatabaseWrapper) {
+/**
+ * Initializes and starts the Calculator component
+ * @param {DatabaseWrapper} database - The database instance
+ * @param {Logger} logger - Logger instance
+ * @param {ErrorLogger} errorLogger - Error logger instance
+ * @returns {Promise<CalculatorWrapper>} The initialized calculator
+ */
+async function initializeCalculator(
+  database: DatabaseWrapper,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+): Promise<CalculatorWrapper> {
+  logger.info('Initializing calculator...');
+
   const provider = createProvider();
 
   // Test provider connection
   try {
-    await provider.getNetwork();
+    const network = await provider.getNetwork();
+    logger.info('Connected to network:', {
+      chainId: network.chainId.toString(),
+      name: network.name,
+    });
   } catch (error) {
-    calculatorLogger.error('Failed to connect to provider:', { error });
+    await errorLogger.error(error as Error, { context: 'provider-connection' });
     throw error;
   }
 
-  calculatorLogger.info(
-    'Initializing calculator with reward calculator contract:',
-    {
-      address: CONFIG.monitor.rewardCalculatorAddress,
-    },
-  );
+  if (!CONFIG.monitor.rewardCalculatorAddress) {
+    throw new Error(
+      'Reward calculator address is not configured. Please set REWARD_CALCULATOR_ADDRESS environment variable.'
+    );
+  }
 
+  logger.info('Creating calculator with configuration:', {
+    rewardCalculatorAddress: CONFIG.monitor.rewardCalculatorAddress,
+  });
+
+  // Create calculator instance
   const calculator = new CalculatorWrapper(database, provider);
+  
+  // Start calculator
   await calculator.start();
+  logger.info('Calculator started successfully');
 
-  // Get initial block range
+  // Process initial events
   const currentBlock = await provider.getBlockNumber();
   const lastCheckpoint = await database.getCheckpoint('calculator');
   const initialFromBlock = lastCheckpoint?.last_block_number
@@ -154,26 +323,38 @@ async function runCalculator(database: DatabaseWrapper) {
 
   const initialToBlock = Math.min(
     currentBlock - CONFIG.monitor.confirmations,
-    initialFromBlock + CONFIG.monitor.maxBlockRange,
+    initialFromBlock + CONFIG.monitor.maxBlockRange
   );
 
   if (initialToBlock > initialFromBlock) {
-    calculatorLogger.info('Processing initial score events...', {
+    logger.info('Processing initial score events...', {
       fromBlock: initialFromBlock,
       toBlock: initialToBlock,
       rewardCalculatorAddress: CONFIG.monitor.rewardCalculatorAddress,
     });
 
     await calculator.processScoreEvents(initialFromBlock, initialToBlock);
-    calculatorLogger.info('Initial score events processed successfully');
+    
+    // Update checkpoint
+    const block = await provider.getBlock(initialToBlock);
+    if (!block) throw new Error(`Block ${initialToBlock} not found`);
+
+    await database.updateCheckpoint({
+      component_type: 'calculator',
+      last_block_number: initialToBlock,
+      block_hash: block.hash!,
+      last_update: new Date().toISOString(),
+    });
+    
+    logger.info('Initial score events processed successfully');
   }
 
-  // Set up periodic score event processing
+  // Set up periodic processing
   const processInterval = setInterval(async () => {
     try {
       const status = await calculator.getStatus();
       if (!status.isRunning) {
-        calculatorLogger.info('Calculator stopped, clearing interval');
+        logger.info('Calculator stopped, clearing interval');
         clearInterval(processInterval);
         return;
       }
@@ -181,23 +362,24 @@ async function runCalculator(database: DatabaseWrapper) {
       const currentBlock = await provider.getBlockNumber();
       const lastCheckpoint = await database.getCheckpoint('calculator');
       if (!lastCheckpoint) {
-        calculatorLogger.error('No checkpoint found for calculator');
+        logger.error('No checkpoint found for calculator');
         return;
       }
 
       const fromBlock = lastCheckpoint.last_block_number + 1;
       const toBlock = Math.min(
         currentBlock - CONFIG.monitor.confirmations,
-        fromBlock + CONFIG.monitor.maxBlockRange,
+        fromBlock + CONFIG.monitor.maxBlockRange
       );
 
       if (toBlock > fromBlock) {
-        calculatorLogger.info('Processing new score events...', {
+        logger.info('Processing new score events...', {
           fromBlock,
           toBlock,
           rewardCalculatorAddress: CONFIG.monitor.rewardCalculatorAddress,
           lastProcessedBlock: lastCheckpoint.last_block_number,
         });
+        
         await calculator.processScoreEvents(fromBlock, toBlock);
 
         // Update checkpoint
@@ -211,102 +393,237 @@ async function runCalculator(database: DatabaseWrapper) {
           last_update: new Date().toISOString(),
         });
 
-        calculatorLogger.info('Score events processed successfully', {
+        logger.info('Score events processed successfully', {
           fromBlock,
           toBlock,
           processedBlocks: toBlock - fromBlock + 1,
         });
-      } else {
-        calculatorLogger.debug('No new blocks to process', {
-          currentBlock,
-          lastProcessedBlock: lastCheckpoint.last_block_number,
-          confirmations: CONFIG.monitor.confirmations,
-        });
       }
     } catch (error) {
-      await logError(error, 'Error processing score events');
+      await errorLogger.error(error as Error, {
+        context: 'calculator-process-events',
+      });
     }
   }, CONFIG.monitor.pollInterval * 1000);
 
-  // Set up health check logging
-  const healthCheckInterval = setInterval(async () => {
+  // Set up health check interval
+  setInterval(async () => {
     try {
       const status = await calculator.getStatus();
       if (!status.isRunning) {
-        calculatorLogger.info(
-          'Calculator stopped, clearing health check interval',
-        );
-        clearInterval(healthCheckInterval);
+        logger.info('Calculator stopped, clearing health check');
         return;
       }
 
       const currentBlock = await provider.getBlockNumber();
       const lastCheckpoint = await database.getCheckpoint('calculator');
-      calculatorLogger.info('Calculator Status:', {
+      
+      logger.info('Calculator health check:', {
         isRunning: status.isRunning,
-        lastProcessedBlock:
-          lastCheckpoint?.last_block_number ?? status.lastProcessedBlock,
+        lastProcessedBlock: lastCheckpoint?.last_block_number ?? status.lastProcessedBlock,
         currentBlock,
-        processingLag:
-          currentBlock -
-          (lastCheckpoint?.last_block_number ?? status.lastProcessedBlock),
+        processingLag: currentBlock - (lastCheckpoint?.last_block_number ?? status.lastProcessedBlock),
       });
     } catch (error) {
-      await logError(error, 'Calculator health check failed');
+      await errorLogger.error(error as Error, {
+        context: 'calculator-health-check',
+      });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
   return calculator;
 }
 
-async function runProfitabilityEngine(database: DatabaseWrapper) {
+/**
+ * Initializes and starts the Executor component
+ * @param {DatabaseWrapper} database - The database instance
+ * @param {ethers.InterfaceAbi} stakerAbi - The staker ABI
+ * @param {Logger} logger - Logger instance
+ * @param {ErrorLogger} errorLogger - Error logger instance
+ * @returns {Promise<ReturnType<typeof ExecutorWrapper>>} The initialized executor
+ */
+async function initializeExecutor(
+  database: DatabaseWrapper,
+  stakerAbi: ethers.InterfaceAbi,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+): Promise<ReturnType<typeof ExecutorWrapper>> {
+  logger.info('Initializing transaction executor...');
+
   const provider = createProvider();
 
   // Test provider connection
   try {
-    await provider.getNetwork();
+    const network = await provider.getNetwork();
+    logger.info('Connected to network:', {
+      chainId: network.chainId.toString(),
+      name: network.name,
+    });
   } catch (error) {
-    profitabilityLogger.error('Failed to connect to provider:', { error });
+    await errorLogger.error(error as Error, { context: 'provider-connection' });
     throw error;
   }
 
-  profitabilityLogger.info(
-    'Initializing profitability engine with staker contract:',
-    {
-      address: CONFIG.monitor.stakerAddress,
-    },
-  );
-
-  if (!CONFIG.profitability?.rewardTokenAddress) {
-    throw new Error('Reward token address not configured');
+  // Validate staker address is configured
+  if (!CONFIG.monitor.stakerAddress) {
+    throw new Error(
+      'Staker contract address is not configured. Please set STAKER_CONTRACT_ADDRESS environment variable.'
+    );
   }
 
-  const engine = new ProfitabilityEngineWrapper(
+  // Validate private key is configured
+  if (!CONFIG.executor.privateKey) {
+    throw new Error(
+      'Executor private key is not configured. Please set PRIVATE_KEY environment variable.'
+    );
+  }
+
+  // Initialize staker contract
+  const stakerContract = new ethers.Contract(
+    CONFIG.monitor.stakerAddress,
+    stakerAbi,
+    provider
+  );
+
+  logger.info('Creating executor with configuration:', {
+    type: 'wallet',
+    stakerAddress: CONFIG.monitor.stakerAddress,
+    tipReceiver: CONFIG.executor.tipReceiver,
+    hasPrivateKey: !!CONFIG.executor.privateKey,
+  });
+
+  const executorConfig = {
+    wallet: {
+      privateKey: CONFIG.executor.privateKey,
+      minBalance: ethers.parseEther('0.01'),
+      maxPendingTransactions: 5,
+    },
+    maxQueueSize: 100,
+    minConfirmations: CONFIG.monitor.confirmations,
+    maxRetries: CONFIG.monitor.maxRetries,
+    retryDelayMs: 5000,
+    transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
+    gasBoostPercentage: 30, // 30%
+    concurrentTransactions: 3,
+    defaultTipReceiver: CONFIG.executor.tipReceiver
+  };
+
+  // Create executor using the factory function
+  const executor = ExecutorWrapper({
+    stakerContract,
+    provider,
+    type: ExecutorType.WALLET,
+    config: executorConfig,
+    db: database
+  });
+
+  // Start executor
+  await executor.start();
+  logger.info('Executor started successfully');
+
+  // Set up health check interval
+  setInterval(async () => {
+    try {
+      const status = await executor.getStatus();
+      logger.info('Executor health check:', {
+        isRunning: status.isRunning,
+        walletBalance: ethers.formatEther(status.walletBalance),
+        pendingTransactions: status.pendingTransactions,
+        queueSize: status.queueSize,
+      });
+    } catch (error) {
+      await errorLogger.error(error as Error, {
+        context: 'executor-health-check',
+      });
+    }
+  }, CONFIG.monitor.healthCheckInterval * 1000);
+
+  return executor;
+}
+
+/**
+ * Initializes and starts the Profitability Engine component
+ * @param {DatabaseWrapper} database - The database instance
+ * @param {ReturnType<typeof ExecutorWrapper>} executor - The executor instance
+ * @param {Logger} logger - Logger instance
+ * @param {ErrorLogger} errorLogger - Error logger instance
+ * @returns {Promise<ProfitabilityEngineWrapper>} The initialized profitability engine
+ */
+async function initializeProfitabilityEngine(
+  database: DatabaseWrapper,
+  executor: ReturnType<typeof ExecutorWrapper>,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+): Promise<ProfitabilityEngineWrapper> {
+  logger.info('Initializing profitability engine...');
+
+  const provider = createProvider();
+
+  // Test provider connection
+  try {
+    const network = await provider.getNetwork();
+    logger.info('Connected to network:', {
+      chainId: network.chainId.toString(),
+      name: network.name,
+    });
+  } catch (error) {
+    await errorLogger.error(error as Error, { context: 'provider-connection' });
+    throw error;
+  }
+
+  // Validate required addresses
+  if (!CONFIG.monitor.stakerAddress) {
+    throw new Error(
+      'Staker contract address is not configured. Please set STAKER_CONTRACT_ADDRESS environment variable.'
+    );
+  }
+
+  if (!CONFIG.profitability?.rewardTokenAddress) {
+    throw new Error(
+      'Reward token address is not configured. Please set REWARD_TOKEN_ADDRESS environment variable.'
+    );
+  }
+
+  logger.info('Creating profitability engine with configuration:', {
+    stakerAddress: CONFIG.monitor.stakerAddress,
+    rewardTokenAddress: CONFIG.profitability.rewardTokenAddress,
+    minProfitMargin: CONFIG.profitability.minProfitMargin.toString(),
+    gasPriceBuffer: CONFIG.profitability.gasPriceBuffer,
+    maxBatchSize: CONFIG.profitability.maxBatchSize,
+  });
+
+  // Create profitability engine
+  const profitabilityEngine = new ProfitabilityEngineWrapper(
     database,
     provider,
     CONFIG.monitor.stakerAddress,
-    profitabilityLogger,
+    logger,
     {
-      minProfitMargin: BigInt(0), // 0 ETH
-      gasPriceBuffer: 20, // 20%
-      maxBatchSize: 10,
+      minProfitMargin: CONFIG.profitability.minProfitMargin,
+      gasPriceBuffer: CONFIG.profitability.gasPriceBuffer,
+      maxBatchSize: CONFIG.profitability.maxBatchSize,
       rewardTokenAddress: CONFIG.profitability.rewardTokenAddress,
-      defaultTipReceiver: CONFIG.executor?.tipReceiver || ethers.ZeroAddress,
+      defaultTipReceiver: CONFIG.executor.tipReceiver || ethers.ZeroAddress,
       priceFeed: {
-        cacheDuration: 10 * 60 * 1000, // 10 minutes
-      },
-    },
+        cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
+      }
+    }
   );
 
-  await engine.start();
+  // Connect with executor
+  profitabilityEngine.setExecutor(executor.executor);
 
-  // Set up health check logging
+  // Start profitability engine
+  await profitabilityEngine.start();
+  logger.info('Profitability engine started successfully');
+
+  // Set up health check interval
   setInterval(async () => {
     try {
-      const status = await engine.getStatus();
-      const queueStats = await engine.getQueueStats();
-
-      profitabilityLogger.info('Profitability Engine Status:', {
+      const status = await profitabilityEngine.getStatus();
+      const queueStats = await profitabilityEngine.getQueueStats();
+      
+      logger.info('Profitability engine health check:', {
         isRunning: status.isRunning,
         lastGasPrice: status.lastGasPrice.toString(),
         lastUpdateTimestamp: new Date(status.lastUpdateTimestamp).toISOString(),
@@ -318,303 +635,297 @@ async function runProfitabilityEngine(database: DatabaseWrapper) {
         failedItems: queueStats.failedCount,
       });
     } catch (error) {
-      await logError(error, 'Profitability engine health check failed');
+      await errorLogger.error(error as Error, {
+        context: 'profitability-engine-health-check',
+      });
     }
   }, CONFIG.monitor.healthCheckInterval * 1000);
 
-  return engine;
+  return profitabilityEngine;
 }
 
-async function runExecutor(database: DatabaseWrapper) {
-  const provider = createProvider();
-
-  // Test provider connection
+/**
+ * Triggers initial queue population for the profitability engine
+ * @param {DatabaseWrapper} database - The database instance
+ * @param {ProfitabilityEngineWrapper} profitabilityEngine - The profitability engine
+ * @param {Logger} logger - Logger instance
+ * @param {ErrorLogger} errorLogger - Error logger instance
+ */
+async function triggerInitialQueuePopulation(
+  database: DatabaseWrapper,
+  profitabilityEngine: ProfitabilityEngineWrapper,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+) {
+  logger.info('Triggering initial queue population...');
+  
   try {
-    await provider.getNetwork();
+    // Get unique delegatees from deposits
+    const deposits = await database.getAllDeposits();
+    const uniqueDelegatees = new Set<string>();
+
+    for (const deposit of deposits) {
+      if (deposit.delegatee_address) {
+        uniqueDelegatees.add(deposit.delegatee_address);
+      }
+    }
+
+    logger.info(`Found ${uniqueDelegatees.size} unique delegatees for initial queue population`);
+
+    // Trigger score events for each delegatee
+    let processedCount = 0;
+    for (const delegatee of uniqueDelegatees) {
+      // Get the latest score for this delegatee
+      const scoreEvent = await database.getLatestScoreEvent(delegatee);
+      const score = scoreEvent ? BigInt(scoreEvent.score) : BigInt(0);
+
+      logger.info(`Triggering initial score event for delegatee ${delegatee} with score ${score}`);
+      await profitabilityEngine.onScoreEvent(delegatee, score);
+      processedCount++;
+
+      // Add a small delay to avoid overwhelming the system
+      if (processedCount % 10 === 0) {
+        logger.info(`Processed ${processedCount}/${uniqueDelegatees.size} delegatees, waiting...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+
+    logger.info('Initial queue population complete', {
+      processedDelegatees: processedCount,
+      totalDelegatees: uniqueDelegatees.size,
+    });
+
+    // Check queue state after population
+    const afterStatus = await profitabilityEngine.getStatus();
+    const afterQueueStats = await profitabilityEngine.getQueueStats();
+    logger.info('Queue state after initial population:', {
+      queueSize: afterStatus.queueSize,
+      delegateeCount: afterStatus.delegateeCount,
+      pendingCount: afterQueueStats.pendingCount,
+      processingCount: afterQueueStats.processingCount,
+    });
   } catch (error) {
-    executorLogger.error('Failed to connect to provider:', { error });
-    throw error;
+    await errorLogger.error(error as Error, {
+      context: 'initial-queue-population',
+    });
   }
+}
 
-  // Initialize staker contract
-  const stakerContract = new ethers.Contract(
-    CONFIG.monitor.stakerAddress,
-    STAKER_ABI,
-    provider,
-  );
-
-  executorLogger.info('Initializing executor with staker contract:', {
-    address: CONFIG.monitor.stakerAddress,
-  });
-
-  if (!CONFIG.executor?.privateKey) {
-    throw new Error('Executor private key not configured');
-  }
-
-  const executor = new ExecutorWrapper(
-    stakerContract,
-    provider,
-    ExecutorType.WALLET,
-    {
-      wallet: {
-        privateKey: CONFIG.executor.privateKey,
-        minBalance: ethers.parseEther('0.0000001'), // very small for testing
-        maxPendingTransactions: 5,
-      },
-      maxQueueSize: 100,
-      minConfirmations: CONFIG.monitor.confirmations,
-      maxRetries: CONFIG.monitor.maxRetries,
-      retryDelayMs: 5000,
-      transferOutThreshold: ethers.parseEther('0.001'), // 0.001 ETH
-      gasBoostPercentage: 10, // 10%
-      concurrentTransactions: 3,
-    },
-    database,
-  );
-
-  await executor.start();
-
-  // Set up health check logging
+/**
+ * Sets up a backup periodic check for deposits that may have been missed
+ * @param {DatabaseWrapper} database - The database instance
+ * @param {ProfitabilityEngineWrapper} profitabilityEngine - The profitability engine
+ * @param {Logger} logger - Logger instance
+ * @param {ErrorLogger} errorLogger - Error logger instance
+ */
+function setupBackupProfitabilityCheck(
+  database: DatabaseWrapper,
+  profitabilityEngine: ProfitabilityEngineWrapper,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+) {
   setInterval(async () => {
     try {
-      const status = await executor.getStatus();
-      executorLogger.info('Executor Status:', {
-        isRunning: status.isRunning,
-        walletBalance: ethers.formatEther(status.walletBalance),
-        pendingTransactions: status.pendingTransactions,
-        queueSize: status.queueSize,
-      });
-    } catch (error) {
-      await logError(error, 'Executor health check failed');
-    }
-  }, CONFIG.monitor.healthCheckInterval * 1000);
-
-  return executor;
-}
-
-async function main() {
-  try {
-    // Initialize database
-    const database = new DatabaseWrapper({
-      type: CONFIG.monitor.databaseType,
-    });
-
-    // Start monitor first
-    logger.info('Starting monitor...');
-    runningComponents.monitor = await runMonitor(database);
-
-    // Wait for initial deposits before starting calculator
-    logger.info('Waiting for initial deposits...');
-    while (!(await waitForDeposits(database))) {
-      await new Promise((resolve) => setTimeout(resolve, 60000)); // Check every minute
-    }
-
-    // Start calculator with deposit-dependent scheduling
-    logger.info('Starting calculator...');
-    runningComponents.calculator = await runCalculator(database);
-
-    // Start profitability engine
-    logger.info('Starting profitability engine...');
-    runningComponents.profitabilityEngine =
-      await runProfitabilityEngine(database);
-
-    // Start executor with profitability verification
-    logger.info('Starting transaction executor...');
-    runningComponents.transactionExecutor = await runExecutor(database);
-
-    // Connect components
-    logger.info('Connecting components...');
-
-    // 1. Connect calculator and profitability engine
-    const calculatorComponent = runningComponents.calculator;
-    const profitabilityEngine = runningComponents.profitabilityEngine;
-
-    if (calculatorComponent && profitabilityEngine) {
-      // Get the earning power calculator from the wrapper
-      const earningPowerCalculator =
-        calculatorComponent.getEarningPowerCalculator();
-
-      if (earningPowerCalculator) {
-        // Set bidirectional references
-        earningPowerCalculator.setProfitabilityEngine(profitabilityEngine);
-        logger.info('Connected calculator to profitability engine');
-
-        // Verify the connection status
-        logger.info('Component connection status:', {
-          calculatorHasProfitabilityEngine: true,
-          engineHasCalculator: true,
-        });
-      } else {
-        logger.warn('Could not get earning power calculator instance');
-      }
-    }
-
-    // 2. Connect profitability engine and executor
-    if (profitabilityEngine && runningComponents.transactionExecutor) {
-      profitabilityEngine.setExecutor(runningComponents.transactionExecutor);
-      logger.info('Connected profitability engine to executor');
-
-      // Verify executor status
-      const executorStatus =
-        await runningComponents.transactionExecutor.getStatus();
-      logger.info('Executor connected with status:', {
-        isRunning: executorStatus.isRunning,
-        walletBalance: ethers.formatEther(executorStatus.walletBalance),
-      });
-    }
-
-    // 3. Log the current state of components and queues
-    const engineStatus = await profitabilityEngine.getStatus();
-    const queueStats = await profitabilityEngine.getQueueStats();
-    logger.info('Initial profitability engine queue state:', {
-      queueSize: engineStatus.queueSize,
-      delegateeCount: engineStatus.delegateeCount,
-      pendingCount: queueStats.pendingCount,
-      processingCount: queueStats.processingCount,
-    });
-
-    // 4. Force initial population of the queue at startup
-    logger.info('Triggering initial queue population...');
-    try {
-      // Get unique delegatees from deposits
+      // Get all deposits from database to check if any were missed by the queue
       const deposits = await database.getAllDeposits();
-      const uniqueDelegatees = new Set<string>();
+      if (deposits.length === 0) {
+        logger.debug('No deposits found, skipping backup profitability check');
+        return;
+      }
 
+      // Check queue stats
+      const queueStats = await profitabilityEngine.getQueueStats();
+
+      // If queue is handling a significant portion of deposits, skip backup check
+      if (queueStats.totalDeposits > deposits.length * 0.5) {
+        logger.debug('Queue is already processing most deposits, skipping backup check', {
+          queueSize: queueStats.totalDeposits,
+          totalDeposits: deposits.length,
+        });
+        return;
+      }
+
+      logger.info('Running backup profitability check for deposits not in queue', {
+        totalDeposits: deposits.length,
+        queueSize: queueStats.totalDeposits,
+      });
+
+      // For each delegatee, trigger a score event to recheck deposits
+      const delegatees = new Set<string>();
       for (const deposit of deposits) {
         if (deposit.delegatee_address) {
-          uniqueDelegatees.add(deposit.delegatee_address);
+          delegatees.add(deposit.delegatee_address);
         }
       }
 
-      logger.info(
-        `Found ${uniqueDelegatees.size} unique delegatees for initial queue population`,
-      );
-
-      // Trigger score events for each delegatee
-      let processedCount = 0;
-      for (const delegatee of uniqueDelegatees) {
-        // Get the latest score for this delegatee
-        const scoreEvent = await database.getLatestScoreEvent(delegatee);
-        const score = scoreEvent ? BigInt(scoreEvent.score) : BigInt(0);
-
-        logger.info(
-          `Triggering initial score event for delegatee ${delegatee} with score ${score}`,
-        );
-        await profitabilityEngine.onScoreEvent(delegatee, score);
-        processedCount++;
-
-        // Add a small delay to avoid overwhelming the system
-        if (processedCount % 10 === 0) {
-          logger.info(
-            `Processed ${processedCount}/${uniqueDelegatees.size} delegatees, waiting...`,
-          );
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
+      for (const delegatee of delegatees) {
+        logger.debug(`Triggering backup check for delegatee ${delegatee}`);
+        await profitabilityEngine.onScoreEvent(delegatee, BigInt(0));
       }
-
-      logger.info('Initial queue population complete', {
-        processedDelegatees: processedCount,
-        totalDelegatees: uniqueDelegatees.size,
-      });
-
-      // Check queue state after population
-      const afterStatus = await profitabilityEngine.getStatus();
-      const afterQueueStats = await profitabilityEngine.getQueueStats();
-      logger.info('Queue state after initial population:', {
-        queueSize: afterStatus.queueSize,
-        delegateeCount: afterStatus.delegateeCount,
-        pendingCount: afterQueueStats.pendingCount,
-        processingCount: afterQueueStats.processingCount,
-      });
     } catch (error) {
-      logger.error('Error during initial queue population:', { error });
+      await errorLogger.error(error as Error, {
+        context: 'backup-profitability-check',
+      });
+    }
+  }, 10 * 60 * 1000); // 10 minutes
+}
+
+/**
+ * Main entry point for the application
+ */
+async function main() {
+  mainLogger.info('Starting Arbitrum Staker Bot Application...');
+
+  try {
+    // Load staker ABI
+    const stakerAbi = await loadStakerAbi();
+
+    // Check and update checkpoints if needed
+    await ensureCheckpointsAtStartBlock(database, mainLogger, mainErrorLogger);
+
+    // Parse components to run
+    const rawComponents = process.env.COMPONENTS?.split(',').map((c) =>
+      c.trim().toLowerCase()
+    ) || ['all'];
+    
+    const componentsToRun = rawComponents.includes('all')
+      ? ['monitor', 'calculator', 'executor', 'profitability']
+      : rawComponents;
+
+    mainLogger.info('Components to run:', { components: componentsToRun });
+
+    // Initialize components in sequence
+    // 1. First initialize monitor if enabled
+    if (componentsToRun.includes('monitor')) {
+      mainLogger.info('Initializing monitor...');
+      runningComponents.monitor = await initializeMonitor(
+        database,
+        monitorLogger,
+        monitorErrorLogger
+      );
     }
 
-    // Set up a backup periodic check for deposits not caught by the score events
-    setInterval(
-      async () => {
-        try {
-          const profitabilityEngine = runningComponents.profitabilityEngine;
-          if (!profitabilityEngine) return;
-
-          // Get all deposits from database to check if any were missed by the queue
-          const deposits = await database.getAllDeposits();
-          if (deposits.length === 0) {
-            profitabilityLogger.debug(
-              'No deposits found, skipping backup profitability check',
-            );
-            return;
+    // 2. Initialize calculator if enabled
+    if (componentsToRun.includes('calculator')) {
+      mainLogger.info('Initializing calculator...');
+      
+      // Wait for initial deposits if monitor is running
+      if (runningComponents.monitor) {
+        mainLogger.info('Waiting for initial deposits...');
+        let hasDeposits = false;
+        while (!hasDeposits) {
+          hasDeposits = await waitForDeposits(database);
+          if (!hasDeposits) {
+            mainLogger.info('No deposits found, waiting...');
+            await new Promise(resolve => setTimeout(resolve, 60000)); // 1 minute
           }
-
-          // Check queue stats
-          const queueStats = await profitabilityEngine.getQueueStats();
-
-          // If queue is handling a significant portion of deposits, skip backup check
-          if (queueStats.totalDeposits > deposits.length * 0.5) {
-            profitabilityLogger.debug(
-              'Queue is already processing most deposits, skipping backup check',
-              {
-                queueSize: queueStats.totalDeposits,
-                totalDeposits: deposits.length,
-              },
-            );
-            return;
-          }
-
-          profitabilityLogger.info(
-            'Running backup profitability check for deposits not in queue',
-            {
-              totalDeposits: deposits.length,
-              queueSize: queueStats.totalDeposits,
-            },
-          );
-
-          // For each delegatee, trigger a score event to recheck deposits
-          const delegatees = new Set<string>();
-          for (const deposit of deposits) {
-            if (deposit.delegatee_address) {
-              delegatees.add(deposit.delegatee_address);
-            }
-          }
-
-          for (const delegatee of delegatees) {
-            profitabilityLogger.debug(
-              `Triggering backup check for delegatee ${delegatee}`,
-            );
-            await profitabilityEngine.onScoreEvent(delegatee, BigInt(0));
-          }
-        } catch (error) {
-          profitabilityLogger.error('Error in backup profitability check', {
-            error,
-          });
         }
-      },
-      10 * 60 * 1000, // 10 minutes
-    );
+        mainLogger.info('Deposits found, proceeding with calculator initialization');
+      }
+      
+      runningComponents.calculator = await initializeCalculator(
+        database,
+        calculatorLogger,
+        calculatorErrorLogger
+      );
+    }
 
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+    // 3. Initialize executor if enabled (required for profitability engine)
+    if (componentsToRun.includes('executor') || componentsToRun.includes('profitability')) {
+      mainLogger.info('Initializing executor...');
+      runningComponents.executor = await initializeExecutor(
+        database,
+        stakerAbi,
+        executorLogger,
+        executorErrorLogger
+      );
+    }
+
+    // 4. Initialize profitability engine if enabled
+    if (componentsToRun.includes('profitability')) {
+      mainLogger.info('Initializing profitability engine...');
+      if (!runningComponents.executor) {
+        throw new Error('Executor must be initialized before profitability engine');
+      }
+
+      runningComponents.profitabilityEngine = await initializeProfitabilityEngine(
+        database,
+        runningComponents.executor,
+        profitabilityLogger,
+        profitabilityErrorLogger
+      );
+      
+      // Connect components if calculator exists
+      if (runningComponents.calculator) {
+        const calculator = runningComponents.calculator;
+        const earningPowerCalculator = calculator.getEarningPowerCalculator();
+        
+        if (earningPowerCalculator) {
+          earningPowerCalculator.setProfitabilityEngine(runningComponents.profitabilityEngine);
+          mainLogger.info('Connected calculator to profitability engine');
+        }
+      }
+      
+      // Trigger initial queue population
+      await triggerInitialQueuePopulation(
+        database,
+        runningComponents.profitabilityEngine,
+        mainLogger,
+        mainErrorLogger
+      );
+      
+      // Set up backup profitability check
+      setupBackupProfitabilityCheck(
+        database,
+        runningComponents.profitabilityEngine,
+        profitabilityLogger,
+        profitabilityErrorLogger
+      );
+    }
+
+    // Log final status
+    mainLogger.info('Application startup complete, components running:', {
+      monitor: !!runningComponents.monitor,
+      calculator: !!runningComponents.calculator,
+      executor: !!runningComponents.executor,
+      profitabilityEngine: !!runningComponents.profitabilityEngine,
+    });
+
+    mainLogger.info('Application is now running. Press Ctrl+C to stop.');
   } catch (error) {
-    await logError(error, 'Fatal error in main');
-    // Don't exit - let the process continue
-    logger.info('Recovering from error and continuing...');
+    await mainErrorLogger.error(error as Error, {
+      context: 'application-startup',
+    });
+    process.exit(1);
   }
 }
 
-// Handle uncaught errors without exiting
-process.on('uncaughtException', async (error) => {
-  await logError(error, 'Uncaught exception');
-  // Don't exit - let the process continue
-});
-
-process.on('unhandledRejection', async (reason) => {
-  await logError(reason, 'Unhandled rejection');
-  // Don't exit - let the process continue
-});
+// Register signal handlers for graceful shutdown
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // Run the application
 main().catch(async (error) => {
-  await logError(error, 'Fatal error in main');
-  // Don't exit - let the process continue
-  logger.info('Recovering from error and continuing...');
+  await mainErrorLogger.error(error as Error, { context: 'main-function' });
+  process.exit(1);
+});
+
+// Add global error handlers to prevent crashes
+process.on('uncaughtException', async (error) => {
+  await mainErrorLogger.error(error as Error, {
+    context: 'uncaught-exception',
+    severity: 'FATAL'
+  });
+  // Don't exit the process - allow the application to continue running
+});
+
+process.on('unhandledRejection', async (reason) => {
+  await mainErrorLogger.error(
+    reason instanceof Error ? reason : new Error(String(reason)),
+    {
+      context: 'unhandled-rejection',
+      severity: 'FATAL'
+    }
+  );
+  // Don't exit the process - allow the application to continue running
 });

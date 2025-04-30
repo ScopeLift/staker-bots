@@ -1,6 +1,14 @@
 import { BatchAnalysis, Deposit, ProfitabilityCheck } from './types';
 
+export interface ProfitabilityEngineConfig {
+  gasPriceBuffer: number;
+  minProfitMargin: bigint;
+  maxBatchSize: number;
+}
+
 export interface IProfitabilityEngine {
+  config: ProfitabilityEngineConfig;
+
   /**
    * Check if a single deposit can be profitably bumped
    * @param deposit The deposit to check
@@ -27,10 +35,24 @@ export interface IProfitabilityEngine {
 
   /**
    * Get the current status of the profitability engine
+   * @returns Object containing engine status information
    */
   getStatus(): Promise<{
     isRunning: boolean;
     lastGasPrice: bigint;
     lastUpdateTimestamp: number;
+    queueSize: number;
+    delegateeCount: number;
+  }>;
+
+  /**
+   * Get statistics about the processing queue
+   * @returns Object containing queue statistics
+   */
+  getQueueStats(): Promise<{
+    pendingCount: number;
+    processingCount: number;
+    completedCount: number;
+    failedCount: number;
   }>;
 }

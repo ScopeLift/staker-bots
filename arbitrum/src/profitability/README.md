@@ -1,6 +1,44 @@
-# Profitability Engine Component
+# Arbitrum Profitability Engine
 
-The Profitability Engine component is responsible for analyzing and determining whether deposits can be profitably bumped, considering calculator eligibility, reward constraints, gas costs, and batch optimization.
+The Profitability Engine analyzes Staker deposits to determine optimal profitability metrics for bumping. It provides detailed analysis of deposits, considering gas costs, reward rates, and market conditions.
+
+---
+
+## State Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Analyzing: New score event
+    Analyzing --> Caching: Update deposit/gas cache
+    Caching --> BatchOptimization: Optimize batches
+    BatchOptimization --> Queueing: Queue profitable bumps
+    Queueing --> Idle
+    Queueing --> [*]: On unrecoverable error
+```
+
+---
+
+## Sequence Diagram: Batch Profitability Analysis
+
+```mermaid
+sequenceDiagram
+    participant Calculator
+    participant ProfitabilityEngine
+    participant Database
+    participant Executor
+
+    Calculator->>ProfitabilityEngine: Score event notification
+    ProfitabilityEngine->>Database: Read deposits for delegatee
+    ProfitabilityEngine->>ProfitabilityEngine: Analyze profitability
+    alt Profitable
+        ProfitabilityEngine->>Executor: Queue bump tx
+        Executor-->>ProfitabilityEngine: Ack
+    end
+    ProfitabilityEngine->>Database: Update analysis/queue
+```
+
+---
 
 ## Overview
 
@@ -19,19 +57,25 @@ The profitability engine implements a queue-based system that responds to score 
 
 This event-driven architecture ensures that deposits are only processed when they might have become profitable due to score changes, rather than checking all deposits periodically.
 
-### Processing Flow
+### System Architecture
 
-```
-┌─────────────┐    Score    ┌─────────────┐   Queue   ┌─────────────┐  Transaction  ┌─────────────┐
-│  Calculator │───Event────▶│Profitability│───Item───▶│ Processing  │───Request────▶│  Executor   │
-│  Component  │             │   Engine    │           │    Queue    │               │  Component  │
-└─────────────┘             └─────────────┘           └─────────────┘               └─────────────┘
-                                   ▲                                                      │
-                                   │                                                      │
-                                   └──────────────────Transaction─Status─────────────────┘
+```mermaid
+graph TD
+    A[Deposits] --> B[Profitability Engine]
+    B --> C[Deposit Cache]
+    B --> D[Gas Price Cache]
+    B --> E[Processing Queue]
+    B --> F[Analysis Output]
+
+    subgraph "Engine Components"
+        B
+        C
+        D
+        E
+    end
 ```
 
-### Components
+### Key Components
 
 #### ProfitabilityEngineWrapper
 
@@ -64,22 +108,79 @@ Each queue item maintains:
 - Error information for troubleshooting
 - Timestamps for monitoring
 
-## Configuration
+## Inputs & Outputs
 
-The engine can be configured with the following parameters:
+### Inputs
+
+#### Configuration (ProfitabilityConfig)
 
 ```typescript
-type ProfitabilityConfig = {
-  minProfitMargin: bigint; // Minimum profit margin in base units
-  maxBatchSize: number; // Maximum number of deposits to process in a batch
-  gasPriceBuffer: number; // Buffer percentage for gas price volatility
-  rewardTokenAddress: string; // Address of the reward token
-  defaultTipReceiver: string; // Default tip receiver address
+{
+  rewardTokenAddress: string,     // Reward token contract address
+  minProfitMargin: bigint,        // Minimum acceptable profit
+  gasPriceBuffer: number,         // Gas price safety buffer (%)
+  maxBatchSize: number,           // Maximum deposits per batch
+  defaultTipReceiver: string,     // Default tip receiver address
   priceFeed: {
-    cacheDuration: number; // Price feed cache duration in milliseconds
-  };
-};
+    cacheDuration: number         // Price cache duration (ms)
+  }
+}
 ```
+
+#### Deposit Data
+
+```typescript
+{
+  deposit_id: bigint,            // Unique deposit identifier
+  owner_address: string,         // Deposit owner address
+  delegatee_address: string,     // Delegatee address
+  amount: bigint,                // Deposit amount
+  earning_power: bigint          // Current earning power
+}
+```
+
+### Outputs
+
+#### Profitability Analysis
+
+```typescript
+{
+  canBump: boolean,               // Overall profitability flag
+  constraints: {
+    calculatorEligible: boolean,  // Calculator eligibility check
+    hasEnoughRewards: boolean,    // Reward threshold check
+    isProfitable: boolean         // Profit after gas check
+  },
+  estimates: {
+    optimalTip: bigint,           // Calculated optimal tip
+    gasEstimate: bigint,          // Estimated gas cost
+    expectedProfit: bigint,       // Net profit after gas
+    tipReceiver: string           // Tip receiver address
+  }
+}
+```
+
+#### Batch Analysis
+
+```typescript
+{
+  deposits: [                    // Array of analyzed deposits
+    {
+      depositId: bigint,         // Deposit ID
+      profitability: {...}       // Profitability analysis
+    }
+  ],
+  totalGasEstimate: bigint,      // Total gas for all deposits
+  totalExpectedProfit: bigint,   // Total net profit
+  recommendedBatchSize: number   // Optimal batch size
+}
+```
+
+## Error Handling
+
+- Early returns for invalid/missing data
+- Retries for transient errors
+- Logs and propagates context-rich errors
 
 ## Usage
 
@@ -142,7 +243,7 @@ console.log(
 );
 ```
 
-### Monitoring Queue Status
+### Monitoring Engine Status
 
 ```typescript
 const status = await engine.getStatus();
@@ -157,6 +258,26 @@ console.log('Completed items:', queueStats.completedCount);
 console.log('Failed items:', queueStats.failedCount);
 ```
 
+## Performance Optimizations
+
+### Caching System
+
+- **Deposit Cache**
+  - Reduces database load
+  - Quick access to frequent deposits
+
+- **Gas Price Cache**
+  - Updates every minute
+  - Includes price buffer
+  - Reduces RPC calls
+
+### Batch Processing
+
+- Groups deposits by delegatee
+- Optimizes gas usage
+- Maintains processing queue
+- Handles requeuing on restarts
+
 ## Integration Points
 
 - BinaryEligibilityCalculator for bump eligibility checks and score event notifications
@@ -164,32 +285,3 @@ console.log('Failed items:', queueStats.failedCount);
 - Staker contract for reward and tip constraints
 - Price feed for cost estimation
 - Database for deposit information and queue persistence
-
-## Error Handling
-
-- Validates contract interfaces
-- Implements gas price buffering
-- Handles failed profitability checks gracefully
-- Provides queue item retry logic
-- Persists error information for troubleshooting
-- Provides detailed error logging
-
-## Health Monitoring
-
-The engine includes built-in status monitoring:
-
-- Running state
-- Last gas price
-- Last update timestamp
-- Queue sizes and processing statistics
-- Delegatee breakdown
-- Transaction success/failure rates
-
-## Backup Processing
-
-In addition to the event-driven queue, a periodic backup process runs to ensure no deposits are missed:
-
-1. Checks for deposits not currently in the queue
-2. Triggers score events for their delegatees
-3. Runs at a lower frequency than the main queue processor
-4. Provides redundancy in case of missed events

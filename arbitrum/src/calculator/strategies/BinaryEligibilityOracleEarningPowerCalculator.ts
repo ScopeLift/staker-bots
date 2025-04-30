@@ -3,7 +3,7 @@ import { ScoreEvent, IRewardCalculator } from '../interfaces/types';
 import { IDatabase } from '@/database';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { ethers } from 'ethers';
-import { CONFIG } from '@/config';
+import { CONFIG } from '@/configuration/constants';
 import { REWARD_CALCULATOR_ABI } from '../constants';
 import { ProfitabilityEngineWrapper } from '@/profitability/ProfitabilityEngineWrapper';
 
@@ -247,35 +247,5 @@ export class BinaryEligibilityOracleEarningPowerCalculator
       });
       throw error;
     }
-  }
-
-  private async getDelegateeScore(delegatee: string): Promise<bigint> {
-    const cachedScore = this.scoreCache.get(delegatee);
-    if (cachedScore) return cachedScore;
-
-    const latestEvent = await this.getLatestScoreEvent(delegatee);
-    if (!latestEvent?.score) return BigInt(0);
-
-    const score = BigInt(latestEvent.score);
-    this.scoreCache.set(delegatee, score);
-    return score;
-  }
-
-  private async getLatestScoreEvent(
-    delegatee: string,
-  ): Promise<ScoreEvent | null> {
-    const dbEvent = await this.db.getLatestScoreEvent(delegatee);
-    return dbEvent ? { ...dbEvent, score: BigInt(dbEvent.score) } : null;
-  }
-
-  private async getScoreEvents(
-    fromBlock: number,
-    toBlock: number,
-  ): Promise<ScoreEvent[]> {
-    const dbEvents = await this.db.getScoreEventsByBlockRange(
-      fromBlock,
-      toBlock,
-    );
-    return dbEvents.map((e) => ({ ...e, score: BigInt(e.score) }));
   }
 }

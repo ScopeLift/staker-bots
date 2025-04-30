@@ -6,13 +6,27 @@ import {
   DelegateeAlteredEvent,
 } from './types';
 import { Logger } from './logging';
+import { EVENT_TYPES } from './constants';
+import {
+  EventProcessingError,
+  DepositNotFoundError,
+} from './errors';
+import { ErrorLogger } from '@/configuration/errorLogger';
 
+/**
+ * Processes blockchain events related to staking operations.
+ * Handles deposit creation/updates, withdrawals, and delegatee changes.
+ */
 export class EventProcessor {
   constructor(
     private readonly db: IDatabase,
     private readonly logger: Logger,
+    private readonly errorLogger?: ErrorLogger,
   ) {}
 
+  /**
+   * Processes a StakeDeposited event by creating a new deposit record
+   */
   async processStakeDeposited(
     event: StakeDepositedEvent,
   ): Promise<ProcessingResult> {
@@ -23,6 +37,8 @@ export class EventProcessor {
         owner_address: event.ownerAddress,
         delegatee_address: event.delegateeAddress,
         amount: event.amount.toString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
 
       this.logger.info('Created new deposit', {
@@ -31,121 +47,128 @@ export class EventProcessor {
         amount: event.amount.toString(),
       });
 
-      return {
-        success: true,
-        blockNumber: event.blockNumber,
-        eventHash: event.transactionHash,
-        retryable: false,
-      };
+      return this.createSuccessResult(event);
     } catch (error) {
-      this.logger.error('Failed to process StakeDeposited event', {
-        error,
-        event,
-      });
-
-      return {
-        success: false,
-        error: error as Error,
-        blockNumber: event.blockNumber,
-        eventHash: event.transactionHash,
-        retryable: true,
+      const context = {
+        depositId: event.depositId,
+        amount: event.amount.toString(),
       };
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-stake-deposited',
+          ...context,
+        });
+      }
+
+      throw new EventProcessingError(
+        EVENT_TYPES.STAKE_DEPOSITED,
+        error as Error,
+        context,
+      );
     }
   }
 
+  /**
+   * Processes a StakeWithdrawn event by updating the deposit amount
+   */
   async processStakeWithdrawn(
     event: StakeWithdrawnEvent,
   ): Promise<ProcessingResult> {
     try {
       const deposit = await this.db.getDeposit(event.depositId);
-      if (!deposit) {
-        throw new Error(`Deposit ${event.depositId} not found`);
-      }
+      if (!deposit) throw new DepositNotFoundError(event.depositId);
 
-      const remainingAmount = BigInt(deposit.amount) - event.withdrawnAmount;
+      const withdrawnAmount = BigInt(event.withdrawnAmount.toString());
+      const remainingAmount = BigInt(deposit.amount) - withdrawnAmount;
+      const depositData =
+        remainingAmount <= 0n
+          ? { amount: '0', delegatee_address: deposit.owner_address }
+          : { amount: remainingAmount.toString() };
 
-      if (remainingAmount <= 0) {
-        // Instead of deleting, reset values and set delegatee to owner
-        await this.db.updateDeposit(event.depositId, {
-          amount: '0',
-          delegatee_address: deposit.owner_address,
-        });
-      } else {
-        await this.db.updateDeposit(event.depositId, {
-          amount: remainingAmount.toString(),
-        });
-      }
+      await this.db.updateDeposit(event.depositId, depositData);
 
-      return {
-        success: true,
-        blockNumber: event.blockNumber,
-        eventHash: event.transactionHash,
-        retryable: false,
-      };
-    } catch (error) {
-      this.logger.error('Failed to process StakeWithdrawn event', {
-        error,
-        event,
+      this.logger.info('Processed withdrawal', {
+        depositId: event.depositId,
+        remainingAmount: depositData.amount,
       });
 
-      return {
-        success: false,
-        error: error as Error,
-        blockNumber: event.blockNumber,
-        eventHash: event.transactionHash,
-        retryable: true,
+      return this.createSuccessResult(event);
+    } catch (error) {
+      const context = {
+        depositId: event.depositId,
+        withdrawnAmount: event.withdrawnAmount.toString(),
       };
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-stake-withdrawn',
+          ...context,
+        });
+      }
+
+      throw new EventProcessingError(
+        EVENT_TYPES.STAKE_WITHDRAWN,
+        error as Error,
+        context,
+      );
     }
   }
 
+  /**
+   * Processes a DelegateeAltered event by updating the deposit's delegatee
+   */
   async processDelegateeAltered(
     event: DelegateeAlteredEvent,
   ): Promise<ProcessingResult> {
     try {
-      // Check if deposit exists first
       const deposit = await this.db.getDeposit(event.depositId);
-      if (!deposit) {
-        this.logger.warn(
-          'Received DelegateeAltered event for non-existent deposit',
-          {
-            depositId: event.depositId,
-            oldDelegatee: event.oldDelegatee,
-            newDelegatee: event.newDelegatee,
-            blockNumber: event.blockNumber,
-          },
-        );
-        return {
-          success: false,
-          error: new Error(`Deposit ${event.depositId} not found`),
-          blockNumber: event.blockNumber,
-          eventHash: event.transactionHash,
-          retryable: false, // Don't retry since deposit doesn't exist
-        };
-      }
+      if (!deposit) throw new DepositNotFoundError(event.depositId);
 
       await this.db.updateDeposit(event.depositId, {
         delegatee_address: event.newDelegatee,
       });
 
-      return {
-        success: true,
-        blockNumber: event.blockNumber,
-        eventHash: event.transactionHash,
-        retryable: false,
-      };
-    } catch (error) {
-      this.logger.error('Failed to process DelegateeAltered event', {
-        error,
-        event,
+      this.logger.info('Updated delegatee', {
+        depositId: event.depositId,
+        newDelegatee: event.newDelegatee,
       });
 
-      return {
-        success: false,
-        error: error as Error,
-        blockNumber: event.blockNumber,
-        eventHash: event.transactionHash,
-        retryable: true,
+      return this.createSuccessResult(event);
+    } catch (error) {
+      const context = {
+        depositId: event.depositId,
+        oldDelegatee: event.oldDelegatee,
+        newDelegatee: event.newDelegatee,
       };
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'process-delegatee-altered',
+          ...context,
+        });
+      }
+
+      throw new EventProcessingError(
+        EVENT_TYPES.DELEGATEE_ALTERED,
+        error as Error,
+        context,
+      );
     }
+  }
+
+  /**
+   * Creates a success result object for event processing
+   */
+  private createSuccessResult(event: {
+    blockNumber: number;
+    transactionHash: string;
+  }): ProcessingResult {
+    return {
+      success: true,
+      blockNumber: event.blockNumber,
+      eventHash: event.transactionHash,
+      retryable: false,
+    };
   }
 }

@@ -1,2 +1,15 @@
 node_modules
-.cursor
+*/.env
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.*
+**/.env
+**/.env.local
+**/.env.development
+**/.env.test
+**/.env.production
+**/.env.*
+
