@@ -31,6 +31,7 @@ export interface QueuedTransaction {
   gasLimit?: bigint;
   tx_data?: string;
   retryCount?: number;
+  queueItemId?: string;
 }
 
 export enum TransactionStatus {

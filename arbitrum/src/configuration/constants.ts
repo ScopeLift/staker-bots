@@ -59,6 +59,13 @@ export const CONFIG = {
     privateKey: process.env.PRIVATE_KEY || '',
     tipReceiver:
       process.env.TIP_RECEIVER || '0x0000000000000000000000000000000000000000',
+    minBalance: ethers.parseEther('0.0001'),
+    maxPendingTransactions: 5,
+    maxQueueSize: 100,
+    retryDelayMs: 5000,
+    transferOutThreshold: ethers.parseEther('0.5'),
+    gasBoostPercentage: 30,
+    concurrentTransactions: 3,
   },
   priceFeed: {
     coinmarketcap: {

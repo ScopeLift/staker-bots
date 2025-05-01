@@ -114,14 +114,6 @@ export class Calculator {
         await this.calculator.processScoreEvents(fromBlock, toBlock);
         this.lastProcessedBlock = toBlock;
 
-        // Always log progress since we're processing large ranges
-        this.logger.info('Processed block range', {
-          fromBlock,
-          toBlock,
-          blockRange: toBlock - fromBlock + 1,
-          remainingBlocks: targetBlock - toBlock,
-        });
-
         // No delays, continue immediately
         continue;
       } catch (error) {

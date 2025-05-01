@@ -12,7 +12,7 @@ import { ConsoleLogger, Logger } from '../monitor/logging';
 import fs from 'fs';
 import { Deposit } from '../database/interfaces/types';
 import { CoinMarketCapFeed } from '../shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
-import { CONFIG } from '../config';
+import { CONFIG } from '@/configuration/constants';
 import { ExecutorWrapper, ExecutorType } from '../executor';
 import { TransactionStatus } from '../executor/interfaces/types';
 import { ProfitabilityEngineWrapper } from '../profitability/ProfitabilityEngineWrapper';
@@ -373,11 +373,11 @@ async function main() {
 
   // Initialize executor
   logger.info('Initializing executor...');
-  const executor = new ExecutorWrapper(
+  const executor = ExecutorWrapper({
     stakerContract,
     provider,
-    ExecutorType.WALLET,
-    {
+    type: ExecutorType.WALLET,
+    config: {
       wallet: {
         privateKey: CONFIG.executor.privateKey,
         minBalance: ethers.parseEther('0.0000001'), // Very small value for testing
@@ -391,7 +391,7 @@ async function main() {
       gasBoostPercentage: 5,
       concurrentTransactions: 2,
     },
-  );
+  });
 
   // Start executor
   await executor.start();

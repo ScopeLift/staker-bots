@@ -75,7 +75,16 @@ export class StakerMonitor extends EventEmitter {
 
     try {
       this.isRunning = true;
+      this.logger.info('Looking up checkpoint for component type:', {
+        componentType: PROCESSING_COMPONENT.TYPE
+      });
+      
       const checkpoint = await this.db.getCheckpoint(PROCESSING_COMPONENT.TYPE);
+      this.logger.info('Checkpoint lookup result:', {
+        hasCheckpoint: !!checkpoint,
+        checkpoint: checkpoint,
+        componentType: PROCESSING_COMPONENT.TYPE
+      });
 
       if (checkpoint) {
         this.lastProcessedBlock = checkpoint.last_block_number;
@@ -85,6 +94,16 @@ export class StakerMonitor extends EventEmitter {
           lastUpdate: checkpoint.last_update,
         });
       } else {
+        this.logger.warn('No checkpoint found, initializing with start block', {
+          startBlock: this.config.startBlock,
+          componentType: PROCESSING_COMPONENT.TYPE,
+          config: {
+            ...this.config,
+            provider: '<provider>',  // Don't log the full provider
+            database: '<database>'   // Don't log the full database
+          }
+        });
+        
         // Initialize with start block if no checkpoint exists
         this.lastProcessedBlock = this.config.startBlock;
         await this.db.updateCheckpoint({
@@ -93,8 +112,9 @@ export class StakerMonitor extends EventEmitter {
           block_hash: PROCESSING_COMPONENT.INITIAL_BLOCK_HASH,
           last_update: new Date().toISOString(),
         });
-        this.logger.info('Starting from initial block', {
+        this.logger.info('Created initial checkpoint', {
           blockNumber: this.lastProcessedBlock,
+          componentType: PROCESSING_COMPONENT.TYPE
         });
       }
 
@@ -275,8 +295,6 @@ export class StakerMonitor extends EventEmitter {
     toBlock: number,
   ): Promise<void> {
     try {
-      this.logger.info('Processing block range', { fromBlock, toBlock });
-
       const [depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all(
         [
           this.contract.queryFilter(
@@ -428,14 +446,6 @@ export class StakerMonitor extends EventEmitter {
         };
         await this.handleDelegateeAltered(alteredEvent);
       }
-
-      this.logger.info('Processed block range', {
-        fromBlock,
-        toBlock,
-        depositedEvents: depositedEvents.length,
-        withdrawnEvents: withdrawnEvents.length,
-        alteredEvents: alteredEvents.length,
-      });
     } catch (error) {
       this.logger.error('Error processing block range', {
         error,

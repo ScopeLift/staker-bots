@@ -394,11 +394,7 @@ export class BaseExecutor implements IExecutor {
    */
   protected async executeTransaction(tx: QueuedTransaction): Promise<void> {
     if (!this.isRunning) {
-      return;
-    }
-
-    // Double-check status
-    if (tx.status !== TransactionStatus.QUEUED) {
+      this.logger.info('Executor not running, skipping transaction');
       return;
     }
 
@@ -408,29 +404,10 @@ export class BaseExecutor implements IExecutor {
       tx.executedAt = new Date();
       this.logger.info('Executing transaction', { id: tx.id });
       
-      // Check if contract is properly initialized
-      if (!this.stakerContract || typeof this.stakerContract.bumpEarningPower !== 'function') {
-        throw new Error('Contract not properly initialized or missing bumpEarningPower method');
-      }
-
-      // Get queue item ID from txData
-      let queueItemId: string | undefined;
-      if (tx.tx_data) {
-        try {
-          // Check if tx_data is a JSON string
-          if (tx.tx_data.startsWith('{')) {
-            const txData = JSON.parse(tx.tx_data);
-            queueItemId = txData.id;
-          }
-        } catch (error) {
-          // Not JSON data, continue with normal execution
-          this.logger.debug('tx_data is not JSON', {
-            txData: tx.tx_data.substring(0, 20) + '...',
-          });
-        }
-      }
-
-      // Update database with pending status first
+      // Parse transaction data
+      const { depositId, tipReceiver, requestedTip, queueItemId } = this.parseTransactionData(tx);
+      
+      // Update database with pending status if queueItemId exists
       if (this.db && queueItemId) {
         try {
           await this.db.updateTransactionQueueItem(queueItemId, {
@@ -446,226 +423,91 @@ export class BaseExecutor implements IExecutor {
           });
         }
       }
-
-      // Get gas price with boost applied
+      
+      // Calculate gas parameters
       const feeData = await this.provider.getFeeData();
       const baseGasPrice = feeData.gasPrice || BigInt(0);
-      const boostMultiplier =
-        BigInt(100 + this.config.gasBoostPercentage) / BigInt(100);
+      const boostMultiplier = BigInt(100 + this.config.gasBoostPercentage) / BigInt(100);
       let gasPrice = baseGasPrice * boostMultiplier;
-
-      // Make sure our gas price is at least equal to the base fee
+      
+      // Ensure gas price is at least the base fee
       const baseFeePerGas = feeData.maxFeePerGas || baseGasPrice;
       if (gasPrice < baseFeePerGas) {
         gasPrice = baseFeePerGas + BigInt(1_000_000); // Add 1 gwei buffer
       }
-
-      // Log fee data
-      this.logger.info('Network fee data:', {
-        gasPrice: gasPrice.toString(),
-        baseFeePerGas: baseFeePerGas.toString(),
-        boostMultiplier: boostMultiplier.toString(),
+      
+      // Log wallet balance
+      const walletBalance = await this.getWalletBalance();
+      this.logger.info('Current wallet balance before transaction', {
+        balance: walletBalance.toString(),
+        requestedTip: requestedTip.toString()
       });
-
-      // Wallet balance check
-      const balance = await this.getWalletBalance();
-      if (balance < this.config.wallet.minBalance) {
-        throw new Error(
-          `Wallet balance too low: ${balance.toString()} < ${this.config.wallet.minBalance.toString()}`,
+      
+      // Estimate gas for the transaction
+      let gasLimit: bigint;
+      try {
+        gasLimit = await this.stakerContract.getFunction('bumpEarningPower').estimateGas(
+          depositId,
+          tipReceiver,
+          requestedTip,
+          { value: requestedTip }
         );
-      }
-
-      // Prepare and execute transaction
-      let txResponse;
-      if (tx.tx_data) {
-        // If we have pre-built transaction data, validate and use it
-        if (!tx.tx_data.startsWith('0x')) {
-          // Check if this might be JSON data
-          try {
-            // If tx_data is JSON, assume it contains transaction metadata
-            const txMetadata = JSON.parse(tx.tx_data);
-            
-            // Log the parsed metadata
-            this.logger.info('Parsed tx_data as JSON metadata', {
-              hasDepositId: !!txMetadata.depositId,
-              hasTipReceiver: !!txMetadata.tipReceiver,
-              hasTipAmount: !!txMetadata.tipAmount,
-            });
-            
-            // Execute via contract method using the depositId
-            const depositId = BigInt(txMetadata.depositId || tx.depositId.toString());
-            
-            // Use the contract's bumpEarningPower method directly
-            let gasLimit: bigint;
-            try {
-              gasLimit = await this.stakerContract.bumpEarningPower.estimateGas(depositId);
-              // Add 20% buffer for safety
-              gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
-            } catch (error) {
-              this.logger.error('Failed to estimate gas', {
-                error: error instanceof Error ? error.message : String(error),
-                depositId: depositId.toString(),
-              });
-              // Use a default gas limit as fallback
-              gasLimit = BigInt(300000);
-            }
-            
-            // Execute transaction
-            txResponse = await this.stakerContract.bumpEarningPower(depositId, {
-              gasLimit,
-              gasPrice,
-            });
-          } catch (error) {
-            this.logger.error('Failed to parse tx_data as JSON, and it\'s not hex data', {
-              error: error instanceof Error ? error.message : String(error),
-              tx_data_prefix: tx.tx_data.substring(0, 20),
-            });
-            throw new Error('Invalid transaction data format');
-          }
-        } else {
-          // It's hex data, check if it's a call to bumpEarningPower
-          const functionSelector = tx.tx_data.slice(0, 10);
-          
-          // Safely check if it's a bumpEarningPower function call
-          let isBumpFunction = false;
-          try {
-            const bumpFunction = this.contractInterface.getFunction('bumpEarningPower(uint256)');
-            // Check if bumpFunction exists and has a selector property before comparison
-            isBumpFunction = !!bumpFunction && 
-                            typeof bumpFunction.selector === 'string' && 
-                            bumpFunction.selector === functionSelector;
-          } catch (error) {
-            this.logger.error('Failed to get bumpEarningPower function selector', {
-              error: error instanceof Error ? error.message : String(error),
-            });
-            // Not a bumpEarningPower function call
-            isBumpFunction = false;
-          }
-          
-          if (isBumpFunction) {
-            // Decode the function data to get the depositId
-            let depositId: bigint;
-            try {
-              const decoded = this.contractInterface.decodeFunctionData(
-                'bumpEarningPower',
-                tx.tx_data
-              );
-              depositId = (decoded && decoded.length > 0) 
-                ? BigInt(decoded[0].toString()) 
-                : tx.depositId;
-            } catch (error) {
-              this.logger.error('Failed to decode function data', {
-                error: error instanceof Error ? error.message : String(error),
-              });
-              // Fallback to the deposit ID from the transaction
-              depositId = tx.depositId;
-            }
-            
-            // Estimate gas
-            let gasLimit: bigint;
-            try {
-              gasLimit = await this.stakerContract.bumpEarningPower.estimateGas(depositId);
-              // Add 20% buffer for safety
-              gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
-            } catch (error) {
-              this.logger.error('Failed to estimate gas', {
-                error: error instanceof Error ? error.message : String(error),
-                depositId: depositId.toString(),
-              });
-              gasLimit = BigInt(300000); // Safe default
-            }
-            
-            // Execute transaction
-            txResponse = await this.stakerContract.bumpEarningPower(depositId, {
-              gasLimit,
-              gasPrice,
-            });
-          } else {
-            // Generic transaction with raw hex data
-            this.logger.info('Sending raw transaction with hex data', {
-              to: this.contractAddress,
-              data_prefix: tx.tx_data.substring(0, 20) + '...'
-            });
-            
-            // Estimate gas
-            let gasLimit: bigint;
-            try {
-              gasLimit = await this.provider.estimateGas({
-                to: this.contractAddress,
-                data: tx.tx_data,
-                from: this.wallet.address,
-              });
-              // Add 20% buffer for safety
-              gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
-            } catch (error) {
-              this.logger.error('Failed to estimate gas for raw transaction', {
-                error: error instanceof Error ? error.message : String(error),
-              });
-              gasLimit = BigInt(300000); // Safe default
-            }
-            
-            // Send raw transaction
-            txResponse = await this.wallet.sendTransaction({
-              to: this.contractAddress,
-              data: tx.tx_data,
-              gasLimit,
-              gasPrice,
-            });
-          }
-        }
-      } else {
-        // No pre-built transaction data, build bump transaction for the deposit ID
-        const depositId = tx.depositId;
-        
-        // Estimate gas for the bump
-        let gasLimit: bigint;
-        try {
-          gasLimit = await this.stakerContract.bumpEarningPower.estimateGas(depositId);
-          // Add 20% buffer for safety
-          gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
-        } catch (error) {
-          this.logger.error('Failed to estimate gas', {
-            error: error instanceof Error ? error.message : String(error),
-            depositId: depositId.toString(),
-          });
-          // Use a default gas limit as fallback
-          gasLimit = BigInt(300000);
-        }
-        
-        // Execute transaction via contract
-        this.logger.info('Executing bumpEarningPower via contract', {
+        // Add 20% buffer for safety
+        gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
+      } catch (err) {
+        this.logger.error('Failed to estimate gas', {
+          error: err instanceof Error ? err.message : String(err),
           depositId: depositId.toString(),
-          gasLimit: gasLimit.toString(),
-          gasPrice: gasPrice.toString(),
+          tipReceiver,
+          requestedTip: requestedTip.toString()
         });
+        gasLimit = BigInt(300000); // Fallback gas limit
+      }
+      
+      // Execute transaction
+      this.logger.info('Executing bumpEarningPower transaction', {
+        depositId: depositId.toString(),
+        tipReceiver,
+        requestedTip: requestedTip.toString(),
+        gasLimit: gasLimit.toString(),
+        gasPrice: gasPrice.toString()
+      });
+      
+      let txResponse;
+      try {
+        txResponse = await this.stakerContract.getFunction('bumpEarningPower').send(
+          depositId,
+          tipReceiver,
+          requestedTip,
+          {
+            gasLimit,
+            gasPrice,
+            value: requestedTip
+          }
+        );
         
-        txResponse = await this.stakerContract.bumpEarningPower(depositId, {
-          gasLimit,
-          gasPrice,
+        this.logger.info('Transaction submitted successfully', {
+          txHash: txResponse.hash,
+          depositId: depositId.toString()
         });
+      } catch (sendError) {
+        this.logger.error('Failed to send transaction', {
+          error: sendError instanceof Error ? sendError.message : String(sendError),
+          depositId: depositId.toString()
+        });
+        throw sendError;
       }
-
-      // Check if we have a valid transaction response
-      if (!txResponse || !txResponse.hash) {
-        throw new Error('Transaction failed - no transaction hash received');
-      }
-
+      
       // Store transaction info
       tx.hash = txResponse.hash;
       tx.gasPrice = gasPrice;
-      this.logger.info('Transaction sent', {
-        id: tx.id,
-        hash: tx.hash,
-        depositId: tx.depositId.toString(),
-        gasPrice: gasPrice.toString(),
-      });
-
+      
       // Wait for transaction to be mined
       const receipt = await txResponse.wait(this.config.minConfirmations);
       if (!receipt) {
         throw new Error('Transaction receipt not received');
       }
-
+      
       // Update transaction status
       tx.status = TransactionStatus.CONFIRMED;
       this.logger.info('Transaction confirmed', {
@@ -677,80 +519,177 @@ export class BaseExecutor implements IExecutor {
       
       // Update database if needed
       if (this.db && queueItemId) {
-        try {
-          await this.db.updateTransactionQueueItem(queueItemId, {
-            status: TransactionQueueStatus.CONFIRMED,
-            hash: receipt.hash,
-          });
-          this.logger.info('Updated transaction queue item to CONFIRMED', {
-            queueItemId,
-            hash: receipt.hash,
-          });
-        } catch (error) {
-          this.logger.error('Failed to update transaction queue status', {
-            error: error instanceof Error ? error.message : String(error),
-            queueItemId,
-          });
-        }
+        await this.db.updateTransactionQueueItem(queueItemId, {
+          status: TransactionQueueStatus.CONFIRMED,
+          hash: receipt.hash,
+        });
+        this.logger.info('Updated transaction queue item to CONFIRMED', {
+          queueItemId,
+          hash: receipt.hash,
+        });
       }
     } catch (error) {
       // Handle execution error
       tx.status = TransactionStatus.FAILED;
       tx.error = error as Error;
-      tx.retryCount = (tx.retryCount || 0) + 1;
-
-      // Log the error
+      tx.retryCount = (tx.retryCount ?? 0) + 1;
+      
       this.logger.error('Transaction execution failed', {
         id: tx.id,
-        depositId: tx.depositId.toString(), 
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
+        depositId: tx.depositId.toString(),
+        error: error instanceof Error ? error.message : String(error)
       });
-
-      // If we have retries left, requeue the transaction
-      if (tx.retryCount < this.config.maxRetries) {
-        this.logger.info('Requeuing failed transaction', {
-          id: tx.id,
-          retryCount: tx.retryCount,
+      
+      // Handle retries
+      this.handleTransactionRetry(tx, error);
+    }
+  }
+  
+  /**
+   * Parse transaction data from tx_data or use defaults
+   */
+  private parseTransactionData(tx: QueuedTransaction): {
+    depositId: bigint;
+    tipReceiver: string;
+    requestedTip: bigint;
+    queueItemId?: string;
+  } {
+    let depositId = tx.depositId;
+    let tipReceiver = this.wallet.address;
+    let requestedTip = tx.profitability.estimates.optimalTip || BigInt(0);
+    let queueItemId: string | undefined;
+    
+    // Parse tx_data if available
+    if (tx.tx_data) {
+      try {
+        if (tx.tx_data.startsWith('{')) {
+          const txMetadata = JSON.parse(tx.tx_data);
+          
+          // Get queue item ID
+          queueItemId = txMetadata.id;
+          
+          // Extract parameters
+          depositId = BigInt(txMetadata._depositId || tx.depositId.toString());
+          tipReceiver = typeof txMetadata._tipReceiver === 'string' ? 
+            txMetadata._tipReceiver : this.wallet.address;
+            
+          // Get requested tip amount
+          let metadataTip = BigInt(txMetadata._requestedTip || "0");
+          requestedTip = metadataTip > BigInt(0) ? metadataTip : requestedTip;
+        }
+      } catch (error) {
+        this.logger.error('Failed to parse tx_data', {
           error: error instanceof Error ? error.message : String(error),
+          txData: tx.tx_data.substring(0, 50) + '...'
         });
-
-        // Delay retries using an exponential backoff
-        const delayMs = this.config.retryDelayMs * Math.pow(2, tx.retryCount - 1);
-        setTimeout(() => {
-          // Reset status to QUEUED for retry
-          tx.status = TransactionStatus.QUEUED;
-          // Process queue to pick up the retry
-          this.processQueue(false);
-        }, delayMs);
-      } else {
-        this.logger.error('Transaction failed permanently', {
-          id: tx.id,
-          error: error instanceof Error ? error.message : String(error),
+      }
+    }
+    
+    // Ensure tip doesn't exceed wallet balance
+    const adjustRequestedTip = async (): Promise<bigint> => {
+      const walletBalance = await this.getWalletBalance();
+      // Reserve some ETH for gas (estimated 0.01 ETH)
+      const reserveForGas = BigInt(10000000000000000); // 0.01 ETH
+      
+      if (requestedTip > walletBalance) {
+        // Use at most 90% of wallet balance, minus gas reserve
+        const availableForTip = walletBalance > reserveForGas ? 
+          (walletBalance - reserveForGas) * BigInt(90) / BigInt(100) : BigInt(0);
+        
+        this.logger.info('Adjusting tip amount to fit wallet balance', {
+          originalTip: requestedTip.toString(),
+          adjustedTip: availableForTip.toString(),
+          walletBalance: walletBalance.toString()
         });
         
-        // Update database if needed
-        if (this.db && tx.tx_data) {
-          try {
-            // Try to parse tx_data for queue item ID
-            const parseResult = tx.tx_data.startsWith('{') ? JSON.parse(tx.tx_data) : null;
-            if (parseResult && parseResult.id) {
-              await this.db.updateTransactionQueueItem(parseResult.id, {
-                status: TransactionQueueStatus.FAILED,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              this.logger.info('Updated transaction queue item to FAILED', {
-                queueItemId: parseResult.id,
-              });
-            }
-          } catch (e) {
-            // Ignore JSON parse errors
-            this.logger.debug('Failed to parse tx_data for queue ID', {
-              error: e instanceof Error ? e.message : String(e),
-            });
+        return availableForTip;
+      }
+      
+      return requestedTip;
+    };
+    
+    // Adjust the tip (synchronously for simplicity)
+    requestedTip = BigInt(0); // Default to 0 if wallet balance check fails
+    adjustRequestedTip().then(adjustedTip => {
+      requestedTip = adjustedTip;
+    }).catch(error => {
+      this.logger.error('Failed to adjust tip amount', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+    
+    return { depositId, tipReceiver, requestedTip, queueItemId };
+  }
+  
+  /**
+   * Handle transaction retry logic
+   */
+  private handleTransactionRetry(tx: QueuedTransaction, error: unknown): void {
+    // If we have retries left, requeue the transaction
+    if ((tx.retryCount ?? 0) < this.config.maxRetries) {
+      this.logger.info('Requeuing failed transaction', {
+        id: tx.id,
+        retryCount: tx.retryCount ?? 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Delay retries using an exponential backoff
+      const delayMs = this.config.retryDelayMs * Math.pow(2, (tx.retryCount ?? 0) - 1);
+      setTimeout(() => {
+        // Reset status to QUEUED for retry
+        tx.status = TransactionStatus.QUEUED;
+        // Process queue to pick up the retry
+        this.processQueue(false);
+      }, delayMs);
+    } else {
+      this.logger.error('Transaction failed permanently', {
+        id: tx.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      
+      // Update database if needed
+      this.updateFailedTransactionInDb(tx, error);
+    }
+  }
+  
+  /**
+   * Update failed transaction in database
+   */
+  private async updateFailedTransactionInDb(tx: QueuedTransaction, error: unknown): Promise<void> {
+    if (!this.db) return;
+    
+    try {
+      let queueItemId: string | undefined;
+      
+      if (tx.queueItemId) {
+        queueItemId = tx.queueItemId;
+      } else if (tx.tx_data && tx.tx_data.startsWith('{')) {
+        try {
+          const parseResult = JSON.parse(tx.tx_data);
+          if (parseResult && parseResult.id) {
+            queueItemId = parseResult.id;
           }
+        } catch (e) {
+          this.logger.debug('Failed to parse tx_data for queue ID', {
+            error: e instanceof Error ? e.message : String(e),
+          });
         }
       }
+      
+      if (queueItemId) {
+        await this.db.updateTransactionQueueItem(queueItemId, {
+          status: TransactionQueueStatus.FAILED,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.logger.info('Updated transaction queue item to FAILED', {
+          queueItemId,
+        });
+      }
+    } catch (dbError) {
+      this.logger.error('Failed to update transaction queue with failure status', {
+        error: dbError instanceof Error ? dbError.message : String(dbError),
+        txId: tx.id,
+      });
     }
   }
 
@@ -846,9 +785,13 @@ export class BaseExecutor implements IExecutor {
             txData
           );
 
+          // Store the database queue item ID in the transaction for future reference
+          tx.queueItemId = item.id;
+
           this.logger.info('Queued transaction from database', {
             id: tx.id,
             depositId: item.deposit_id,
+            queueItemId: item.id
           });
         } catch (error) {
           this.logger.error('Failed to process database queue item', {

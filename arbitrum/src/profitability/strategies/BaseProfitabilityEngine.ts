@@ -39,7 +39,7 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       REWARD_TOKEN(): Promise<string>;
     },
     protected readonly provider: ethers.Provider,
-    protected readonly config: ProfitabilityConfig,
+    public readonly config: ProfitabilityConfig,
     protected readonly priceFeed: IPriceFeed,
   ) {
     this.logger = new ConsoleLogger('info');
@@ -71,11 +71,15 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
     isRunning: boolean;
     lastGasPrice: bigint;
     lastUpdateTimestamp: number;
+    queueSize: number;
+    delegateeCount: number;
   }> {
     return {
       isRunning: this.isRunning,
       lastGasPrice: this.lastGasPrice,
       lastUpdateTimestamp: this.lastUpdateTimestamp,
+      queueSize: 0, // TODO: Implement queue tracking if needed
+      delegateeCount: 0, // TODO: Implement delegatee tracking if needed
     };
   }
 
@@ -280,14 +284,35 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       // Try to estimate gas, but use fallback if it fails
       let gasEstimate: bigint;
       try {
+        // Get current network conditions
+        const feeData = await this.provider.getFeeData();
+        const maxFeePerGas = feeData.maxFeePerGas;
+        const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
+        
+        // Log fee data for debugging
+        this.logger.info('Network fee data:', {
+          maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
+          maxPriorityFeePerGas: maxPriorityFeePerGas?.toString() || 'undefined',
+          gasPrice: feeData.gasPrice?.toString() || 'undefined',
+        });
+
+        // Encode the function call
+        const encodedData = this.stakerContract.interface.encodeFunctionData(
+          'bumpEarningPower',
+          [BigInt(deposit.deposit_id), tipReceiver, minimumTip],
+        );
+
+        // Estimate gas with proper parameters
         gasEstimate = await this.provider.estimateGas({
           to: this.stakerContract.target,
-          data: this.stakerContract.interface.encodeFunctionData(
-            'bumpEarningPower',
-            [BigInt(deposit.deposit_id), tipReceiver, minimumTip],
-          ),
-          // No need to include value since this is not payable in ETH
+          data: encodedData,
+          from: tipReceiver, // Add from address for more accurate estimation
+          value: minimumTip // Include value since this affects gas usage
         });
+
+        // Add 20% buffer for safety
+        gasEstimate = (gasEstimate * BigInt(120)) / BigInt(100);
+        
         this.logger.info(
           `Gas estimation succeeded for deposit ${deposit.deposit_id}:`,
           {
@@ -297,14 +322,40 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
           },
         );
       } catch (error) {
+        // Log specific error details for debugging
+        this.logger.error('Failed to estimate gas', {
+          error: error instanceof Error ? error.message : String(error),
+          depositId: deposit.deposit_id.toString(),
+          minimumTip: minimumTip.toString(),
+          errorData: error instanceof Error && 'data' in error ? error.data : undefined,
+          errorReason: error instanceof Error && 'reason' in error ? error.reason : undefined,
+        });
+
+        // Check for specific error types
+        if (error instanceof Error && 'code' in error && 'data' in error && 'reason' in error) {
+          const err = error as { code: string; data: string; reason?: string };
+          if (err.code === 'CALL_EXCEPTION') {
+            if (err.data === '0x4e487b71' && err.reason?.includes('OVERFLOW')) {
+              this.logger.warn(
+                `Overflow error for deposit ${deposit.deposit_id}. Using fallback gas estimate.`
+              );
+            }
+            if (err.data === '0xaca01fbc') {
+              this.logger.warn(
+                `Deposit ${deposit.deposit_id} not eligible for bump. Using fallback gas estimate.`
+              );
+            }
+          }
+        }
+        
+        // Use a conservative fallback estimate
+        gasEstimate = FALLBACK_GAS_ESTIMATE;
         this.logger.warn(
           `Gas estimation failed for deposit ${deposit.deposit_id}, using fallback estimate:`,
           {
-            error,
             fallbackEstimate: FALLBACK_GAS_ESTIMATE.toString(),
           },
         );
-        gasEstimate = FALLBACK_GAS_ESTIMATE;
       }
 
       // Calculate base cost in wei
@@ -464,6 +515,20 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
         expectedProfit: BigInt(0),
         tipReceiver: this.config.defaultTipReceiver,
       },
+    };
+  }
+
+  async getQueueStats(): Promise<{
+    pendingCount: number;
+    processingCount: number;
+    completedCount: number;
+    failedCount: number;
+  }> {
+    return {
+      pendingCount: 0, // TODO: Implement queue tracking if needed
+      processingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
     };
   }
 }

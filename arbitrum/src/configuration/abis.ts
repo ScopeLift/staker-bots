@@ -8,6 +8,11 @@ export const stakerAbi = [
   'function deposit(uint256 amount) external returns (uint256 depositId)',
   'function bumpDelegatee(uint256 depositId, address newDelegatee) external returns (bool)',
   'function withdraw(uint256 depositId, uint256 amount) external returns (bool)',
+  "function deposits(uint256) view returns (tuple(address owner, uint256 balance, uint256 earningPower, address delegatee, address claimer))",
+  "function unclaimedReward(uint256) view returns (uint256)",
+  "function maxBumpTip() view returns (uint256)",
+  "function bumpEarningPower(uint256, address, uint256) returns (uint256)",
+  "function REWARD_TOKEN() view returns (address)"
 ];
 
 /**

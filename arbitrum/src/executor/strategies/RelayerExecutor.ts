@@ -438,11 +438,7 @@ export class RelayerExecutor implements IExecutor {
    */
   private async executeTransaction(tx: QueuedTransaction): Promise<void> {
     if (!this.isRunning) {
-      return;
-    }
-
-    // Double-check status
-    if (tx.status !== TransactionStatus.QUEUED) {
+      this.logger.info('Executor not running, skipping transaction');
       return;
     }
 
@@ -450,26 +446,12 @@ export class RelayerExecutor implements IExecutor {
       // Update status to pending
       tx.status = TransactionStatus.PENDING;
       tx.executedAt = new Date();
-      this.logger.info('Executing transaction through relayer:', { id: tx.id });
-
-      // Get queue item ID from txData
-      let queueItemId: string | undefined;
-      if (tx.tx_data) {
-        try {
-          // Check if tx_data is a JSON string
-          if (tx.tx_data.startsWith('{')) {
-            const txData = JSON.parse(tx.tx_data);
-            queueItemId = txData.id;
-          }
-        } catch (error) {
-          // Not JSON data, continue with normal execution
-          this.logger.debug('tx_data is not JSON', {
-            txData: tx.tx_data.substring(0, 20) + '...',
-          });
-        }
-      }
-
-      // Update database with pending status first
+      this.logger.info('Executing transaction through relayer', { id: tx.id });
+      
+      // Parse transaction data and extract queue item ID
+      const { depositId, queueItemId } = this.parseTransactionData(tx);
+      
+      // Update database with pending status if queueItemId exists
       if (this.db && queueItemId) {
         try {
           await this.db.updateTransactionQueueItem(queueItemId, {
@@ -485,218 +467,287 @@ export class RelayerExecutor implements IExecutor {
           });
         }
       }
+      
+      // Get current network conditions
+      const feeData = await this.provider.getFeeData();
+      this.logger.info('Network fee data', {
+        maxFeePerGas: feeData.maxFeePerGas?.toString() || 'undefined',
+        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas?.toString() || 'undefined',
+        gasPrice: feeData.gasPrice?.toString() || 'undefined',
+      });
 
-      // Prepare and send the transaction
+      // Encode the function call
+      const encodedData = this.contractInterface.encodeFunctionData(
+        'bumpEarningPower',
+        [depositId]
+      );
+
+      // Estimate gas for the transaction
+      let gasLimit: bigint;
       try {
-        // Prepare transaction data
-        let txResponse;
-        const depositId = tx.depositId;
-
-        // Get current network conditions
-        const feeData = await this.provider.getFeeData();
-        const maxFeePerGas = feeData.maxFeePerGas;
-        const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
-        
-        // Log fee data
-        this.logger.info('Network fee data:', {
-          maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
-          maxPriorityFeePerGas: maxPriorityFeePerGas?.toString() || 'undefined',
-          gasPrice: feeData.gasPrice?.toString() || 'undefined',
-        });
-
-        // Encode the function call
-        const encodedData = this.contractInterface.encodeFunctionData(
-          'bumpEarningPower',
-          [depositId]
-        );
-
-        // Estimate gas for the transaction
-        let gasLimit: bigint;
-        try {
-          gasLimit = await this.provider.estimateGas({
-            to: this.contractAddress,
-            data: encodedData,
-          });
-          
-          // Add 20% buffer for safety
-          gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
-          this.logger.info('Estimated gas:', {
-            depositId: depositId.toString(),
-            gasLimit: gasLimit.toString(),
-          });
-        } catch (error) {
-          this.logger.error('Failed to estimate gas', {
-            error: error instanceof Error ? error.message : String(error),
-            depositId: depositId.toString(),
-          });
-          
-          // Use a default gas limit as fallback
-          gasLimit = BigInt(300000);
-          this.logger.info('Using fallback gas limit:', {
-            gasLimit: gasLimit.toString(),
-          });
-        }
-
-        // Prepare the transaction request for Defender API
-        const payload: Record<string, any> = {
+        gasLimit = await this.provider.estimateGas({
           to: this.contractAddress,
           data: encodedData,
-          gasLimit: gasLimit.toString(),
-          speed: 'fast',
-        };
-
-        // Add gas policy if specified in config
-        if (this.config.relayer.gasPolicy) {
-          if (this.config.relayer.gasPolicy.maxFeePerGas) {
-            payload.maxFeePerGas = this.config.relayer.gasPolicy.maxFeePerGas.toString();
-          } else if (maxFeePerGas) {
-            payload.maxFeePerGas = maxFeePerGas.toString();
-          }
-          
-          if (this.config.relayer.gasPolicy.maxPriorityFeePerGas) {
-            payload.maxPriorityFeePerGas = this.config.relayer.gasPolicy.maxPriorityFeePerGas.toString();
-          } else if (maxPriorityFeePerGas) {
-            payload.maxPriorityFeePerGas = maxPriorityFeePerGas.toString();
-          }
-        }
-
-        // Log the request payload
-        this.logger.info('Sending transaction to Defender API', {
-          payload: {
-            to: payload.to,
-            gasLimit: payload.gasLimit,
-            speed: payload.speed,
-            hasData: !!payload.data,
-          },
         });
-
-        // Send transaction through Defender API
-        const url = 'https://api.defender.openzeppelin.com/relayer/transactions';
-        const response = await axios.post(url, payload, {
-          headers: {
-            'X-Api-Key': this.relayerApiKey,
-            'X-Api-Secret': this.relayerApiSecret,
-            'Content-Type': 'application/json',
-          },
-        });
-
-        // Validate response
-        if (!response.data || !response.data.hash) {
-          throw new Error('Invalid Defender API response: missing transaction hash');
-        }
-
-        txResponse = {
-          hash: response.data.hash,
-          wait: async (confirmations?: number) => {
-            const receipt = await this.waitForTransaction(
-              response.data.hash, 
-              confirmations || this.config.minConfirmations
-            );
-            return receipt;
-          },
-        };
-
-        // Store transaction info
-        tx.hash = txResponse.hash;
-        this.logger.info('Transaction sent through relayer:', {
-          id: tx.id,
-          hash: tx.hash,
-          depositId: tx.depositId.toString(),
-        });
-
-        // Wait for transaction to be mined
-        this.logger.info('Waiting for transaction to be mined...');
-        const receipt = await txResponse.wait();
         
-        if (!receipt) {
-          throw new Error('Transaction receipt not received');
-        }
-
-        // Update transaction status
-        tx.status = TransactionStatus.CONFIRMED;
-        this.logger.info('Transaction confirmed:', {
-          id: tx.id,
-          hash: receipt.hash,
-          blockNumber: receipt.blockNumber,
-          gasUsed: receipt.gasUsed.toString(),
+        // Add 20% buffer for safety
+        gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
+        this.logger.info('Estimated gas', {
+          depositId: depositId.toString(),
+          gasLimit: gasLimit.toString(),
         });
-
-        // Update database if needed
-        if (this.db && queueItemId) {
-          try {
-            await this.db.updateTransactionQueueItem(queueItemId, {
-              status: TransactionQueueStatus.CONFIRMED,
-              hash: receipt.hash,
-            });
-            this.logger.info('Updated transaction queue item to CONFIRMED', {
-              queueItemId,
-              hash: receipt.hash,
-            });
-          } catch (error) {
-            this.logger.error('Failed to update transaction queue status', {
-              error: error instanceof Error ? error.message : String(error),
-              queueItemId,
-            });
-          }
-        }
-
       } catch (error) {
-        this.logger.error('Transaction execution error:', {
-          id: tx.id,
+        this.logger.error('Failed to estimate gas', {
           error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
+          depositId: depositId.toString(),
         });
-        throw error;
+        
+        // Use a default gas limit as fallback
+        gasLimit = BigInt(300000);
+        this.logger.info('Using fallback gas limit', {
+          gasLimit: gasLimit.toString(),
+        });
+      }
+
+      // Prepare the transaction request for Defender API
+      const payload = this.prepareRelayerPayload(
+        this.contractAddress,
+        encodedData,
+        gasLimit,
+        feeData
+      );
+
+      // Send transaction through Defender API
+      const txResponse = await this.sendRelayerTransaction(payload);
+
+      // Store transaction info
+      tx.hash = txResponse.hash;
+      this.logger.info('Transaction sent through relayer', {
+        id: tx.id,
+        hash: tx.hash,
+        depositId: depositId.toString(),
+      });
+
+      // Wait for transaction to be mined
+      this.logger.info('Waiting for transaction to be mined...');
+      const receipt = await txResponse.wait();
+      
+      if (!receipt) {
+        throw new Error('Transaction receipt not received');
+      }
+
+      // Update transaction status
+      tx.status = TransactionStatus.CONFIRMED;
+      this.logger.info('Transaction confirmed', {
+        id: tx.id,
+        hash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toString(),
+      });
+
+      // Update database if needed
+      if (this.db && queueItemId) {
+        try {
+          await this.db.updateTransactionQueueItem(queueItemId, {
+            status: TransactionQueueStatus.CONFIRMED,
+            hash: receipt.hash,
+          });
+          this.logger.info('Updated transaction queue item to CONFIRMED', {
+            queueItemId,
+            hash: receipt.hash,
+          });
+        } catch (error) {
+          this.logger.error('Failed to update transaction queue status', {
+            error: error instanceof Error ? error.message : String(error),
+            queueItemId,
+          });
+        }
       }
     } catch (error) {
       // Handle execution error
       tx.status = TransactionStatus.FAILED;
       tx.error = error as Error;
-      tx.retryCount = (tx.retryCount || 0) + 1;
-
-      // If we have retries left, requeue the transaction
-      if (tx.retryCount < this.config.maxRetries) {
-        this.logger.info('Requeuing failed transaction:', {
-          id: tx.id,
-          retryCount: tx.retryCount,
+      tx.retryCount = (tx.retryCount ?? 0) + 1;
+      
+      this.logger.error('Transaction execution failed', {
+        id: tx.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      
+      // Handle retries
+      this.handleTransactionRetry(tx, error);
+    }
+  }
+  
+  /**
+   * Parse transaction data from tx_data
+   */
+  private parseTransactionData(tx: QueuedTransaction): {
+    depositId: bigint;
+    queueItemId?: string;
+  } {
+    const depositId = tx.depositId;
+    let queueItemId: string | undefined;
+    
+    // Parse tx_data if available
+    if (tx.tx_data) {
+      try {
+        // Check if tx_data is a JSON string
+        if (tx.tx_data.startsWith('{')) {
+          const txData = JSON.parse(tx.tx_data);
+          queueItemId = txData.id;
+        }
+      } catch (error) {
+        this.logger.debug('Failed to parse tx_data', {
           error: error instanceof Error ? error.message : String(error),
+          txData: tx.tx_data?.substring(0, 20) + '...',
         });
+      }
+    }
+    
+    return { depositId, queueItemId };
+  }
+  
+  /**
+   * Prepare payload for Defender Relayer API
+   */
+  private prepareRelayerPayload(
+    contractAddress: string,
+    encodedData: string,
+    gasLimit: bigint,
+    feeData: ethers.FeeData
+  ): Record<string, any> {
+    const payload: Record<string, any> = {
+      to: contractAddress,
+      data: encodedData,
+      gasLimit: gasLimit.toString(),
+      speed: 'fast',
+    };
 
-        // Delay retries using an exponential backoff
-        const delayMs = this.config.retryDelayMs * Math.pow(2, tx.retryCount - 1);
-        setTimeout(() => {
-          // Reset status to QUEUED for retry
-          tx.status = TransactionStatus.QUEUED;
-          // Process queue to pick up the retry
-          this.processQueue();
-        }, delayMs);
-      } else {
-        this.logger.error('Transaction failed permanently:', {
-          id: tx.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    // Add gas policy if specified in config
+    if (this.config.relayer.gasPolicy) {
+      if (this.config.relayer.gasPolicy.maxFeePerGas) {
+        payload.maxFeePerGas = this.config.relayer.gasPolicy.maxFeePerGas.toString();
+      } else if (feeData.maxFeePerGas) {
+        payload.maxFeePerGas = feeData.maxFeePerGas.toString();
+      }
+      
+      if (this.config.relayer.gasPolicy.maxPriorityFeePerGas) {
+        payload.maxPriorityFeePerGas = this.config.relayer.gasPolicy.maxPriorityFeePerGas.toString();
+      } else if (feeData.maxPriorityFeePerGas) {
+        payload.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas.toString();
+      }
+    }
 
-        // Update database if needed
-        if (this.db && tx.tx_data) {
-          try {
-            const txData = JSON.parse(tx.tx_data);
-            if (txData.id) {
-              await this.db.updateTransactionQueueItem(txData.id, {
-                status: TransactionQueueStatus.FAILED,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              this.logger.info('Updated transaction queue item to FAILED', {
-                queueItemId: txData.id,
-              });
-            }
-          } catch (e) {
-            // Ignore JSON parse errors
-            this.logger.debug('Failed to parse tx_data for queue ID', {
-              error: e instanceof Error ? e.message : String(e),
-            });
+    this.logger.info('Prepared transaction payload for Defender API', {
+      to: payload.to,
+      gasLimit: payload.gasLimit,
+      speed: payload.speed,
+      hasData: !!payload.data,
+    });
+    
+    return payload;
+  }
+  
+  /**
+   * Send transaction via Defender Relayer API
+   */
+  private async sendRelayerTransaction(payload: Record<string, any>): Promise<{
+    hash: string;
+    wait: (confirmations?: number) => Promise<TransactionReceipt | null>;
+  }> {
+    const url = 'https://api.defender.openzeppelin.com/relayer/transactions';
+    const response = await axios.post(url, payload, {
+      headers: {
+        'X-Api-Key': this.relayerApiKey,
+        'X-Api-Secret': this.relayerApiSecret,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    // Validate response
+    if (!response.data || !response.data.hash) {
+      throw new Error('Invalid Defender API response: missing transaction hash');
+    }
+
+    return {
+      hash: response.data.hash,
+      wait: async (confirmations?: number) => {
+        return this.waitForTransaction(
+          response.data.hash, 
+          confirmations || this.config.minConfirmations
+        );
+      }
+    };
+  }
+  
+  /**
+   * Handle transaction retry logic
+   */
+  private handleTransactionRetry(tx: QueuedTransaction, error: unknown): void {
+    // If we have retries left, requeue the transaction
+    if ((tx.retryCount ?? 0) < this.config.maxRetries) {
+      this.logger.info('Requeuing failed transaction', {
+        id: tx.id,
+        retryCount: tx.retryCount ?? 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Delay retries using an exponential backoff
+      const delayMs = this.config.retryDelayMs * Math.pow(2, (tx.retryCount ?? 0) - 1);
+      setTimeout(() => {
+        // Reset status to QUEUED for retry
+        tx.status = TransactionStatus.QUEUED;
+        // Process queue to pick up the retry
+        this.processQueue();
+      }, delayMs);
+    } else {
+      this.logger.error('Transaction failed permanently', {
+        id: tx.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      
+      // Update database if needed
+      this.updateFailedTransactionInDb(tx, error);
+    }
+  }
+  
+  /**
+   * Update failed transaction in database
+   */
+  private async updateFailedTransactionInDb(tx: QueuedTransaction, error: unknown): Promise<void> {
+    if (!this.db) return;
+    
+    try {
+      let queueItemId: string | undefined;
+      
+      if (tx.tx_data) {
+        try {
+          const txData = JSON.parse(tx.tx_data);
+          if (txData.id) {
+            queueItemId = txData.id;
           }
+        } catch (e) {
+          this.logger.debug('Failed to parse tx_data for queue ID', {
+            error: e instanceof Error ? e.message : String(e),
+          });
         }
       }
+      
+      if (queueItemId) {
+        await this.db.updateTransactionQueueItem(queueItemId, {
+          status: TransactionQueueStatus.FAILED,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.logger.info('Updated transaction queue item to FAILED', {
+          queueItemId,
+        });
+      }
+    } catch (dbError) {
+      this.logger.error('Failed to update transaction queue with failure status', {
+        error: dbError instanceof Error ? dbError.message : String(dbError),
+        txId: tx.id,
+      });
     }
   }
 

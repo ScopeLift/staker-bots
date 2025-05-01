@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { IDatabase } from '../interfaces/IDatabase';
 import {
@@ -34,13 +35,14 @@ export class JsonDatabase implements IDatabase {
       processing_queue: {},
       transaction_queue: {},
     };
-    this.logger.info('JsonDatabase initialized at:', { path: this.dbPath });
-    this.initializeDb();
+    this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
+    // Initialize synchronously
+    this.initializeDbSync();
   }
 
-  private async initializeDb() {
+  private initializeDbSync() {
     try {
-      const fileContent = await fs.readFile(this.dbPath, 'utf-8');
+      const fileContent = readFileSync(this.dbPath, 'utf-8');
       const loadedData = JSON.parse(fileContent);
 
       // Ensure all required sections exist
@@ -55,7 +57,7 @@ export class JsonDatabase implements IDatabase {
       this.logger.info('Loaded existing database');
     } catch (error) {
       // If file doesn't exist, create it with empty data
-      await this.saveToFile();
+      writeFileSync(this.dbPath, JSON.stringify(this.data, null, 2));
       this.logger.info('Created new database file');
     }
   }

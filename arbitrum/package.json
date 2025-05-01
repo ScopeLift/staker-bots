@@ -10,6 +10,7 @@
       "start:calculator": "COMPONENTS=calculator tsx src/index.ts",
       "start:all": "COMPONENTS=monitor,calculator,profitability,executor tsx src/index.ts",
       "dev:monitor": "COMPONENTS=monitor tsx watch src/index.ts",
+      "dev:executor": "COMPONENTS=executor tsx watch src/index.ts",
       "dev:calculator": "COMPONENTS=calculator tsx watch src/index.ts",
       "dev:all": "COMPONENTS=monitor,calculator,profitability,executor tsx watch src/index.ts",
       "lint": "eslint . --ext .ts",

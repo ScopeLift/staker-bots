@@ -8,8 +8,6 @@ import { CalculatorWrapper } from './calculator/CalculatorWrapper';
 import { ExecutorWrapper, ExecutorType } from './executor';
 import { ProfitabilityEngineWrapper } from './profitability/ProfitabilityEngineWrapper';
 import { ethers } from 'ethers';
-import fs from 'fs/promises';
-import path from 'path';
 import {
   createErrorLogger,
   ErrorLogger
@@ -47,11 +45,6 @@ const profitabilityErrorLogger = createErrorLogger({ appName: 'profitability-ser
 const executorErrorLogger = createErrorLogger({ appName: 'executor-service' });
 
 /**
- * Path for error log file
- */
-const ERROR_LOG_PATH = path.join(process.cwd(), 'error.logs');
-
-/**
  * Creates an Ethereum provider using the configured RPC URL
  * @returns {ethers.JsonRpcProvider} The configured providerŔ
  * @throws {Error} If RPC URL is not configured
@@ -66,23 +59,15 @@ function createProvider() {
 }
 
 /**
- * Loads the staker ABI from the tests directory
- * @returns {Promise<ethers.InterfaceAbi>} The staker ABI
+ * Loads the staker ABI from the configuration
+ * @returns {ethers.InterfaceAbi} The staker ABI
  */
-async function loadStakerAbi(): Promise<ethers.InterfaceAbi> {
-  try {
-    return JSON.parse(
-      await fs.readFile('./src/tests/abis/staker.json', 'utf8')
-    );
-  } catch (error) {
-    await mainErrorLogger.error(error as Error, { component: 'loadStakerAbi' });
-    // Fallback to the predefined ABI from configuration
-    return stakerAbi;
-  }
+function loadStakerAbi(): ethers.InterfaceAbi {
+  return stakerAbi
 }
 
 /**
- * Ensure checkpoints are not lower than the configured START_BLOCK
+ * Ensure checkpoints are properly initialized, either from existing database or from START_BLOCK
  * @param {DatabaseWrapper} database - The database instance
  * @param {Logger} logger - Logger instance
  * @param {ErrorLogger} errorLogger - Error logger instance
@@ -92,56 +77,98 @@ async function ensureCheckpointsAtStartBlock(
   logger: Logger,
   errorLogger: ErrorLogger,
 ) {
-  logger.info('Checking checkpoint blocks against configured START_BLOCK...');
-
-  // Get START_BLOCK from config
-  const startBlock = CONFIG.monitor.startBlock;
-  if (!startBlock) {
-    logger.info('No START_BLOCK configured, skipping checkpoint check');
-    return;
-  }
-
-  logger.info(`Using START_BLOCK: ${startBlock}`);
+  logger.info('Checking for existing checkpoints...');
 
   // List of components to check
   const componentTypes = ['staker-monitor', 'executor', 'profitability-engine', 'calculator'];
 
   try {
-    for (const componentType of componentTypes) {
-      const checkpoint = await database.getCheckpoint(componentType);
+    // First check if we have any existing checkpoints
+    const existingCheckpoints = await Promise.all(
+      componentTypes.map(async (type) => ({
+        type,
+        checkpoint: await database.getCheckpoint(type)
+      }))
+    );
 
-      if (!checkpoint) {
-        logger.info(
-          `No checkpoint found for ${componentType}, creating with START_BLOCK`
-        );
-        await database.updateCheckpoint({
-          component_type: componentType,
-          last_block_number: startBlock,
-          block_hash:
-            '0x0000000000000000000000000000000000000000000000000000000000000000',
-          last_update: new Date().toISOString(),
-        });
-        continue;
-      }
+    const hasAnyCheckpoints = existingCheckpoints.some(({ checkpoint }) => checkpoint !== null);
+    const allHaveCheckpoints = existingCheckpoints.every(({ checkpoint }) => checkpoint !== null);
 
-      if (checkpoint.last_block_number < startBlock) {
-        logger.info(
-          `Updating ${componentType} checkpoint from block ${checkpoint.last_block_number} to START_BLOCK ${startBlock}`
+    // If we have any checkpoints, validate they are consistent
+    if (hasAnyCheckpoints) {
+      logger.info('Found existing checkpoints in database');
+
+      if (!allHaveCheckpoints) {
+        // Some components have checkpoints but not all - this is an inconsistent state
+        logger.warn('Inconsistent checkpoint state detected - some components missing checkpoints');
+        
+        // Find the lowest checkpoint block to use as reference
+        const lowestBlock = Math.min(
+          ...existingCheckpoints
+            .filter(({ checkpoint }) => checkpoint !== null)
+            .map(({ checkpoint }) => checkpoint!.last_block_number)
         );
-        await database.updateCheckpoint({
-          component_type: componentType,
-          last_block_number: startBlock,
-          block_hash: checkpoint.block_hash,
-          last_update: new Date().toISOString(),
-        });
+
+        logger.info(`Using lowest existing checkpoint block as reference: ${lowestBlock}`);
+
+        // Create missing checkpoints at this block
+        for (const { type, checkpoint } of existingCheckpoints) {
+          if (!checkpoint) {
+            logger.info(`Creating missing checkpoint for ${type} at block ${lowestBlock}`);
+            await database.updateCheckpoint({
+              component_type: type,
+              last_block_number: lowestBlock,
+              block_hash: '0x0000000000000000000000000000000000000000000000000000000000000000',
+              last_update: new Date().toISOString(),
+            });
+          }
+        }
       } else {
-        logger.info(
-          `Checkpoint for ${componentType} (${checkpoint.last_block_number}) is already >= START_BLOCK (${startBlock})`
-        );
+        // All components have checkpoints - validate they are at consistent blocks
+        const blocks = existingCheckpoints.map(({ checkpoint }) => checkpoint!.last_block_number);
+        const minBlock = Math.min(...blocks);
+        const maxBlock = Math.max(...blocks);
+
+        if (maxBlock - minBlock > 1000) { // Allow small differences but not large ones
+          logger.warn('Large block number disparity detected between component checkpoints', {
+            minBlock,
+            maxBlock,
+            difference: maxBlock - minBlock,
+            checkpoints: existingCheckpoints.map(({ type, checkpoint }) => ({
+              type,
+              block: checkpoint!.last_block_number
+            }))
+          });
+          
+          // Instead of resetting to lowest block, we'll keep each component's progress
+          // Just log the disparity as a warning
+          logger.info('Maintaining individual component progress to preserve processed data');
+        }
       }
+
+      logger.info('Checkpoint validation complete - using existing checkpoints');
+      return;
     }
 
-    logger.info('Checkpoint verification completed');
+    // No existing checkpoints - initialize from START_BLOCK
+    const startBlock = CONFIG.monitor.startBlock;
+    if (!startBlock) {
+      throw new Error('No START_BLOCK configured and no existing checkpoints found');
+    }
+
+    logger.info(`No existing checkpoints found - initializing all components at START_BLOCK: ${startBlock}`);
+
+    // Create initial checkpoints for all components
+    for (const componentType of componentTypes) {
+      await database.updateCheckpoint({
+        component_type: componentType,
+        last_block_number: startBlock,
+        block_hash: '0x0000000000000000000000000000000000000000000000000000000000000000',
+        last_update: new Date().toISOString(),
+      });
+    }
+
+    logger.info('Initial checkpoint creation complete');
   } catch (error) {
     await errorLogger.error(error as Error, {
       context: 'ensureCheckpointsAtStartBlock',
@@ -243,7 +270,8 @@ async function initializeMonitor(
   }
 
   // Create monitor with config
-  const monitor = new StakerMonitor(createMonitorConfig(provider, database));
+  const monitorConfig = await createMonitorConfig(provider, database);
+  const monitor = new StakerMonitor(monitorConfig);
 
   // Start monitor
   await monitor.start();
@@ -495,16 +523,16 @@ async function initializeExecutor(
   const executorConfig = {
     wallet: {
       privateKey: CONFIG.executor.privateKey,
-      minBalance: ethers.parseEther('0.01'),
-      maxPendingTransactions: 5,
+      minBalance: CONFIG.executor.minBalance,
+      maxPendingTransactions: CONFIG.executor.maxPendingTransactions,
     },
-    maxQueueSize: 100,
+    maxQueueSize: CONFIG.executor.maxQueueSize,
     minConfirmations: CONFIG.monitor.confirmations,
     maxRetries: CONFIG.monitor.maxRetries,
-    retryDelayMs: 5000,
-    transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
-    gasBoostPercentage: 30, // 30%
-    concurrentTransactions: 3,
+    retryDelayMs: CONFIG.executor.retryDelayMs,
+    transferOutThreshold: CONFIG.executor.transferOutThreshold,
+    gasBoostPercentage: CONFIG.executor.gasBoostPercentage,
+    concurrentTransactions: CONFIG.executor.concurrentTransactions,
     defaultTipReceiver: CONFIG.executor.tipReceiver
   };
 
@@ -927,5 +955,4 @@ process.on('unhandledRejection', async (reason) => {
       severity: 'FATAL'
     }
   );
-  // Don't exit the process - allow the application to continue running
 });

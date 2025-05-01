@@ -33,13 +33,22 @@ export const EVENT_TYPES = {
 /**
  * Creates a monitor configuration object by combining provider, database, and config values
  */
-export const createMonitorConfig = (
+export const createMonitorConfig = async (
   provider: ethers.Provider,
   database: IDatabase,
-): MonitorConfig => ({
-  provider,
-  database,
-  networkName: 'arbitrum',
-  arbTokenAddress: CONFIG.monitor.arbTestTokenAddress,
-  ...CONFIG.monitor,
-});
+): Promise<MonitorConfig> => {
+  // Get the checkpoint first
+  const checkpoint = await database.getCheckpoint(PROCESSING_COMPONENT.TYPE);
+  
+  // Use checkpoint block number if available, otherwise use config start block
+  const startBlock = checkpoint ? checkpoint.last_block_number : CONFIG.monitor.startBlock;
+
+  return {
+    ...CONFIG.monitor,  // Spread first to allow overrides
+    provider,
+    database,
+    networkName: 'arbitrum',
+    arbTokenAddress: CONFIG.monitor.arbTestTokenAddress,
+    startBlock, // Override with checkpoint value if available
+  };
+};
