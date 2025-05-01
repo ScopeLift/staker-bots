@@ -9,6 +9,7 @@ import {
   StakeDepositedEvent,
   StakeWithdrawnEvent,
   DelegateeAlteredEvent,
+  EarningPowerBumpedEvent,
 } from './types';
 import { 
   MONITOR_EVENTS, 
@@ -61,6 +62,36 @@ export class StakerMonitor extends EventEmitter {
     );
     this.isRunning = false;
     this.lastProcessedBlock = config.startBlock;
+    
+    // Verify the contract ABI contains EarningPowerBumped
+    const contractInterface = this.contract.interface;
+    const eventFragments = Object.values(contractInterface.fragments)
+      .filter(fragment => fragment.type === 'event');
+
+    this.logger.info('StakerMonitor initialized with contract interface', {
+      contractAddress: config.stakerAddress,
+      eventCount: eventFragments.length,
+      eventTypes: eventFragments.map(f => f.format()),
+      hasEarningPowerBumped: eventFragments.some(f => 
+        f.format().includes('EarningPowerBumped')),
+      filters: Object.keys(this.contract.filters)
+    });
+
+    // Check if the ABI fragment for EarningPowerBumped exists
+    const earningPowerBumpedFragment = eventFragments.find(
+      fragment => fragment.format().includes('EarningPowerBumped')
+    );
+
+    if (!earningPowerBumpedFragment) {
+      this.logger.warn('EarningPowerBumped event not found in contract ABI', {
+        availableEvents: eventFragments.map(f => f.format())
+      });
+    } else {
+      this.logger.info('EarningPowerBumped event found in contract ABI', {
+        fragment: earningPowerBumpedFragment.format(),
+        eventSignature: earningPowerBumpedFragment.format().replace('event ', '')
+      });
+    }
   }
 
   /**
@@ -284,7 +315,7 @@ export class StakerMonitor extends EventEmitter {
 
   /**
    * Processes events within a specified block range.
-   * Fetches and processes StakeDeposited, StakeWithdrawn, and DelegateeAltered events.
+   * Fetches and processes StakeDeposited, StakeWithdrawn, DelegateeAltered, and EarningPowerBumped events.
    * Groups related events by transaction for atomic processing.
    *
    * @param fromBlock - Starting block number
@@ -295,8 +326,86 @@ export class StakerMonitor extends EventEmitter {
     toBlock: number,
   ): Promise<void> {
     try {
-      const [depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all(
-        [
+      // Debug contract interface
+      this.logger.info('Contract interface check', {
+        address: this.contract.target,
+        hasEarningPowerBumpedFilter: !!this.contract.filters.EarningPowerBumped,
+        availableFilters: Object.keys(this.contract.filters),
+        fromBlock,
+        toBlock
+      });
+
+      // One-time diagnostic query for any EarningPowerBumped events in a large range
+      // Only do this once per run for diagnostic purposes
+      if (fromBlock === this.config.startBlock + 1) {
+        try {
+          this.logger.info('Running one-time diagnostic query for EarningPowerBumped events...');
+          
+          // Get event signature from ABI
+          const earningPowerBumpedFragment = this.contract.interface.fragments.find(
+            f => f.type === 'event' && f.format().includes('EarningPowerBumped')
+          );
+          
+          if (earningPowerBumpedFragment) {
+            const eventSignature = earningPowerBumpedFragment.format().replace('event ', '');
+            const earningPowerBumpedTopic = ethers.id(eventSignature);
+            
+            // Query for a large recent range of blocks
+            const diagnosticFromBlock = Math.max(1, this.config.startBlock - 1000000);
+            const diagnosticToBlock = this.config.startBlock + 10000;
+            
+            this.logger.info('Wide-range diagnostic query for EarningPowerBumped events', {
+              fromBlock: diagnosticFromBlock,
+              toBlock: diagnosticToBlock,
+              range: diagnosticToBlock - diagnosticFromBlock,
+              topic: earningPowerBumpedTopic
+            });
+            
+            try {
+              // Query in smaller chunks to avoid timeout
+              const chunkSize = 100000;
+              let foundEvents = false;
+              
+              for (let start = diagnosticFromBlock; start < diagnosticToBlock; start += chunkSize) {
+                const end = Math.min(start + chunkSize - 1, diagnosticToBlock);
+                
+                this.logger.info(`Querying chunk ${start}-${end}...`);
+                
+                const diagnosticLogs = await this.provider.getLogs({
+                  address: this.contract.target,
+                  topics: [earningPowerBumpedTopic],
+                  fromBlock: BigInt(start),
+                  toBlock: BigInt(end)
+                });
+                
+                if (diagnosticLogs.length > 0) {
+                  this.logger.info('FOUND EarningPowerBumped EVENTS in diagnostic query!', {
+                    count: diagnosticLogs.length,
+                    blockRange: `${start}-${end}`,
+                    firstEventBlock: diagnosticLogs[0]?.blockNumber || 'unknown',
+                    lastEventBlock: diagnosticLogs[diagnosticLogs.length - 1]?.blockNumber || 'unknown'
+                  });
+                  
+                  foundEvents = true;
+                  break;
+                }
+              }
+              
+              if (!foundEvents) {
+                this.logger.info('No EarningPowerBumped events found in wide diagnostic range');
+              }
+            } catch (wideRangeError) {
+              this.logger.error('Error in wide-range diagnostic query', { error: wideRangeError });
+            }
+          }
+        } catch (diagnosticError) {
+          this.logger.error('Error in diagnostic query', { error: diagnosticError });
+        }
+      }
+
+      try {
+        // Query all events in parallel
+        const [depositedEvents, withdrawnEvents, alteredEvents] = await Promise.all([
           this.contract.queryFilter(
             this.contract.filters.StakeDeposited!(),
             fromBlock,
@@ -312,139 +421,328 @@ export class StakerMonitor extends EventEmitter {
             fromBlock,
             toBlock,
           ),
-        ],
-      );
+        ]);
 
-      // Group events by transaction hash for correlation
-      const eventsByTx = new Map<
-        string,
-        {
-          deposited?: ethers.EventLog;
-          altered?: ethers.EventLog;
-        }
-      >();
-
-      // Group StakeDeposited events
-      for (const event of depositedEvents) {
-        const typedEvent = event as ethers.EventLog;
-        const existing = eventsByTx.get(typedEvent.transactionHash) || {};
-        this.logger.debug('Adding StakeDeposited event to transaction group', {
-          txHash: typedEvent.transactionHash,
-          depositId: typedEvent.args.depositId.toString(),
-          blockNumber: typedEvent.blockNumber,
-          hasExistingAltered: !!existing.altered,
-        });
-        eventsByTx.set(typedEvent.transactionHash, {
-          ...existing,
-          deposited: typedEvent,
-        });
-      }
-
-      // Group DelegateeAltered events
-      for (const event of alteredEvents) {
-        const typedEvent = event as ethers.EventLog;
-        const existing = eventsByTx.get(typedEvent.transactionHash) || {};
-        this.logger.debug('Adding DelegateeAltered event to transaction group', {
-          txHash: typedEvent.transactionHash,
-          depositId: typedEvent.args.depositId.toString(),
-          blockNumber: typedEvent.blockNumber,
-          hasExistingDeposit: !!existing.deposited,
-          oldDelegatee: typedEvent.args.oldDelegatee,
-          newDelegatee: typedEvent.args.newDelegatee,
-        });
-        eventsByTx.set(typedEvent.transactionHash, {
-          ...existing,
-          altered: typedEvent,
-        });
-      }
-
-      // If we found any events, fetch and log the full blocks
-      const eventBlocks = new Set([
-        ...depositedEvents.map((e) => e.blockNumber),
-        ...withdrawnEvents.map((e) => e.blockNumber),
-        ...alteredEvents.map((e) => e.blockNumber),
-      ]);
-
-      for (const blockNumber of eventBlocks) {
-        const block = await this.provider.getBlock(blockNumber!, true);
-        if (!block) continue;
-
-        const txs = await Promise.all(
-          block.transactions.map(async (txHash) => {
-            const tx = await this.provider.getTransaction(txHash as string);
-            return tx
-              ? {
-                  hash: tx.hash,
-                  from: tx.from,
-                  to: tx.to,
-                  index: tx.blockNumber,
-                }
-              : null;
-          }),
+        // Also query for EarningPowerBumped events
+        const earningPowerBumpedFragment = this.contract.interface.fragments.find(
+          f => f.type === 'event' && f.format().includes('EarningPowerBumped')
         );
 
-        this.logger.info('Full block details for block with events:', {
-          blockNumber,
-          blockHash: block.hash,
-          timestamp: block.timestamp,
-          transactions: txs.filter((tx) => tx !== null),
-        });
-      }
+        let bumpedEvents: Array<ethers.Log> = [];
 
-      // Process events by transaction
-      for (const [txHash, events] of eventsByTx) {
-        if (events.deposited) {
-          const depositEvent = events.deposited;
-          const { depositId, owner: ownerAddress, amount } = depositEvent.args;
+        if (earningPowerBumpedFragment) {
+          // Get the exact event signature from the ABI
+          const eventSignature = earningPowerBumpedFragment.format().replace('event ', '');
+          const earningPowerBumpedTopic = ethers.id(eventSignature);
           
-          const delegateeAddress = events.altered
-            ? events.altered.args.newDelegatee
-            : ownerAddress;
+          this.logger.info('Querying for EarningPowerBumped events', {
+            eventSignature,
+            topic: earningPowerBumpedTopic,
+            fromBlock,
+            toBlock
+          });
 
-          const depositedEvent: StakeDepositedEvent = {
+          // Direct logs query for EarningPowerBumped events
+          const logs = await this.provider.getLogs({
+            address: this.contract.target,
+            topics: [earningPowerBumpedTopic],
+            fromBlock: BigInt(fromBlock),
+            toBlock: BigInt(toBlock)
+          });
+
+          this.logger.info('EarningPowerBumped events found:', {
+            count: logs.length,
+            contractAddress: this.contract.target,
+            topic: earningPowerBumpedTopic
+          });
+          
+          // Log the raw logs for debugging if any found
+          if (logs.length > 0) {
+            const firstLog = logs[0];
+            if (firstLog) {
+              this.logger.info('Raw EarningPowerBumped log details:', {
+                blockNumber: firstLog.blockNumber,
+                transactionHash: firstLog.transactionHash,
+                topicsCount: firstLog.topics?.length || 0,
+                dataLength: firstLog.data?.length || 0
+              });
+            }
+          } else {
+            // For debugging, try to find any events with a more generic query
+            try {
+              const allLogs = await this.provider.getLogs({
+                address: this.contract.target,
+                fromBlock: BigInt(fromBlock),
+                toBlock: BigInt(toBlock)
+              });
+              
+              if (allLogs.length > 0) {
+                const firstLog = allLogs[0];
+                if (firstLog && firstLog.topics && firstLog.topics.length > 0) {
+                  this.logger.info('Found other events on the contract:', {
+                    count: allLogs.length,
+                    firstLogTopicHex: firstLog.topics[0],
+                    topicType: 'Looking up event signature...'
+                  });
+                  
+                  // Try to identify the event from the topic
+                  try {
+                    for (const fragment of this.contract.interface.fragments) {
+                      if (fragment.type === 'event') {
+                        const eventSig = fragment.format().replace('event ', '');
+                        const topic = ethers.id(eventSig);
+                        if (topic === firstLog.topics[0]) {
+                          this.logger.info('Identified event type:', {
+                            eventSignature: eventSig,
+                            eventFormat: fragment.format()
+                          });
+                          break;
+                        }
+                      }
+                    }
+                  } catch (idError) {
+                    this.logger.warn('Error identifying event type', { error: idError });
+                  }
+                } else {
+                  this.logger.info('Found logs but missing topics information:', {
+                    count: allLogs.length
+                  });
+                }
+              } else {
+                this.logger.info('No events of any kind found on the contract in this range');
+              }
+            } catch (error) {
+              this.logger.warn('Error when querying for all logs', { error });
+            }
+          }
+
+          // Process logs if any found
+          if (logs.length > 0) {
+            bumpedEvents = logs.map(log => {
+              try {
+                // Parse the log using the contract interface
+                const parsedLog = this.contract.interface.parseLog({
+                  topics: log.topics as string[],
+                  data: log.data
+                });
+                
+                if (!parsedLog) {
+                  this.logger.warn('Failed to parse log with contract interface', {
+                    transactionHash: log.transactionHash,
+                    topics: log.topics
+                  });
+                  return null;
+                }
+                
+                // Create a synthetic event log that matches ethers.Log structure
+                return {
+                  ...log,
+                  args: parsedLog.args,
+                  eventName: parsedLog.name,
+                  fragment: parsedLog.fragment
+                } as unknown as ethers.Log;
+              } catch (err) {
+                this.logger.error('Failed to parse EarningPowerBumped log', {
+                  error: err,
+                  logData: {
+                    blockNumber: log.blockNumber,
+                    transactionHash: log.transactionHash,
+                    topics: log.topics,
+                    data: log.data
+                  }
+                });
+                return null;
+              }
+            }).filter(Boolean) as ethers.Log[];
+
+            this.logger.info('Successfully parsed EarningPowerBumped events', {
+              count: bumpedEvents.length
+            });
+          }
+        } else {
+          this.logger.warn('EarningPowerBumped event not found in contract ABI, skipping query');
+        }
+
+        // If we found any events, fetch and log the full blocks
+        const eventBlocks = new Set([
+          ...depositedEvents.map((e) => e.blockNumber),
+          ...withdrawnEvents.map((e) => e.blockNumber),
+          ...alteredEvents.map((e) => e.blockNumber),
+          ...bumpedEvents.map((e) => e.blockNumber),
+        ]);
+
+        for (const blockNumber of eventBlocks) {
+          const block = await this.provider.getBlock(blockNumber!, true);
+          if (!block) continue;
+
+          const txs = await Promise.all(
+            block.transactions.map(async (txHash) => {
+              const tx = await this.provider.getTransaction(txHash as string);
+              return tx
+                ? {
+                    hash: tx.hash,
+                    from: tx.from,
+                    to: tx.to,
+                    index: tx.blockNumber,
+                  }
+                : null;
+            }),
+          );
+
+          this.logger.info('Full block details for block with events:', {
+            blockNumber,
+            blockHash: block.hash,
+            timestamp: block.timestamp,
+            transactions: txs.filter((tx) => tx !== null),
+          });
+        }
+
+        // Process events by transaction
+        const eventsByTx = new Map<
+          string,
+          {
+            deposited?: ethers.EventLog;
+            altered?: ethers.EventLog;
+          }
+        >();
+
+        // Group StakeDeposited events
+        for (const event of depositedEvents) {
+          const typedEvent = event as ethers.EventLog;
+          const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+          this.logger.debug('Adding StakeDeposited event to transaction group', {
+            txHash: typedEvent.transactionHash,
+            depositId: typedEvent.args.depositId.toString(),
+            blockNumber: typedEvent.blockNumber,
+            hasExistingAltered: !!existing.altered,
+          });
+          eventsByTx.set(typedEvent.transactionHash, {
+            ...existing,
+            deposited: typedEvent,
+          });
+        }
+
+        // Group DelegateeAltered events
+        for (const event of alteredEvents) {
+          const typedEvent = event as ethers.EventLog;
+          const existing = eventsByTx.get(typedEvent.transactionHash) || {};
+          this.logger.debug('Adding DelegateeAltered event to transaction group', {
+            txHash: typedEvent.transactionHash,
+            depositId: typedEvent.args.depositId.toString(),
+            blockNumber: typedEvent.blockNumber,
+            hasExistingDeposit: !!existing.deposited,
+            oldDelegatee: typedEvent.args.oldDelegatee,
+            newDelegatee: typedEvent.args.newDelegatee,
+          });
+          eventsByTx.set(typedEvent.transactionHash, {
+            ...existing,
+            altered: typedEvent,
+          });
+        }
+
+        // Process standalone StakeWithdrawn events
+        for (const event of withdrawnEvents) {
+          const { depositId, amount } = (event as ethers.EventLog).args;
+          const withdrawnEvent: StakeWithdrawnEvent = {
             depositId: depositId.toString(),
-            ownerAddress,
-            delegateeAddress,
-            amount: amount,
-            blockNumber: depositEvent.blockNumber!,
+            withdrawnAmount: amount,
+            blockNumber: event.blockNumber!,
+            transactionHash: event.transactionHash!,
+          };
+          await this.handleStakeWithdrawn(withdrawnEvent);
+        }
+
+        // Process standalone DelegateeAltered events
+        for (const event of alteredEvents) {
+          // Skip events that were processed with deposits
+          const txHash = event.transactionHash!;
+          if (eventsByTx.has(txHash) && eventsByTx.get(txHash)!.deposited) {
+            continue;
+          }
+
+          const { depositId, oldDelegatee, newDelegatee } = (
+            event as ethers.EventLog
+          ).args;
+          const alteredEvent: DelegateeAlteredEvent = {
+            depositId: depositId.toString(),
+            oldDelegatee,
+            newDelegatee,
+            blockNumber: event.blockNumber!,
             transactionHash: txHash,
           };
-
-          await this.handleStakeDeposited(depositedEvent);
+          await this.handleDelegateeAltered(alteredEvent);
         }
-      }
-
-      // Process standalone StakeWithdrawn events
-      for (const event of withdrawnEvents) {
-        const { depositId, amount } = (event as ethers.EventLog).args;
-        const withdrawnEvent: StakeWithdrawnEvent = {
-          depositId: depositId.toString(),
-          withdrawnAmount: amount,
-          blockNumber: event.blockNumber!,
-          transactionHash: event.transactionHash!,
-        };
-        await this.handleStakeWithdrawn(withdrawnEvent);
-      }
-
-      // Process standalone DelegateeAltered events
-      for (const event of alteredEvents) {
-        // Skip events that were processed with deposits
-        const txHash = event.transactionHash!;
-        if (eventsByTx.has(txHash) && eventsByTx.get(txHash)!.deposited) {
-          continue;
+        
+        // Process EarningPowerBumped events
+        if (bumpedEvents.length > 0) {
+          this.logger.info(`Processing ${bumpedEvents.length} EarningPowerBumped events`);
+          
+          for (const event of bumpedEvents) {
+            try {
+              const typedEvent = event as ethers.EventLog;
+              
+              // Extract event data from args
+              const eventArgs = typedEvent.args;
+              if (!eventArgs) {
+                this.logger.error('Missing args in EarningPowerBumped event', {
+                  blockNumber: typedEvent.blockNumber,
+                  transactionHash: typedEvent.transactionHash
+                });
+                continue;
+              }
+              
+              const depositId = eventArgs.depositId.toString();
+              const oldEarningPower = eventArgs.oldEarningPower;
+              const newEarningPower = eventArgs.newEarningPower;
+              const bumper = eventArgs.bumper;
+              const tipReceiver = eventArgs.tipReceiver;
+              const tipAmount = eventArgs.tipAmount;
+              
+              const bumpedEvent: EarningPowerBumpedEvent = {
+                depositId,
+                oldEarningPower,
+                newEarningPower,
+                bumper,
+                tipReceiver,
+                tipAmount,
+                blockNumber: typedEvent.blockNumber!,
+                transactionHash: typedEvent.transactionHash!,
+              };
+              
+              await this.handleEarningPowerBumped(bumpedEvent);
+            } catch (eventError) {
+              this.logger.error('Error processing individual EarningPowerBumped event', {
+                error: eventError,
+                eventInfo: {
+                  blockNumber: event.blockNumber,
+                  transactionHash: event.transactionHash
+                }
+              });
+            }
+          }
+        } else {
+          this.logger.info('No EarningPowerBumped events found in range', {
+            fromBlock,
+            toBlock
+          });
         }
-
-        const { depositId, oldDelegatee, newDelegatee } = (
-          event as ethers.EventLog
-        ).args;
-        const alteredEvent: DelegateeAlteredEvent = {
-          depositId: depositId.toString(),
-          oldDelegatee,
-          newDelegatee,
-          blockNumber: event.blockNumber!,
-          transactionHash: txHash,
-        };
-        await this.handleDelegateeAltered(alteredEvent);
+        
+        // Overall event count summary
+        this.logger.info('Events processed summary', {
+          fromBlock,
+          toBlock,
+          depositedCount: depositedEvents.length,
+          withdrawnCount: withdrawnEvents.length,
+          alteredCount: alteredEvents.length,
+          earningPowerBumpedCount: bumpedEvents.length
+        });
+      } catch (err) {
+        this.logger.error('Error processing events in block range', {
+          error: err,
+          fromBlock,
+          toBlock
+        });
+        throw err;
       }
     } catch (error) {
       this.logger.error('Error processing block range', {
@@ -551,6 +849,72 @@ export class StakerMonitor extends EventEmitter {
         await this.errorLogger.error(error as Error, {
           context: 'handle-delegatee-altered',
           depositId: event.depositId,
+        });
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Handles EarningPowerBumped event processing
+   * @param event - The EarningPowerBumped event to process
+   */
+  private async handleEarningPowerBumped(event: EarningPowerBumpedEvent): Promise<void> {
+    this.logger.info('Processing EarningPowerBumped event', {
+      depositId: event.depositId,
+      oldEarningPower: event.oldEarningPower.toString(),
+      newEarningPower: event.newEarningPower.toString(),
+      blockNumber: event.blockNumber,
+      transactionHash: event.transactionHash,
+    });
+
+    try {
+      // First check if the deposit exists
+      const deposit = await this.db.getDeposit(event.depositId);
+      
+      if (!deposit) {
+        this.logger.warn('Deposit not found for EarningPowerBumped event', {
+          depositId: event.depositId,
+          blockNumber: event.blockNumber,
+          transactionHash: event.transactionHash,
+        });
+        return;
+      }
+      
+      // Process the event - this will update the score in the database
+      await this.eventProcessor.processEarningPowerBumped(event);
+      
+      this.logger.info('Successfully processed EarningPowerBumped event', {
+        depositId: event.depositId,
+        delegatee: deposit.delegatee_address || deposit.owner_address,
+        newEarningPower: event.newEarningPower.toString(),
+      });
+      
+      // Emit the event
+      this.emit(MONITOR_EVENTS.EARNING_POWER_BUMPED, {
+        depositId: event.depositId,
+        oldEarningPower: event.oldEarningPower.toString(),
+        newEarningPower: event.newEarningPower.toString(),
+        bumper: event.bumper,
+        tipReceiver: event.tipReceiver,
+        tipAmount: event.tipAmount.toString(),
+        blockNumber: event.blockNumber,
+        transactionHash: event.transactionHash,
+      });
+    } catch (error) {
+      this.logger.error('Failed to handle EarningPowerBumped event', {
+        error,
+        depositId: event.depositId,
+        newEarningPower: event.newEarningPower.toString(),
+      });
+      
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'handle-earning-power-bumped',
+          depositId: event.depositId,
+          blockNumber: event.blockNumber,
+          transactionHash: event.transactionHash,
         });
       }
       

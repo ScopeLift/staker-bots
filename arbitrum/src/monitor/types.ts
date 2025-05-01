@@ -58,6 +58,20 @@ export interface DelegateeAlteredEvent {
 }
 
 /**
+ * Event data for EarningPowerBumped events
+ */
+export interface EarningPowerBumpedEvent {
+  depositId: string;
+  oldEarningPower: BigNumberish;
+  newEarningPower: BigNumberish;
+  bumper: string;
+  tipReceiver: string;
+  tipAmount: BigNumberish;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+/**
  * Status of the monitor component
  */
 export interface MonitorStatus {

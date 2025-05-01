@@ -19,6 +19,7 @@ export const MONITOR_EVENTS = {
   DEPOSIT_UPDATED: 'deposit-updated',
   DEPOSIT_WITHDRAWN: 'deposit-withdrawn',
   DELEGATEE_CHANGED: 'delegatee-changed',
+  EARNING_POWER_BUMPED: 'earning-power-bumped',
 } as const;
 
 /**
@@ -28,6 +29,7 @@ export const EVENT_TYPES = {
   STAKE_DEPOSITED: 'StakeDeposited',
   STAKE_WITHDRAWN: 'StakeWithdrawn',
   DELEGATEE_ALTERED: 'DelegateeAltered',
+  EARNING_POWER_BUMPED: 'EarningPowerBumped',
 } as const;
 
 /**

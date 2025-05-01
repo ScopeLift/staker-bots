@@ -5,6 +5,7 @@ export const stakerAbi = [
   'event StakeDeposited(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
   'event StakeWithdrawn(address owner, uint256 indexed depositId, uint256 amount, uint256 depositBalance, uint256 earningPower)',
   'event DelegateeAltered(uint256 indexed depositId, address oldDelegatee, address newDelegatee, uint256 earningPower)',
+  'event EarningPowerBumped(uint256 indexed depositId, uint256 oldEarningPower, uint256 newEarningPower, address bumper, address tipReceiver, uint256 tipAmount)',
   'function deposit(uint256 amount) external returns (uint256 depositId)',
   'function bumpDelegatee(uint256 depositId, address newDelegatee) external returns (bool)',
   'function withdraw(uint256 depositId, uint256 amount) external returns (bool)',
@@ -14,6 +15,13 @@ export const stakerAbi = [
   "function bumpEarningPower(uint256, address, uint256) returns (uint256)",
   "function REWARD_TOKEN() view returns (address)"
 ];
+
+// For debugging, export a utility function to verify ABI events
+export const verifyAbiEvents = (abi: string[]): string[] => {
+  return abi
+    .filter(fragment => fragment.startsWith('event'))
+    .map(eventFragment => eventFragment);
+};
 
 /**
  * ABI fragments for the reward calculator contract
