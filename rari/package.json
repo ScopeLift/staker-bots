@@ -1,0 +1,63 @@
+{
+  "name": "rari-staker-bots",
+  "version": "1.0.0",
+  "description": "Staker bots for executing distributions and profitability checks on Rari staker contracts",
+  "type": "module",
+  "scripts": {
+    "start": "COMPONENTS=all tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "start:monitor": "COMPONENTS=monitor tsx src/index.ts",
+    "start:profitability": "COMPONENTS=profitability tsx src/index.ts",
+    "start:executor": "COMPONENTS=executor tsx src/index.ts",
+    "start:bump": "COMPONENTS=bump,executor tsx src/index.ts",
+    "start:claim": "COMPONENTS=claim,executor tsx src/index.ts",
+    "start:all": "COMPONENTS=monitor,executor,bump,claim tsx src/index.ts",
+    "dev:monitor": "COMPONENTS=monitor tsx watch src/index.ts",
+    "dev:profitability": "COMPONENTS=profitability tsx watch src/index.ts",
+    "dev:executor": "COMPONENTS=executor tsx watch src/index.ts",
+    "dev:bump": "COMPONENTS=bump,executor tsx watch src/index.ts",
+    "dev:claim": "COMPONENTS=claim,executor tsx watch src/index.ts",
+    "dev:all": "COMPONENTS=monitor,executor,bump,claim tsx watch src/index.ts",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prod": "NODE_ENV=production EXECUTOR_TYPE=wallet COMPONENTS=all tsx src/index.ts",
+    "prod:monitor": "NODE_ENV=production EXECUTOR_TYPE=wallet COMPONENTS=monitor tsx src/index.ts",
+    "prod:executor": "NODE_ENV=production COMPONENTS=executor tsx src/index.ts",
+    "prod:bump": "NODE_ENV=production EXECUTOR_TYPE=wallet COMPONENTS=bump,executor tsx src/index.ts",
+    "prod:claim": "NODE_ENV=production EXECUTOR_TYPE=wallet COMPONENTS=claim,executor tsx src/index.ts",
+    "prod:all": "NODE_ENV=production EXECUTOR_TYPE=wallet COMPONENTS=monitor,executor,bump,claim tsx src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "migrate": "tsx src/database/supabase/migrate.ts"
+  },
+  "keywords": [
+    "rari",
+    "staking",
+    "bots",
+    "defi"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@openzeppelin/defender-relay-client": "^1.54.6",
+    "@openzeppelin/defender-sdk": "^2.3.0",
+    "@supabase/supabase-js": "^2.48.1",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.7",
+    "uuid": "^11.0.5",
+    "web3": "4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.17",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.1.0",
+    "@typescript-eslint/parser": "^7.1.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.2.5",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3"
+  }
+}

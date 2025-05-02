@@ -1,0 +1,376 @@
+import { IProfitabilityEngine } from '../interfaces/IProfitabilityEngine'
+import { IExecutor } from '../../executor/interfaces/IExecutor'
+import { IDatabase } from '../../database/interfaces/IDatabase'
+import { BaseProfitabilityEngine } from './BaseProfitabilityEngine'
+import { CalculatorWrapper } from '../../calculator/CalculatorWrapper'
+import { Deposit, ProcessingQueueItem } from '../../database/interfaces/types'
+import { ProfitabilityQueueBatchResult, ProfitabilityQueueResult } from '../interfaces/types'
+import { ConsoleLogger } from '../../monitor/logging'
+import { CONFIG } from '../../configuration'
+import Web3 from 'web3'
+import { GasCostEstimator } from '../../prices/GasCostEstimator'
+import { ethers } from 'ethers'
+import { BinaryEligibilityOracleEarningPowerCalculator } from '../../calculator'
+import { IPriceFeed } from '../../shared/price-feeds/interfaces'
+import { ProfitabilityConfig } from '../interfaces/types'
+
+const logger = new ConsoleLogger('info', { prefix: 'RariBumpEarningPowerEngine' })
+
+export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implements IProfitabilityEngine {
+  private calculatorWrapper: CalculatorWrapper
+  private gasCostEstimator: GasCostEstimator
+  private web3: Web3
+  protected database: IDatabase
+  protected executor: IExecutor
+
+  constructor({
+    database,
+    executor,
+    calculatorWrapper,
+    web3,
+    calculator,
+    stakerContract,
+    provider,
+    config,
+    priceFeed,
+    logger: loggerInstance = logger,
+    gasPriceMultiplier = 1.1,
+    maxGasPrice = '500000000000',
+  }: {
+    database: IDatabase
+    executor: IExecutor
+    calculatorWrapper: CalculatorWrapper
+    web3: Web3
+    calculator: BinaryEligibilityOracleEarningPowerCalculator
+    stakerContract: ethers.Contract & {
+      deposits(depositId: bigint): Promise<{
+        owner: string
+        balance: bigint
+        earningPower: bigint
+        delegatee: string
+        claimer: string
+      }>
+      unclaimedReward(depositId: bigint): Promise<bigint>
+      maxBumpTip(): Promise<bigint>
+      bumpEarningPower(
+        depositId: bigint,
+        tipReceiver: string,
+        tip: bigint,
+      ): Promise<bigint>
+      REWARD_TOKEN(): Promise<string>
+    }
+    provider: ethers.Provider
+    config: ProfitabilityConfig
+    priceFeed: IPriceFeed
+    logger?: ConsoleLogger
+    gasPriceMultiplier?: number
+    maxGasPrice?: string
+  }) {
+    super(calculator, stakerContract, provider, config, priceFeed)
+    this.calculatorWrapper = calculatorWrapper
+    this.web3 = web3
+    this.gasCostEstimator = new GasCostEstimator()
+    this.database = database
+    this.executor = executor
+  }
+
+  async processItem({ item }: { item: ProcessingQueueItem }): Promise<ProfitabilityQueueResult> {
+    try {
+      const deposit = await this.database.getDeposit(item.deposit_id)
+
+      if (!deposit) {
+        throw new Error(`Deposit ${item.deposit_id} not found`)
+      }
+
+      logger.info('Processing bump earning power for deposit', {
+        depositId: deposit.deposit_id,
+        ownerAddress: deposit.owner_address,
+        amount: deposit.amount,
+      })
+
+      const isBumpProfitable = await this.isBumpProfitable({ deposit })
+
+      if (!isBumpProfitable.profitable) {
+        logger.info('Bump not profitable', {
+          depositId: deposit.deposit_id,
+          reason: isBumpProfitable.reason,
+        })
+        return {
+          success: true,
+          result: 'not_profitable',
+          details: { reason: isBumpProfitable.reason },
+        }
+      }
+
+      // Queue the transaction
+      const tx = {
+        to: CONFIG.STAKER_CONTRACT_ADDRESS,
+        data: this.web3.eth.abi.encodeFunctionCall(
+          {
+            name: 'bumpEarningPower',
+            type: 'function',
+            inputs: [
+              { type: 'address', name: 'account' },
+              { type: 'uint256', name: 'tipAmount' },
+            ],
+          },
+          [deposit.owner_address, isBumpProfitable.tipAmount!.toString()]
+        ),
+        gasLimit: CONFIG.BUMP_GAS_LIMIT || '300000',
+      }
+
+      logger.info('Queueing bump earning power transaction', {
+        depositId: deposit.deposit_id,
+        to: tx.to,
+        tipAmount: isBumpProfitable.tipAmount,
+      })
+
+      await this.executor.queueTransaction(
+        [BigInt(deposit.deposit_id)],
+        {
+          is_profitable: true,
+          constraints: {
+            has_enough_shares: true,
+            meets_min_reward: true,
+            meets_min_profit: true
+          },
+          estimates: {
+            total_shares: BigInt(deposit.amount),
+            payout_amount: isBumpProfitable.tipAmount!,
+            gas_estimate: BigInt(CONFIG.BUMP_GAS_LIMIT || '300000'),
+            gas_cost: BigInt(CONFIG.BUMP_GAS_LIMIT || '300000'),
+            expected_profit: isBumpProfitable.tipAmount!
+          },
+          deposit_details: [{
+            depositId: BigInt(deposit.deposit_id),
+            rewards: isBumpProfitable.tipAmount!
+          }]
+        },
+        tx.data
+      )
+
+      return {
+        success: true,
+        result: 'queued',
+        details: {
+          depositId: deposit.deposit_id,
+          tipAmount: isBumpProfitable.tipAmount!.toString(),
+        },
+      }
+    } catch (error) {
+      logger.error('Error processing bump earning power', {
+        itemId: item.id,
+        depositId: item.deposit_id,
+        error: (error as Error).message,
+        stack: (error as Error).stack,
+      })
+      return {
+        success: false,
+        result: 'error',
+        details: { error: (error as Error).message },
+      }
+    }
+  }
+
+  async processDepositsBatch({
+    deposits,
+  }: {
+    deposits: Deposit[]
+  }): Promise<ProfitabilityQueueBatchResult> {
+    logger.info('Processing deposits batch', {
+      count: deposits.length,
+      timestamp: Date.now(),
+    })
+    const results: ProfitabilityQueueBatchResult = {
+      success: true,
+      total: deposits.length,
+      queued: 0,
+      notProfitable: 0,
+      errors: 0,
+      details: [],
+    }
+
+    for (const deposit of deposits) {
+      try {
+        const isBumpProfitable = await this.isBumpProfitable({ deposit })
+
+        if (!isBumpProfitable.profitable) {
+          results.notProfitable++
+          results.details.push({
+            depositId: deposit.deposit_id,
+            result: 'not_profitable',
+            details: { reason: isBumpProfitable.reason },
+          })
+          continue
+        }
+
+        // Queue the transaction
+        const tx = {
+          to: CONFIG.STAKER_CONTRACT_ADDRESS,
+          data: this.web3.eth.abi.encodeFunctionCall(
+            {
+              name: 'bumpEarningPower',
+              type: 'function',
+              inputs: [
+                { type: 'address', name: 'account' },
+                { type: 'uint256', name: 'tipAmount' },
+              ],
+            },
+            [deposit.owner_address, isBumpProfitable.tipAmount!.toString()]
+          ),
+          gasLimit: CONFIG.BUMP_GAS_LIMIT || '300000',
+        }
+
+        await this.executor.queueTransaction(
+          [BigInt(deposit.deposit_id)],
+          {
+            is_profitable: true,
+            constraints: {
+              has_enough_shares: true,
+              meets_min_reward: true,
+              meets_min_profit: true
+            },
+            estimates: {
+              total_shares: BigInt(deposit.amount),
+              payout_amount: isBumpProfitable.tipAmount!,
+              gas_estimate: BigInt(CONFIG.BUMP_GAS_LIMIT || '300000'),
+              gas_cost: BigInt(CONFIG.BUMP_GAS_LIMIT || '300000'),
+              expected_profit: isBumpProfitable.tipAmount!
+            },
+            deposit_details: [{
+              depositId: BigInt(deposit.deposit_id),
+              rewards: isBumpProfitable.tipAmount!
+            }]
+          },
+          tx.data
+        )
+
+        results.queued++
+        results.details.push({
+          depositId: deposit.deposit_id,
+          result: 'queued',
+          details: { 
+            tipAmount: isBumpProfitable.tipAmount!.toString(),
+          },
+        })
+      } catch (error) {
+        logger.error('Failed to process deposit', {
+          depositId: deposit.deposit_id,
+          error: (error as Error).message,
+          timestamp: Date.now(),
+        })
+        results.errors++
+        results.details.push({
+          depositId: deposit.deposit_id,
+          result: 'error',
+          details: { error: (error as Error).message },
+        })
+      }
+    }
+
+    return results
+  }
+
+  private async isBumpProfitable({
+    deposit,
+  }: {
+    deposit: Deposit
+  }): Promise<{
+    profitable: boolean
+    reason?: string
+    tipAmount?: bigint
+  }> {
+    try {
+      // Calculate current earning power
+      const currentScore = await this.calculatorWrapper.getEarningPower(
+        BigInt(deposit.amount),
+        deposit.owner_address,
+        deposit.owner_address // Using owner as delegatee since this is a self-bump
+      )
+
+      if (!currentScore) {
+        return {
+          profitable: false,
+          reason: 'Could not calculate current earning power',
+        }
+      }
+
+      // Calculate potential new earning power with a tip
+      // Start with minimum tip and increase until profitable or hit max
+      let tipAmount = BigInt(CONFIG.MIN_TIP_AMOUNT || '1000000000000000') // 0.001 ETH default
+      const maxTipAmount = BigInt(CONFIG.MAX_TIP_AMOUNT || '10000000000000000') // 0.01 ETH default
+      const tipIncrement = BigInt(CONFIG.TIP_INCREMENT || '1000000000000000') // 0.001 ETH default
+      
+      let bestScore = currentScore
+      let bestTip = 0n
+      let profitable = false
+
+      // Get current gas price
+      const gasPrice = await this.web3.eth.getGasPrice()
+      const gasPriceBigInt = BigInt(gasPrice)
+      
+      // Estimate gas cost for bump transaction
+      const gasLimit = BigInt(CONFIG.BUMP_GAS_LIMIT || '300000')
+      const gasCost = gasPriceBigInt * gasLimit
+
+      while (tipAmount <= maxTipAmount) {
+        // Calculate new score with this tip amount
+        const [newScore] = await this.calculatorWrapper.getNewEarningPower(
+          BigInt(deposit.amount),
+          deposit.owner_address,
+          deposit.owner_address, // Using owner as delegatee since this is a self-bump
+          currentScore
+        )
+
+        if (!newScore) {
+          tipAmount += tipIncrement
+          continue
+        }
+
+        // Calculate score increase
+        const scoreIncrease = newScore - currentScore
+        
+        // Calculate expected rewards from score increase
+        // Convert score to rewards based on project-specific formula
+        const rewardRatePerBlock = BigInt(CONFIG.REWARD_RATE_PER_BLOCK || '1000000000000000') // 0.001 ETH default
+        const expectedBlocks = BigInt(CONFIG.EXPECTED_BLOCKS_BEFORE_NEXT_BUMP || '40320') // ~1 week at 15s blocks
+        const expectedRewards = (scoreIncrease * rewardRatePerBlock * expectedBlocks) / BigInt(1e18)
+
+        // Calculate total cost (tip + gas)
+        const totalCost = tipAmount + gasCost
+
+        // Check if profitable
+        if (expectedRewards > totalCost) {
+          if (expectedRewards - totalCost > bestScore) {
+            bestScore = expectedRewards - totalCost
+            bestTip = tipAmount
+            profitable = true
+          }
+        }
+
+        tipAmount += tipIncrement
+      }
+
+      if (!profitable) {
+        return {
+          profitable: false,
+          reason: 'No profitable tip amount found',
+        }
+      }
+
+      return {
+        profitable: true,
+        tipAmount: bestTip,
+      }
+    } catch (error) {
+      logger.error('Error calculating bump profitability', {
+        depositId: deposit.deposit_id,
+        error: (error as Error).message,
+      })
+      return {
+        profitable: false,
+        reason: `Error: ${(error as Error).message}`,
+      }
+    }
+  }
+} 
