@@ -10,6 +10,8 @@ import {
   TransactionQueueStatus,
   GovLstClaimHistory,
   ErrorLog,
+  ScoreEvent,
+  TransactionType,
 } from '../interfaces/types';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { v4 as uuidv4 } from 'uuid';
@@ -24,6 +26,7 @@ export class JsonDatabase implements IDatabase {
     transaction_queue: Record<string, TransactionQueueItem>;
     govlst_claim_history: Record<string, GovLstClaimHistory>;
     errors: Record<string, ErrorLog>;
+    score_events: ScoreEvent[];
   };
 
   constructor(dbPath = 'staker-monitor-db.json') {
@@ -49,6 +52,7 @@ export class JsonDatabase implements IDatabase {
       transaction_queue: {},
       govlst_claim_history: {},
       errors: {},
+      score_events: [],
     };
 
     this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
@@ -89,6 +93,7 @@ export class JsonDatabase implements IDatabase {
             transaction_queue: loadedData.transaction_queue || {},
             govlst_claim_history: loadedData.govlst_claim_history || {},
             errors: loadedData.errors || {},
+            score_events: loadedData.score_events || [],
           };
 
           this.logger.info('Successfully loaded existing database:', {
@@ -517,5 +522,52 @@ export class JsonDatabase implements IDatabase {
   async deleteErrorLog(id: string): Promise<void> {
     delete this.data.errors[id];
     await this.saveToFile();
+  }
+
+  // Score Events
+  async createScoreEvent(event: ScoreEvent): Promise<void> {
+    if (!this.data.score_events) {
+      this.data.score_events = [];
+    }
+    this.data.score_events.push({
+      ...event,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await this.saveToFile();
+  }
+
+  async getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null> {
+    if (!this.data.score_events) {
+      return null;
+    }
+    const events = this.data.score_events
+      .filter((event: ScoreEvent) => event.delegatee === delegatee)
+      .sort((a: ScoreEvent, b: ScoreEvent) => b.block_number - a.block_number);
+    return events[0] || null;
+  }
+
+  async getTransactionQueueItemsByType(
+    type: TransactionType,
+    status?: TransactionQueueStatus,
+  ): Promise<TransactionQueueItem[]> {
+    const items = Object.values(this.data.transaction_queue).filter(
+      (item) => item.transaction_type === type,
+    );
+
+    if (status) {
+      return items.filter((item) => item.status === status);
+    }
+
+    return items;
+  }
+
+  async getTransactionQueueItemsByTypeAndStatus(
+    type: TransactionType,
+    status: TransactionQueueStatus,
+  ): Promise<TransactionQueueItem[]> {
+    return Object.values(this.data.transaction_queue).filter(
+      (item) => item.transaction_type === type && item.status === status,
+    );
   }
 }

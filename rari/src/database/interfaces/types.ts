@@ -36,6 +36,11 @@ export type ProcessingQueueItem = {
   last_profitability_check?: string; // JSON stringified profitability result
 };
 
+export enum TransactionType {
+  BUMP = 'bump',
+  CLAIM_AND_DISTRIBUTE = 'claim_and_distribute'
+}
+
 export enum TransactionQueueStatus {
   PENDING = 'pending',
   SUBMITTED = 'submitted',
@@ -45,6 +50,7 @@ export enum TransactionQueueStatus {
 
 export type TransactionQueueItem = {
   id: string;
+  transaction_type: TransactionType;
   deposit_id: string;
   status: TransactionQueueStatus;
   hash?: string;
@@ -56,6 +62,7 @@ export type TransactionQueueItem = {
   tip_amount?: string;
   tip_receiver?: string;
   attempts: number;
+  profitability_check?: string; // JSON stringified profitability result
 };
 
 export type GovLstClaimHistory = {
@@ -81,4 +88,12 @@ export type ErrorLog = {
   meta?: Record<string, unknown>;
   context?: Record<string, unknown>;
   created_at?: string;
+};
+
+export type ScoreEvent = {
+  delegatee: string;
+  score: string;
+  block_number: number;
+  created_at?: string;
+  updated_at?: string;
 };

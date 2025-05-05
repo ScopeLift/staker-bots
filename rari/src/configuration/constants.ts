@@ -27,7 +27,7 @@ export const TIME_CONSTANTS = {
 export const GAS_CONSTANTS = {
   GAS_PRICE_BUFFER: 1.2, // 20% buffer
   GAS_LIMIT_BUFFER: 1.3, // 30% buffer
-  MIN_EXECUTOR_BALANCE: ethers.parseEther('0.001'),
+  MIN_EXECUTOR_BALANCE: ethers.parseEther('0'),
   MAX_PENDING_TRANSACTIONS: 10,
 } as const;
 
@@ -213,7 +213,7 @@ export const EXECUTOR = {
   DEFAULT_CONFIG: {
     wallet: {
       privateKey: '',
-      minBalance: ethers.parseEther('0.1'), // 0.1 ETH
+      minBalance: ethers.parseEther('0'), // 0 ETH
       maxPendingTransactions: 5,
     },
     maxQueueSize: 100,
@@ -232,7 +232,7 @@ export const EXECUTOR = {
     apiKey: '',
     apiSecret: '',
     address: '',
-    minBalance: ethers.parseEther('0.1'), // 0.1 ETH
+    minBalance: ethers.parseEther('0'), // 0 ETH
     maxPendingTransactions: 5,
     gasPolicy: {
       maxFeePerGas: undefined,

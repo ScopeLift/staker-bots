@@ -158,7 +158,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     deposits: GovLstDeposit[],
   ): Promise<GovLstProfitabilityCheck> {
     try {
-      const payoutAmount = await this.govLstContract.payoutAmount();
+      const payoutAmount = await this.getPayoutAmount();
       const minQualifyingEarningPowerBips =
         await this.govLstContract.minQualifyingEarningPowerBips();
 
@@ -294,17 +294,20 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   }
 
   /**
-   * Analyzes deposits and adds them to the active bin until it reaches optimal threshold
-   * When bin reaches threshold, it's marked as ready for execution
-   * @param deposits Array of deposits to analyze
-   * @returns Analysis with deposit groups ready for execution
-   * @throws QueueProcessingError if analysis fails
+   * Utility for fetching contract data with retries
+   * @param operation - Function to execute and retry
+   * @param context - Description for logging
+   * @param maxRetries - Maximum number of retry attempts
+   * @param delayMs - Delay between retries in milliseconds
+   * @returns Result of the operation
+   * @throws Error if all retries fail
    */
   private async getContractDataWithRetry<T>(
     operation: () => Promise<T>,
     context: string,
     maxRetries = 3,
     delayMs = 1000,
+    fallbackFn?: () => T
   ): Promise<T> {
     let lastError: Error | null = null;
 
@@ -339,6 +342,15 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       }
     }
 
+    // If we have a fallback function, use it
+    if (fallbackFn) {
+      const fallbackValue = fallbackFn();
+      this.logger.warn(`Using fallback value for ${context}`, {
+        fallbackValue: typeof fallbackValue === 'bigint' ? fallbackValue.toString() : fallbackValue
+      });
+      return fallbackValue;
+    }
+
     const errorMessage = `${context} failed after ${maxRetries} attempts: ${lastError?.message}`;
 
     if (this.errorLogger) {
@@ -350,6 +362,42 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
 
     throw new Error(errorMessage);
+  }
+
+  /**
+   * Gets the payout amount from the contract with fallback to configured value
+   * @returns Payout amount as BigInt
+   */
+  private async getPayoutAmount(): Promise<bigint> {
+    try {
+      return await this.getContractDataWithRetry(
+        () => this.govLstContract.payoutAmount(),
+        'Fetching payout amount',
+        3,
+        1000,
+        () => {
+          // Fallback to environment variable or default value
+          const fallbackValue = CONFIG.govlst.payoutAmount || ethers.parseEther('0.1'); // 0.1 token default
+          this.logger.info('Using fallback payout amount from config', { 
+            payoutAmount: fallbackValue.toString(),
+            source: CONFIG.govlst.payoutAmount ? 'environment' : 'default'
+          });
+          return fallbackValue;
+        }
+      );
+    } catch (error) {
+      // If somehow the getContractDataWithRetry still throws (shouldn't happen with fallback)
+      this.logger.error('Failed to get payout amount even with fallback', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      
+      // Last resort fallback
+      const defaultAmount = ethers.parseEther('0.1'); // 0.1 token
+      this.logger.info('Using last resort default payout amount', {
+        payoutAmount: defaultAmount.toString()
+      });
+      return defaultAmount;
+    }
   }
 
   // Add these helper functions at the top of the class
@@ -415,10 +463,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       });
 
       // Get payoutAmount and estimate gas costs with retry
-      const payoutAmount = await this.getContractDataWithRetry(
-        () => this.govLstContract.payoutAmount(),
-        'Fetching payout amount',
-      );
+      const payoutAmount = await this.getPayoutAmount();
 
       const gasCost = await this.getContractDataWithRetry(
         () => this.estimateGasCostInRewardToken(),
@@ -538,7 +583,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
       // Get current gas cost and payout amount
       const gasCost = await this.estimateGasCostInRewardToken();
-      const payoutAmount = await this.govLstContract.payoutAmount();
+      const payoutAmount = await this.getPayoutAmount();
       const profitMargin = this.config.minProfitMargin;
 
       // Calculate optimal threshold
@@ -585,7 +630,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       }
 
       const gasCost = await this.estimateGasCostInRewardToken();
-      const payoutAmount = await this.govLstContract.payoutAmount();
+      const payoutAmount = await this.getPayoutAmount();
 
       // Expected profit should be equal to total rewards
       const expectedProfit = this.activeBin.total_rewards;
@@ -953,5 +998,15 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       }
       throw error;
     }
+  }
+
+  /**
+   * Handle score event updates for a delegatee
+   * This base implementation is a no-op since the engine doesn't need to handle score events directly
+   * The wrapper class handles the actual processing
+   */
+  async onScoreEvent(_delegatee: string, _score: bigint): Promise<void> {
+    // No-op in base engine
+    return;
   }
 }

@@ -8,6 +8,8 @@ import {
   TransactionQueueStatus,
   GovLstClaimHistory,
   ErrorLog,
+  ScoreEvent,
+  TransactionType,
 } from './interfaces/types';
 import * as supabaseDb from './supabase/deposits';
 import * as supabaseCheckpoints from './supabase/checkpoints';
@@ -15,6 +17,7 @@ import * as supabaseProcessingQueue from './supabase/processing_queue';
 import * as supabaseTransactionQueue from './supabase/transaction_queue';
 import * as supabaseGovLstRewards from './supabase/govlst_rewards';
 import * as supabaseErrors from './supabase/errors';
+import * as supabaseScoreEvents from './supabase/score_events';
 import { JsonDatabase } from './json/JsonDatabase';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 
@@ -105,6 +108,19 @@ export class DatabaseWrapper implements IDatabase {
         deleteTransactionQueueItem: this.wrapWithFallback(
           supabaseTransactionQueue.deleteTransactionQueueItem,
         ),
+        // New transaction type methods
+        getTransactionQueueItemsByType: this.wrapWithFallback(
+          async (type: TransactionType, status?: TransactionQueueStatus) => {
+            const items = await supabaseTransactionQueue.getTransactionQueueItemsByStatus(status!);
+            return items.filter(item => item.transaction_type === type);
+          }
+        ),
+        getTransactionQueueItemsByTypeAndStatus: this.wrapWithFallback(
+          async (type: TransactionType, status: TransactionQueueStatus) => {
+            const items = await supabaseTransactionQueue.getTransactionQueueItemsByStatus(status);
+            return items.filter(item => item.transaction_type === type);
+          }
+        ),
         // GovLst Claim History Operations
         createGovLstClaimHistory: this.wrapWithFallback(
           supabaseGovLstRewards.createGovLstClaimHistory,
@@ -128,6 +144,13 @@ export class DatabaseWrapper implements IDatabase {
           supabaseErrors.getErrorLogsBySeverity,
         ),
         deleteErrorLog: this.wrapWithFallback(supabaseErrors.deleteErrorLog),
+        // Score Events
+        createScoreEvent: this.wrapWithFallback(
+          supabaseScoreEvents.createScoreEvent,
+        ),
+        getLatestScoreEvent: this.wrapWithFallback(
+          supabaseScoreEvents.getLatestScoreEvent,
+        ),
       };
     }
   }
@@ -370,5 +393,29 @@ export class DatabaseWrapper implements IDatabase {
 
   async deleteErrorLog(id: string): Promise<void> {
     return this.db.deleteErrorLog(id);
+  }
+
+  // Score Events
+  async createScoreEvent(event: ScoreEvent): Promise<void> {
+    return this.db.createScoreEvent(event);
+  }
+
+  async getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null> {
+    return this.db.getLatestScoreEvent(delegatee);
+  }
+
+  // Add the new transaction type methods to the class
+  async getTransactionQueueItemsByType(
+    type: TransactionType,
+    status?: TransactionQueueStatus,
+  ): Promise<TransactionQueueItem[]> {
+    return this.db.getTransactionQueueItemsByType(type, status);
+  }
+
+  async getTransactionQueueItemsByTypeAndStatus(
+    type: TransactionType,
+    status: TransactionQueueStatus,
+  ): Promise<TransactionQueueItem[]> {
+    return this.db.getTransactionQueueItemsByTypeAndStatus(type, status);
   }
 }

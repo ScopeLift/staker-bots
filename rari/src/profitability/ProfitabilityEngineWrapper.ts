@@ -25,6 +25,7 @@ import {
   TransactionQueueStatus,
 } from '@/database/interfaces/types';
 import { ErrorLogger } from '@/configuration/errorLogger';
+import { TransactionType } from '@/database/interfaces/types';
 
 // Add component type constant
 const PROFITABILITY_COMPONENT = {
@@ -665,6 +666,7 @@ export class GovLstProfitabilityEngineWrapper
         deposit_id: firstDeposit.deposit_id.toString(),
         status: TransactionQueueStatus.PENDING,
         tx_data: JSON.stringify(txData),
+        transaction_type: TransactionType.CLAIM_AND_DISTRIBUTE,
       });
 
       this.logger.info('Created queue items:', {
@@ -867,6 +869,59 @@ export class GovLstProfitabilityEngineWrapper
 
       // Continue to next cycle
       this.logger.info('Skipping current cycle and continuing to next one');
+    }
+  }
+
+  /**
+   * Handle score event updates for a delegatee
+   * @param delegatee The delegatee address
+   * @param score The new score value
+   */
+  async onScoreEvent(delegatee: string, score: bigint): Promise<void> {
+    try {
+      this.logger.info('Processing score event', {
+        delegatee,
+        score: score.toString(),
+      });
+
+      // Get all deposits for this delegatee
+      const deposits = await this.db.getDepositsByDelegatee(delegatee);
+      if (!deposits.length) {
+        this.logger.info('No deposits found for delegatee', { delegatee });
+        return;
+      }
+
+      // Convert deposits and check profitability
+      const govLstDeposits = await Promise.all(
+        deposits.map((d) => this.convertToGovLstDeposit(d))
+      );
+
+      const profitabilityCheck = await this.checkGroupProfitability(govLstDeposits);
+      if (!profitabilityCheck.is_profitable) {
+        this.logger.info('Deposits not profitable after score update', {
+          delegatee,
+          depositCount: deposits.length,
+        });
+        return;
+      }
+
+      // Create queue items for profitable deposits
+      await this.createQueueItems(govLstDeposits, profitabilityCheck);
+
+      this.logger.info('Successfully processed score event', {
+        delegatee,
+        depositCount: deposits.length,
+        profitable: profitabilityCheck.is_profitable,
+      });
+    } catch (error) {
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'onScoreEvent',
+          delegatee,
+          score: score.toString(),
+        });
+      }
+      throw error;
     }
   }
 

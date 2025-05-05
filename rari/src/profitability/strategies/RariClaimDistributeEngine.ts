@@ -1,3 +1,5 @@
+import { ethers } from 'ethers'
+import { ConsoleLogger, Logger } from '@/monitor/logging'
 import { IProfitabilityEngine } from '../interfaces/IProfitabilityEngine'
 import { IExecutor } from '../../executor/interfaces/IExecutor'
 import { IDatabase } from '../../database/interfaces/IDatabase'
@@ -5,63 +7,93 @@ import { BaseProfitabilityEngine } from './BaseProfitabilityEngine'
 import { Deposit, ProcessingQueueItem } from '../../database/interfaces/types'
 import { ProfitabilityQueueBatchResult, ProfitabilityQueueResult } from '../interfaces/types'
 import { CONFIG } from '../../configuration'
-import Web3 from 'web3'
-import { GasCostEstimator } from '../../prices/GasCostEstimator'
-import { CoinmarketcapFeed } from '../../prices/CoinmarketcapFeed'
-import { Contract } from 'web3-eth-contract'
+import { IPriceFeed } from '../../shared/price-feeds/interfaces'
+import { ProfitabilityConfig } from '../interfaces/types'
+import { BinaryEligibilityOracleEarningPowerCalculator } from '@/calculator'
 
 export class RariClaimDistributeEngine extends BaseProfitabilityEngine implements IProfitabilityEngine {
-  private web3: Web3
-  private lstToken: Contract
-  private stakerContract: Contract
-  private gasCostEstimator: GasCostEstimator
-  private priceFeed: CoinmarketcapFeed
-  private logger: any
+  private readonly lstToken: ethers.Contract & {
+    getUnclaimedRewards(): Promise<bigint>
+  }
+  protected readonly database: IDatabase
+  protected readonly executor: IExecutor
+  protected readonly stakerContract: ethers.Contract & {
+    deposits(depositId: bigint): Promise<{
+      owner: string
+      balance: bigint
+      earningPower: bigint
+      delegatee: string
+      claimer: string
+    }>
+    unclaimedReward(depositId: bigint): Promise<bigint>
+    maxBumpTip(): Promise<bigint>
+    bumpEarningPower(
+      depositId: bigint,
+      tipReceiver: string,
+      tip: bigint,
+    ): Promise<bigint>
+    REWARD_TOKEN(): Promise<string>
+  }
 
   constructor({
     database,
     executor,
-    web3,
+    calculator,
+    stakerContract,
+    provider,
+    config,
     priceFeed,
-    logger,
   }: {
     database: IDatabase
     executor: IExecutor
-    web3: Web3
-    priceFeed: CoinmarketcapFeed
-    logger: any
+    calculator: BinaryEligibilityOracleEarningPowerCalculator
+    stakerContract: ethers.Contract & {
+      deposits(depositId: bigint): Promise<{
+        owner: string
+        balance: bigint
+        earningPower: bigint
+        delegatee: string
+        claimer: string
+      }>
+      unclaimedReward(depositId: bigint): Promise<bigint>
+      maxBumpTip(): Promise<bigint>
+      bumpEarningPower(
+        depositId: bigint,
+        tipReceiver: string,
+        tip: bigint,
+      ): Promise<bigint>
+      REWARD_TOKEN(): Promise<string>
+    }
+    provider: ethers.Provider
+    config: ProfitabilityConfig
+    priceFeed: IPriceFeed
   }) {
-    super({ database, executor })
-    this.web3 = web3
-    this.priceFeed = priceFeed
-    this.logger = logger
-    this.gasCostEstimator = new GasCostEstimator({ web3: this.web3 })
+    super(calculator, stakerContract, provider, config, priceFeed)
+    this.database = database
+    this.executor = executor
+    this.stakerContract = stakerContract
 
-    // Initialize contracts
-    this.lstToken = new this.web3.eth.Contract(
-      JSON.parse(CONFIG.LST_ABI),
-      CONFIG.LST_ADDRESS
-    )
-
-    this.stakerContract = new this.web3.eth.Contract(
-      JSON.parse(CONFIG.STAKER_CONTRACT_ABI),
-      CONFIG.STAKER_CONTRACT_ADDRESS
-    )
+    // Initialize LST contract
+    this.lstToken = new ethers.Contract(
+      CONFIG.LST_ADDRESS,
+      CONFIG.LST_ABI,
+      provider
+    ) as ethers.Contract & {
+      getUnclaimedRewards(): Promise<bigint>
+    }
   }
 
   async processItem({ item }: { item: ProcessingQueueItem }): Promise<ProfitabilityQueueResult> {
     try {
-      const deposit = await this.database.getDeposit({
-        depositId: item.depositId,
-      })
+      const deposit = await this.database.getDeposit(item.deposit_id)
 
       if (!deposit) {
-        throw new Error(`Deposit ${item.depositId} not found`)
+        throw new Error(`Deposit ${item.deposit_id} not found`)
       }
 
       this.logger.info('Processing claim and distribute for deposit', {
-        depositId: deposit.depositId,
-        ownerAddress: deposit.ownerAddress,
+        depositId: deposit.deposit_id,
+        ownerAddress: deposit.owner_address,
       })
 
       const isClaimProfitable = await this.isClaimProfitable()
@@ -80,14 +112,7 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
       // Queue the transaction
       const tx = {
         to: CONFIG.LST_ADDRESS,
-        data: this.web3.eth.abi.encodeFunctionCall(
-          {
-            name: 'claimAndDistributeReward',
-            type: 'function',
-            inputs: [],
-          },
-          []
-        ),
+        data: this.lstToken.interface.encodeFunctionData('claimAndDistributeReward', []),
         gasLimit: CONFIG.CLAIM_GAS_LIMIT || '500000',
       }
 
@@ -96,13 +121,29 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
         rewardAmount: isClaimProfitable.rewardAmount,
       })
 
-      await this.executor.queueTransaction({
-        tx,
-        metadata: {
-          type: 'claim_and_distribute',
-          rewardAmount: isClaimProfitable.rewardAmount!.toString(),
+      await this.executor.queueTransaction(
+        [BigInt(deposit.deposit_id)],
+        {
+          is_profitable: true,
+          constraints: {
+            has_enough_shares: true,
+            meets_min_reward: true,
+            meets_min_profit: true
+          },
+          estimates: {
+            total_shares: BigInt(deposit.amount),
+            payout_amount: isClaimProfitable.rewardAmount!,
+            gas_estimate: BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000'),
+            gas_cost: BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000'),
+            expected_profit: isClaimProfitable.rewardAmount!
+          },
+          deposit_details: [{
+            depositId: BigInt(deposit.deposit_id),
+            rewards: isClaimProfitable.rewardAmount!
+          }]
         },
-      })
+        tx.data
+      )
 
       return {
         success: true,
@@ -114,7 +155,7 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
     } catch (error) {
       this.logger.error('Error processing claim and distribute', {
         itemId: item.id,
-        depositId: item.depositId,
+        depositId: item.deposit_id,
         error: (error as Error).message,
         stack: (error as Error).stack,
       })
@@ -145,7 +186,7 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
         notProfitable: deposits.length,
         errors: 0,
         details: deposits.map(deposit => ({
-          depositId: deposit.depositId,
+          depositId: deposit.deposit_id,
           result: 'not_profitable',
           details: { reason: isClaimProfitable.reason },
         })),
@@ -155,25 +196,34 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
     // If profitable, queue one transaction
     const tx = {
       to: CONFIG.LST_ADDRESS,
-      data: this.web3.eth.abi.encodeFunctionCall(
-        {
-          name: 'claimAndDistributeReward',
-          type: 'function',
-          inputs: [],
-        },
-        []
-      ),
+      data: this.lstToken.interface.encodeFunctionData('claimAndDistributeReward', []),
       gasLimit: CONFIG.CLAIM_GAS_LIMIT || '500000',
     }
 
     try {
-      await this.executor.queueTransaction({
-        tx,
-        metadata: {
-          type: 'claim_and_distribute',
-          rewardAmount: isClaimProfitable.rewardAmount!.toString(),
+      await this.executor.queueTransaction(
+        deposits.map(d => BigInt(d.deposit_id)),
+        {
+          is_profitable: true,
+          constraints: {
+            has_enough_shares: true,
+            meets_min_reward: true,
+            meets_min_profit: true
+          },
+          estimates: {
+            total_shares: deposits.reduce((sum, d) => sum + BigInt(d.amount), 0n),
+            payout_amount: isClaimProfitable.rewardAmount!,
+            gas_estimate: BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000'),
+            gas_cost: BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000'),
+            expected_profit: isClaimProfitable.rewardAmount!
+          },
+          deposit_details: deposits.map(d => ({
+            depositId: BigInt(d.deposit_id),
+            rewards: isClaimProfitable.rewardAmount!
+          }))
         },
-      })
+        tx.data
+      )
 
       return {
         success: true,
@@ -225,20 +275,19 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
       }
 
       // Get current gas price
-      const gasPrice = await this.web3.eth.getGasPrice()
-      const gasPriceBigInt = BigInt(gasPrice)
+      const feeData = await this.provider.getFeeData()
+      if (!feeData.gasPrice) {
+        throw new Error('Failed to get gas price')
+      }
+      const gasPriceBigInt = BigInt(feeData.gasPrice.toString())
       
       // Estimate gas cost for claim transaction
       const gasLimit = BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000')
       const gasCost = gasPriceBigInt * gasLimit
 
       // Get token prices for profitability calculation
-      const ethUsdPrice = await this.priceFeed.getEthPrice()
-      const tokenUsdPrice = await this.priceFeed.getTokenPrice({
-        tokenAddress: CONFIG.LST_ADDRESS,
-      })
-
-      if (!ethUsdPrice || !tokenUsdPrice) {
+      const tokenPrice = await this.priceFeed.getTokenPrice(CONFIG.LST_ADDRESS)
+      if (!tokenPrice) {
         return {
           profitable: false,
           reason: 'Could not get price data',
@@ -246,8 +295,10 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
       }
 
       // Convert gas cost to token equivalent for comparison
-      const ethValueInUsd = Number(gasCost) * ethUsdPrice / 1e18
-      const gasCostInToken = BigInt(Math.ceil(ethValueInUsd / tokenUsdPrice * 1e18))
+      const gasCostInToken = await this.priceFeed.getTokenPriceInWei(
+        CONFIG.LST_ADDRESS,
+        gasCost
+      )
 
       // Check if profitable
       const profit = unclaimedRewards - gasCostInToken
@@ -280,9 +331,8 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
   private async getUnclaimedRewards(): Promise<bigint> {
     try {
       // Check for a view function on the LST contract that shows unclaimed rewards
-      // This will vary based on the specific contract implementation
-      const unclaimedRewards = await this.lstToken.methods.getUnclaimedRewards().call()
-      return BigInt(unclaimedRewards)
+      const unclaimedRewards = await this.lstToken.getUnclaimedRewards()
+      return BigInt(unclaimedRewards.toString())
     } catch (error) {
       this.logger.error('Error getting unclaimed rewards', {
         error: (error as Error).message,

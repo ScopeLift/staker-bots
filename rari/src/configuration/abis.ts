@@ -91,6 +91,7 @@ export const stakerAbi = [
   'function unclaimedReward(uint256 depositId) external view returns (uint256)',
   'function claimReward(uint256 depositId) external returns (uint256)',
   'function bump(uint256 depositId, uint256 tip, address tipReceiver) external returns (uint256)',
+  'function bumpEarningPower(uint256 depositId, address tipReceiver, uint256 tip) external returns (uint256)',
   'function totalSupply() external view returns (uint256)',
   'function symbol() external view returns (string)',
   'function balanceOf(address account) external view returns (uint256)',
@@ -113,18 +114,29 @@ export const RARI_ABIS = {
     {
       "inputs": [
         {
+          "internalType": "uint256",
+          "name": "depositId",
+          "type": "uint256"
+        },
+        {
           "internalType": "address",
-          "name": "account",
+          "name": "tipReceiver",
           "type": "address"
         },
         {
           "internalType": "uint256",
-          "name": "tipAmount",
+          "name": "tip",
           "type": "uint256"
         }
       ],
       "name": "bumpEarningPower",
-      "outputs": [],
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
       "stateMutability": "nonpayable",
       "type": "function"
     },

@@ -38,6 +38,7 @@ export const CONFIG = {
     obolTokenAddress: process.env.OBOL_TOKEN_ADDRESS || '',
     lstAddress: process.env.LST_ADDRESS || '',
     rewardNotifierAddress: process.env.REWARD_NOTIFIER_ADDRESS || '',
+    rewardCalculatorAddress: process.env.REWARD_CALCULATOR_ADDRESS || '',
     startBlock: parseInt(process.env.START_BLOCK || '0'),
     logLevel: (process.env.LOG_LEVEL || 'info') as
       | 'debug'
@@ -112,7 +113,9 @@ export const CONFIG = {
   },
   govlst: {
     address: process.env.LST_ADDRESS || '',
-    payoutAmount: BigInt(process.env.GOVLST_PAYOUT_AMOUNT || 0),
+    payoutAmount: process.env.GOVLST_PAYOUT_AMOUNT 
+      ? BigInt(process.env.GOVLST_PAYOUT_AMOUNT) 
+      : ethers.parseEther('0.1'), // Default to 0.1 token
     minProfitMargin: parseFloat(
       process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT || '10',
     ), // 10% minimum profit margin by default

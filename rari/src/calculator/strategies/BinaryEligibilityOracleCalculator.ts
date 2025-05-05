@@ -1,12 +1,11 @@
 import { ethers } from 'ethers'
 import { IDatabase } from '@/database'
-import { ScoreEvent as DBScoreEvent } from '@/database/interfaces/types'
 import { ConsoleLogger, Logger } from '@/monitor/logging'
-import { CONFIG } from '@/configuration/constants'
+import { CONFIG } from '@/configuration'
 import { REWARD_CALCULATOR_ABI, MAX_SCORE_CACHE_SIZE } from '../constants'
 import { ICalculatorStrategy } from '../interfaces/ICalculatorStrategy'
 import { IRewardCalculator, ScoreEvent } from '../interfaces/types'
-import { ProfitabilityEngineWrapper } from '@/profitability/ProfitabilityEngineWrapper'
+import { GovLstProfitabilityEngineWrapper } from '@/profitability/ProfitabilityEngineWrapper'
 
 // Default hash for empty blocks
 const DEFAULT_HASH = '0x0000000000000000000000000000000000000000000000000000000000000000'
@@ -21,7 +20,7 @@ function createBinaryEligibilityOracleCalculator(
   const logger = new ConsoleLogger('info')
   const scoreCache = new Map<string, bigint>()
   let lastProcessedBlock = 0
-  let profitabilityEngine: ProfitabilityEngineWrapper | null = null
+  let profitabilityEngine: GovLstProfitabilityEngineWrapper | null = null
 
   // Initialize contract
   if (!CONFIG.monitor.rewardCalculatorAddress) {
@@ -37,7 +36,7 @@ function createBinaryEligibilityOracleCalculator(
   /**
    * Sets the profitability engine for score event notifications
    */
-  function setProfitabilityEngine(engine: ProfitabilityEngineWrapper): void {
+  function setProfitabilityEngine(engine: GovLstProfitabilityEngineWrapper): void {
     profitabilityEngine = engine
     logger.info('Profitability engine registered for score event notifications')
   }

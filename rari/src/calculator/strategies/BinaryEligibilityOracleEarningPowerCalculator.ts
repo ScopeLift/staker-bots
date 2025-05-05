@@ -3,9 +3,9 @@ import { ScoreEvent, IRewardCalculator } from '../interfaces/types';
 import { IDatabase } from '@/database';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { ethers } from 'ethers';
-import { CONFIG } from '@/configuration/constants';
+import { CONFIG } from '@/configuration';
 import { REWARD_CALCULATOR_ABI } from '../constants';
-import { ProfitabilityEngineWrapper } from '@/profitability/ProfitabilityEngineWrapper';
+import { GovLstProfitabilityEngineWrapper } from '@/profitability';
 
 export class BinaryEligibilityOracleEarningPowerCalculator
   implements ICalculatorStrategy
@@ -16,7 +16,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   private readonly contract: IRewardCalculator;
   private readonly provider: ethers.Provider;
   private lastProcessedBlock: number;
-  private profitabilityEngine: ProfitabilityEngineWrapper | null = null;
+  private profitabilityEngine: GovLstProfitabilityEngineWrapper | null = null;
 
   constructor(db: IDatabase, provider: ethers.Provider) {
     this.db = db;
@@ -39,7 +39,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   /**
    * Set the profitability engine for score event notifications
    */
-  setProfitabilityEngine(engine: ProfitabilityEngineWrapper): void {
+  setProfitabilityEngine(engine: GovLstProfitabilityEngineWrapper): void {
     this.profitabilityEngine = engine;
     this.logger.info(
       'Profitability engine registered for score event notifications',
@@ -202,6 +202,8 @@ export class BinaryEligibilityOracleEarningPowerCalculator
           delegatee,
           score: BigInt(newScore.toString()),
           block_number: typedEvent.blockNumber,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         });
       }
 
@@ -248,6 +250,8 @@ export class BinaryEligibilityOracleEarningPowerCalculator
       await this.db.createScoreEvent({
         ...event,
         score: event.score.toString(), // Convert bigint to string for database
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
 
       // Notify profitability engine about the score event if it's set

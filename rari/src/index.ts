@@ -3,7 +3,7 @@ import { CONFIG } from './configuration';
 import { ConsoleLogger, Logger } from './monitor/logging';
 import { StakerMonitor } from './monitor/StakerMonitor';
 import { createMonitorConfig } from './monitor/constants';
-import { stakerAbi, RARI_ABIS } from './configuration/abis';
+import { stakerAbi } from './configuration/abis';
 import { ExecutorWrapper, ExecutorType } from './executor';
 import { IExecutor } from './executor/interfaces/IExecutor';
 import { GovLstProfitabilityEngineWrapper } from './profitability';
@@ -17,7 +17,6 @@ import {
 import { RariBumpEarningPowerEngine } from './profitability/strategies/RariBumpEarningPowerEngine';
 import { RariClaimDistributeEngine } from './profitability/strategies/RariClaimDistributeEngine';
 import { CalculatorWrapper } from './calculator/CalculatorWrapper';
-import Web3 from 'web3';
 import { CoinMarketCapFeed } from './prices/CoinmarketcapFeed';
 import { BinaryEligibilityOracleEarningPowerCalculator } from './calculator';
 
@@ -299,7 +298,7 @@ async function initializeExecutor(
       : {
           wallet: {
             privateKey: CONFIG.executor.privateKey,
-            minBalance: ethers.parseEther('0.01'),
+            minBalance: ethers.parseEther('0'),
             maxPendingTransactions: 5,
           },
           defaultTipReceiver: CONFIG.executor.tipReceiver,
@@ -438,16 +437,131 @@ async function initializeCalculator(
 ): Promise<CalculatorWrapper> {
   logger.info('Initializing Rari Earning Power Calculator...');
 
-  // Create Web3 instance
-  const web3 = new Web3(CONFIG.monitor.rpcUrl);
-
-  // Create calculator wrapper
+  // Create provider instance
   const provider = createProvider();
+  
+  // Create calculator wrapper
   const calculatorWrapper = new CalculatorWrapper(
     database,
     provider,
     { type: 'binary' }
   );
+
+  // Start calculator
+  await calculatorWrapper.start();
+  logger.info('Calculator started successfully');
+
+  // Process initial events
+  const currentBlock = await provider.getBlockNumber();
+  const lastCheckpoint = await database.getCheckpoint('calculator');
+  const initialFromBlock = lastCheckpoint?.last_block_number
+    ? lastCheckpoint.last_block_number + 1
+    : CONFIG.monitor.startBlock;
+
+  const initialToBlock = Math.min(
+    currentBlock - CONFIG.monitor.confirmations,
+    initialFromBlock + CONFIG.monitor.maxBlockRange
+  );
+
+  if (initialToBlock > initialFromBlock) {
+    logger.info('Processing initial score events...', {
+      fromBlock: initialFromBlock,
+      toBlock: initialToBlock,
+      rewardCalculatorAddress: CONFIG.monitor.rewardCalculatorAddress,
+    });
+
+    await calculatorWrapper.processScoreEvents(initialFromBlock, initialToBlock);
+    
+    // Update checkpoint
+    const block = await provider.getBlock(initialToBlock);
+    if (!block) throw new Error(`Block ${initialToBlock} not found`);
+
+    await database.updateCheckpoint({
+      component_type: 'calculator',
+      last_block_number: initialToBlock,
+      block_hash: block.hash || '0x0000000000000000000000000000000000000000000000000000000000000000',
+      last_update: new Date().toISOString(),
+    });
+    
+    logger.info('Initial score events processed successfully');
+  }
+
+  // Set up periodic processing
+  const processInterval = setInterval(async () => {
+    try {
+      const status = await calculatorWrapper.getStatus();
+      if (!status.isRunning) {
+        logger.info('Calculator stopped, clearing interval');
+        clearInterval(processInterval);
+        return;
+      }
+
+      const currentBlock = await provider.getBlockNumber();
+      const lastCheckpoint = await database.getCheckpoint('calculator');
+      if (!lastCheckpoint) {
+        logger.error('No checkpoint found for calculator');
+        return;
+      }
+
+      const fromBlock = lastCheckpoint.last_block_number + 1;
+      const toBlock = Math.min(
+        currentBlock - CONFIG.monitor.confirmations,
+        fromBlock + CONFIG.monitor.maxBlockRange
+      );
+
+      if (toBlock > fromBlock) {
+        logger.info('Processing new score events...', {
+          fromBlock,
+          toBlock,
+          rewardCalculatorAddress: CONFIG.monitor.rewardCalculatorAddress,
+          lastProcessedBlock: lastCheckpoint.last_block_number,
+        });
+        
+        await calculatorWrapper.processScoreEvents(fromBlock, toBlock);
+
+        // Update checkpoint
+        const block = await provider.getBlock(toBlock);
+        if (!block) throw new Error(`Block ${toBlock} not found`);
+
+        await database.updateCheckpoint({
+          component_type: 'calculator',
+          last_block_number: toBlock,
+          block_hash: block.hash || '0x0000000000000000000000000000000000000000000000000000000000000000',
+          last_update: new Date().toISOString(),
+        });
+
+        logger.info('Score events processed successfully', {
+          fromBlock,
+          toBlock,
+          processedBlocks: toBlock - fromBlock + 1,
+        });
+      }
+    } catch (error) {
+      await errorLogger.error(error as Error, {
+        context: 'calculator-process-events',
+      });
+    }
+  }, CONFIG.monitor.pollInterval * 1000);
+
+  // Set up health check interval
+  setInterval(async () => {
+    try {
+      const status = await calculatorWrapper.getStatus();
+      const currentBlock = await provider.getBlockNumber();
+      const lastCheckpoint = await database.getCheckpoint('calculator');
+      
+      logger.info('Calculator health check:', {
+        isRunning: status.isRunning,
+        lastProcessedBlock: lastCheckpoint?.last_block_number ?? status.lastProcessedBlock,
+        currentBlock,
+        processingLag: currentBlock - (lastCheckpoint?.last_block_number ?? status.lastProcessedBlock),
+      });
+    } catch (error) {
+      await errorLogger.error(error as Error, {
+        context: 'calculator-health-check',
+      });
+    }
+  }, CONFIG.monitor.healthCheckInterval * 1000);
 
   logger.info('Calculator initialized successfully');
   return calculatorWrapper;
@@ -462,9 +576,6 @@ async function initializeRariBumpEarningPowerEngine(
   errorLogger: ErrorLogger,
 ): Promise<RariBumpEarningPowerEngine> {
   logger.info('Initializing Rari Bump Earning Power Engine...');
-
-  // Create Web3 instance
-  const web3 = new Web3(CONFIG.monitor.rpcUrl);
 
   // Create provider instance for contracts
   const provider = createProvider();
@@ -484,7 +595,6 @@ async function initializeRariBumpEarningPowerEngine(
     database,
     executor,
     calculatorWrapper,
-    web3,
     calculator: calculatorWrapper as unknown as BinaryEligibilityOracleEarningPowerCalculator,
     stakerContract: new ethers.Contract(
       CONFIG.monitor.stakerAddress,
@@ -531,24 +641,60 @@ async function initializeRariClaimDistributeEngine(
 ): Promise<RariClaimDistributeEngine> {
   logger.info('Initializing Rari Claim and Distribute Engine...');
 
-  // Create Web3 instance
-  const web3 = new Web3(CONFIG.monitor.rpcUrl);
+  // Create provider instance
+  const provider = createProvider();
+
+  // Create calculator wrapper
+  const calculatorWrapper = new CalculatorWrapper(
+    database,
+    provider,
+    { type: 'binary' }
+  );
 
   // Create price feed
   const priceFeed = new CoinMarketCapFeed({
+    baseUrl: 'https://pro-api.coinmarketcap.com',
     apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
     rewardToken: CONFIG.govlst.address,
     gasToken: ethers.ZeroAddress,
-    errorLogger: profitabilityErrorLogger
+    errorLogger: profitabilityErrorLogger,
+    timeout: 5000
   }, profitabilityLogger);
 
   // Create Rari Claim and Distribute Engine
   const claimDistributeEngine = new RariClaimDistributeEngine({
     database,
     executor,
-    web3,
-    priceFeed,
-    logger,
+    calculator: calculatorWrapper as unknown as BinaryEligibilityOracleEarningPowerCalculator,
+    stakerContract: new ethers.Contract(
+      CONFIG.monitor.stakerAddress,
+      stakerAbi,
+      provider
+    ) as unknown as ethers.Contract & {
+      deposits(depositId: bigint): Promise<{
+        owner: string;
+        balance: bigint;
+        earningPower: bigint;
+        delegatee: string;
+        claimer: string;
+      }>;
+      unclaimedReward(depositId: bigint): Promise<bigint>;
+      maxBumpTip(): Promise<bigint>;
+      bumpEarningPower(depositId: bigint, tipReceiver: string, tip: bigint): Promise<bigint>;
+      REWARD_TOKEN(): Promise<string>;
+    },
+    provider,
+    config: {
+      rewardTokenAddress: CONFIG.govlst.address,
+      defaultTipReceiver: CONFIG.executor.tipReceiver || ethers.ZeroAddress,
+      minProfitMargin: CONFIG.govlst.minProfitMargin,
+      gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,
+      maxBatchSize: CONFIG.govlst.maxBatchSize,
+      priceFeed: {
+        cacheDuration: CONFIG.profitability.priceFeed.cacheDuration
+      }
+    },
+    priceFeed
   });
 
   logger.info('Rari Claim and Distribute Engine initialized successfully');

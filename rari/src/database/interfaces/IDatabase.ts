@@ -7,6 +7,8 @@ import {
   TransactionQueueStatus,
   GovLstClaimHistory,
   ErrorLog,
+  ScoreEvent,
+  TransactionType,
 } from './types';
 
 export interface IDatabase {
@@ -70,6 +72,15 @@ export interface IDatabase {
   ): Promise<TransactionQueueItem | null>;
   getTransactionQueueItemsByHash(hash: string): Promise<TransactionQueueItem[]>;
   deleteTransactionQueueItem(id: string): Promise<void>;
+  // New methods for transaction types
+  getTransactionQueueItemsByType(
+    type: TransactionType,
+    status?: TransactionQueueStatus,
+  ): Promise<TransactionQueueItem[]>;
+  getTransactionQueueItemsByTypeAndStatus(
+    type: TransactionType,
+    status: TransactionQueueStatus,
+  ): Promise<TransactionQueueItem[]>;
 
   // GovLst Claim History
   createGovLstClaimHistory(
@@ -100,4 +111,8 @@ export interface IDatabase {
     offset?: number,
   ): Promise<ErrorLog[]>;
   deleteErrorLog(id: string): Promise<void>;
+
+  // Score Events
+  createScoreEvent(event: ScoreEvent): Promise<void>;
+  getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null>;
 }

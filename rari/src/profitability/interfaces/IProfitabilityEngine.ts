@@ -51,6 +51,13 @@ export interface IGovLstProfitabilityEngine {
   analyzeAndGroupDeposits(
     deposits: GovLstDeposit[],
   ): Promise<GovLstBatchAnalysis>;
+
+  /**
+   * Handle score event updates for a delegatee
+   * @param delegatee The delegatee address
+   * @param score The new score value
+   */
+  onScoreEvent(delegatee: string, score: bigint): Promise<void>;
 }
 
 export interface IProfitabilityEngine {

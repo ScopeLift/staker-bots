@@ -19,10 +19,12 @@ import {
 } from '@/configuration/errors';
 import { ErrorLogger } from '@/configuration/errorLogger';
 import {
-  serializeProfitabilityCheck,
   getCurrentBlockNumberWithRetry,
   sleep,
 } from './strategies/helpers';
+import { QueueManager } from './QueueManager';
+import { TransactionType, TransactionQueueStatus } from '@/database/interfaces/types';
+import { TransactionStatus } from './interfaces/types';
 
 // Basic sleep function implementation if not available in utils
 // const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -52,6 +54,8 @@ export interface ExtendedRelayerExecutorConfig extends RelayerExecutorConfig {
  */
 export class ExecutorWrapper {
   private executor: IExecutor;
+  private bumpQueue: QueueManager;
+  private claimQueue: QueueManager;
   private readonly logger: Logger;
   private readonly errorLogger?: ErrorLogger;
   private isRunning = false;
@@ -87,6 +91,10 @@ export class ExecutorWrapper {
         { contract: lstContract },
         false,
       );
+    }
+
+    if (!this.db) {
+      throw new ExecutorError('Database instance is required', {}, false);
     }
 
     this.logger = new ConsoleLogger('info');
@@ -131,9 +139,12 @@ export class ExecutorWrapper {
     }
 
     // Set database if provided
-    if (db && this.executor.setDatabase) {
-      this.executor.setDatabase(db);
+    if (this.executor.setDatabase) {
+      this.executor.setDatabase(this.db);
     }
+
+    this.bumpQueue = new QueueManager(TransactionType.BUMP, this.db);
+    this.claimQueue = new QueueManager(TransactionType.CLAIM_AND_DISTRIBUTE, this.db);
   }
 
   /**
@@ -352,13 +363,15 @@ export class ExecutorWrapper {
    * @param depositIds - Array of deposit IDs to claim rewards for
    * @param profitability - Profitability check results
    * @param txData - Optional transaction data
+   * @param transactionType - Type of transaction
    * @returns Queued transaction object
    */
   async queueTransaction(
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
     txData?: string,
-  ): Promise<QueuedTransaction | null> {
+    transactionType: TransactionType = TransactionType.BUMP,
+  ): Promise<QueuedTransaction> {
     if (!this.isRunning) {
       const error = new ExecutorError('Executor is not running', {
         depositIds: depositIds.map((id) => id.toString()),
@@ -373,97 +386,34 @@ export class ExecutorWrapper {
 
       throw error;
     }
+
     try {
-      // Parse txData if it's a string and contains profitability data
-      let processedProfitability = profitability;
-      if (txData) {
-        try {
-          const parsedData = JSON.parse(txData);
-          if (parsedData.profitability) {
-            processedProfitability = serializeProfitabilityCheck(
-              parsedData.profitability,
-            );
-          }
-        } catch (parseError) {
-          this.logger.error('Failed to parse txData', {
-            error:
-              parseError instanceof Error
-                ? parseError.message
-                : String(parseError),
-            txData,
-          });
+      // Choose the appropriate queue based on transaction type
+      const queue = transactionType === TransactionType.BUMP
+        ? this.bumpQueue
+        : this.claimQueue;
 
-          if (this.errorLogger) {
-            await this.errorLogger.warn(parseError as Error, {
-              context: 'parse-tx-data',
-              txData,
-            });
-          }
-        }
-      }
+      const queueItem = await queue.addTransaction(depositIds, profitability, txData);
 
-      const currentBlock = await getCurrentBlockNumberWithRetry(
-        this.provider,
-        this.logger,
-      );
-      const result = await this.executor.queueTransaction(
+      // Convert QueueItem to QueuedTransaction
+      const queuedTransaction: QueuedTransaction = {
+        id: queueItem.id,
         depositIds,
-        processedProfitability,
-        txData,
-      );
+        profitability,
+        status: this.mapQueueStatus(queueItem.status),
+        createdAt: new Date(queueItem.created_at),
+        hash: queueItem.hash,
+        tx_data: queueItem.tx_data,
+        metadata: {
+          queueItemId: queueItem.id,
+          depositIds: depositIds.map(String),
+        },
+      };
 
       // Update checkpoint after successful transaction queueing
-      if (currentBlock > this.lastProcessedBlock) {
-        let block: ethers.Block | null = null;
-        for (let i = 0; i < 3; i++) {
-          try {
-            block = await this.provider.getBlock(currentBlock);
-            if (block) break;
-          } catch (blockError) {
-            this.logger.warn(
-              `Failed to get block details for ${currentBlock} (attempt ${i + 1}/3)`,
-              { error: blockError },
-            );
+      await this.updateCheckpoint();
 
-            if (this.errorLogger) {
-              await this.errorLogger.warn(blockError as Error, {
-                context: 'get-block-details',
-                blockNumber: currentBlock,
-                attempt: i + 1,
-              });
-            }
-
-            await sleep(500 * (i + 1));
-          }
-        }
-        if (!block) {
-          const blockError = new Error(
-            `Block ${currentBlock} not found after retries`,
-          );
-          this.logger.error(
-            `Block ${currentBlock} not found after retries. Cannot update checkpoint.`,
-          );
-
-          if (this.errorLogger) {
-            await this.errorLogger.error(blockError, {
-              context: 'update-checkpoint-block-not-found',
-              blockNumber: currentBlock,
-            });
-          }
-
-          throw blockError;
-        }
-
-        await this.db?.updateCheckpoint({
-          component_type: 'executor',
-          last_block_number: currentBlock,
-          block_hash: block.hash!,
-          last_update: new Date().toISOString(),
-        });
-        this.lastProcessedBlock = currentBlock;
-      }
-
-      return result;
+      return queuedTransaction;
     } catch (error) {
       if (
         this.type === ExecutorType.DEFENDER &&
@@ -503,13 +453,53 @@ export class ExecutorWrapper {
     }
   }
 
+  private mapQueueStatus(status: TransactionQueueStatus): TransactionStatus {
+    switch (status) {
+      case TransactionQueueStatus.PENDING:
+        return TransactionStatus.QUEUED;
+      case TransactionQueueStatus.SUBMITTED:
+        return TransactionStatus.PENDING;
+      case TransactionQueueStatus.CONFIRMED:
+        return TransactionStatus.CONFIRMED;
+      case TransactionQueueStatus.FAILED:
+        return TransactionStatus.FAILED;
+      default:
+        return TransactionStatus.QUEUED;
+    }
+  }
+
   /**
    * Gets statistics about the transaction queue
    * @returns Queue statistics
    */
   async getQueueStats(): Promise<QueueStats> {
     try {
-      return await this.executor.getQueueStats();
+      const [bumpStats, claimStats] = await Promise.all([
+        this.bumpQueue.getQueueStats(),
+        this.claimQueue.getQueueStats(),
+      ]);
+
+      return {
+        totalItems: bumpStats.total + claimStats.total,
+        pendingItems: bumpStats.pending + claimStats.pending,
+        failedItems: bumpStats.failed + claimStats.failed,
+        byType: {
+          [TransactionType.BUMP]: {
+            total: bumpStats.total,
+            pending: bumpStats.pending,
+            submitted: bumpStats.submitted,
+            confirmed: bumpStats.confirmed,
+            failed: bumpStats.failed,
+          },
+          [TransactionType.CLAIM_AND_DISTRIBUTE]: {
+            total: claimStats.total,
+            pending: claimStats.pending,
+            submitted: claimStats.submitted,
+            confirmed: claimStats.confirmed,
+            failed: claimStats.failed,
+          },
+        },
+      };
     } catch (error) {
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
@@ -621,6 +611,64 @@ export class ExecutorWrapper {
         { error: error instanceof Error ? error.message : String(error) },
         true,
       );
+    }
+  }
+
+  private async updateCheckpoint(): Promise<void> {
+    const currentBlock = await getCurrentBlockNumberWithRetry(
+      this.provider,
+      this.logger,
+    );
+
+    if (currentBlock > this.lastProcessedBlock) {
+      let block: ethers.Block | null = null;
+      for (let i = 0; i < 3; i++) {
+        try {
+          block = await this.provider.getBlock(currentBlock);
+          if (block) break;
+        } catch (blockError) {
+          this.logger.warn(
+            `Failed to get block details for ${currentBlock} (attempt ${i + 1}/3)`,
+            { error: blockError },
+          );
+
+          if (this.errorLogger) {
+            await this.errorLogger.warn(blockError as Error, {
+              context: 'get-block-details',
+              blockNumber: currentBlock,
+              attempt: i + 1,
+            });
+          }
+
+          await sleep(500 * (i + 1));
+        }
+      }
+
+      if (!block) {
+        const blockError = new Error(
+          `Block ${currentBlock} not found after retries`,
+        );
+        this.logger.error(
+          `Block ${currentBlock} not found after retries. Cannot update checkpoint.`,
+        );
+
+        if (this.errorLogger) {
+          await this.errorLogger.error(blockError, {
+            context: 'update-checkpoint-block-not-found',
+            blockNumber: currentBlock,
+          });
+        }
+
+        throw blockError;
+      }
+
+      await this.db?.updateCheckpoint({
+        component_type: 'executor',
+        last_block_number: currentBlock,
+        block_hash: block.hash!,
+        last_update: new Date().toISOString(),
+      });
+      this.lastProcessedBlock = currentBlock;
     }
   }
 }

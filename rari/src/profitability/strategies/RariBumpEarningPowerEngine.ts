@@ -7,7 +7,6 @@ import { Deposit, ProcessingQueueItem } from '../../database/interfaces/types'
 import { ProfitabilityQueueBatchResult, ProfitabilityQueueResult } from '../interfaces/types'
 import { ConsoleLogger } from '../../monitor/logging'
 import { CONFIG } from '../../configuration'
-import Web3 from 'web3'
 import { GasCostEstimator } from '../../prices/GasCostEstimator'
 import { ethers } from 'ethers'
 import { BinaryEligibilityOracleEarningPowerCalculator } from '../../calculator'
@@ -19,7 +18,6 @@ const logger = new ConsoleLogger('info', { prefix: 'RariBumpEarningPowerEngine' 
 export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implements IProfitabilityEngine {
   private calculatorWrapper: CalculatorWrapper
   private gasCostEstimator: GasCostEstimator
-  private web3: Web3
   protected database: IDatabase
   protected executor: IExecutor
 
@@ -27,7 +25,6 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
     database,
     executor,
     calculatorWrapper,
-    web3,
     calculator,
     stakerContract,
     provider,
@@ -40,7 +37,6 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
     database: IDatabase
     executor: IExecutor
     calculatorWrapper: CalculatorWrapper
-    web3: Web3
     calculator: BinaryEligibilityOracleEarningPowerCalculator
     stakerContract: ethers.Contract & {
       deposits(depositId: bigint): Promise<{
@@ -68,7 +64,6 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
   }) {
     super(calculator, stakerContract, provider, config, priceFeed)
     this.calculatorWrapper = calculatorWrapper
-    this.web3 = web3
     this.gasCostEstimator = new GasCostEstimator()
     this.database = database
     this.executor = executor
@@ -103,19 +98,20 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
       }
 
       // Queue the transaction
+      // Create transaction data using ethers instead of web3
+      const bumpEarningPowerInterface = new ethers.Interface([
+        "function bumpEarningPower(uint256 depositId, address tipReceiver, uint256 tip)"
+      ]);
+      
+      const data = bumpEarningPowerInterface.encodeFunctionData("bumpEarningPower", [
+        deposit.deposit_id,
+        CONFIG.executor.tipReceiver || ethers.ZeroAddress,
+        isBumpProfitable.tipAmount!
+      ]);
+
       const tx = {
         to: CONFIG.STAKER_CONTRACT_ADDRESS,
-        data: this.web3.eth.abi.encodeFunctionCall(
-          {
-            name: 'bumpEarningPower',
-            type: 'function',
-            inputs: [
-              { type: 'address', name: 'account' },
-              { type: 'uint256', name: 'tipAmount' },
-            ],
-          },
-          [deposit.owner_address, isBumpProfitable.tipAmount!.toString()]
-        ),
+        data,
         gasLimit: CONFIG.BUMP_GAS_LIMIT || '300000',
       }
 
@@ -204,20 +200,20 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
           continue
         }
 
-        // Queue the transaction
+        // Queue the transaction using ethers instead of web3
+        const bumpEarningPowerInterface = new ethers.Interface([
+          "function bumpEarningPower(uint256 depositId, address tipReceiver, uint256 tip)"
+        ]);
+        
+        const data = bumpEarningPowerInterface.encodeFunctionData("bumpEarningPower", [
+          deposit.deposit_id,
+          CONFIG.executor.tipReceiver || ethers.ZeroAddress,
+          isBumpProfitable.tipAmount!
+        ]);
+
         const tx = {
           to: CONFIG.STAKER_CONTRACT_ADDRESS,
-          data: this.web3.eth.abi.encodeFunctionCall(
-            {
-              name: 'bumpEarningPower',
-              type: 'function',
-              inputs: [
-                { type: 'address', name: 'account' },
-                { type: 'uint256', name: 'tipAmount' },
-              ],
-            },
-            [deposit.owner_address, isBumpProfitable.tipAmount!.toString()]
-          ),
+          data,
           gasLimit: CONFIG.BUMP_GAS_LIMIT || '300000',
         }
 
@@ -305,9 +301,10 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
       let bestTip = 0n
       let profitable = false
 
-      // Get current gas price
-      const gasPrice = await this.web3.eth.getGasPrice()
-      const gasPriceBigInt = BigInt(gasPrice)
+      // Get current gas price using ethers instead of web3
+      const provider = this.stakerContract.runner?.provider || this.provider;
+      const feeData = await provider.getFeeData();
+      const gasPriceBigInt = feeData.gasPrice || BigInt('50000000000'); // 50 gwei default
       
       // Estimate gas cost for bump transaction
       const gasLimit = BigInt(CONFIG.BUMP_GAS_LIMIT || '300000')

@@ -11,6 +11,8 @@ import {
   TipOptimization,
 } from '../interfaces/types';
 import { BinaryEligibilityOracleEarningPowerCalculator } from '@/calculator';
+import { ProcessingQueueItem } from '../../database/interfaces/types';
+import { ProfitabilityQueueResult, ProfitabilityQueueBatchResult } from '../interfaces/types';
 
 export class BaseProfitabilityEngine implements IProfitabilityEngine {
   protected readonly logger: Logger;
@@ -415,7 +417,7 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       // Calculate optimal tip based on gas cost and minimum profit margin
       // Ensure tip doesn't exceed maxBumpTip
       const maxTip = BigInt(maxBumpTipValue.toString());
-      const desiredTip = baseCostInToken + this.config.minProfitMargin;
+      const desiredTip = baseCostInToken + BigInt(this.config.minProfitMargin);
       const optimalTip = desiredTip > maxTip ? maxTip : desiredTip;
 
       // Calculate expected profit
@@ -559,5 +561,19 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       completedCount: 0,
       failedCount: 0,
     };
+  }
+
+  async processItem({ item }: { item: ProcessingQueueItem }): Promise<ProfitabilityQueueResult> {
+    throw new Error('processItem must be implemented by derived class');
+  }
+
+  async processDepositsBatch({ deposits }: { deposits: { deposit_id: string; owner_address: string; delegatee_address: string; amount: string; earning_power?: string }[] }): Promise<ProfitabilityQueueBatchResult> {
+    const convertedDeposits = deposits.map(d => ({
+      ...d,
+      deposit_id: BigInt(d.deposit_id),
+      amount: BigInt(d.amount),
+      earning_power: d.earning_power ? BigInt(d.earning_power) : undefined
+    }));
+    throw new Error('processDepositsBatch must be implemented by derived class');
   }
 }

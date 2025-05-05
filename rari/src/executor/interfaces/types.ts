@@ -1,4 +1,5 @@
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
+import { TransactionType } from '@/database/interfaces/types';
 
 export interface WalletConfig {
   privateKey: string;
@@ -98,14 +99,22 @@ export interface TransactionReceipt {
   }>;
 }
 
+export interface QueueItemStats {
+  total: number;
+  pending: number;
+  submitted: number;
+  confirmed: number;
+  failed: number;
+  averageGasPrice?: bigint;
+  averageGasLimit?: bigint;
+  totalProfits?: bigint;
+}
+
 export interface QueueStats {
-  totalQueued: number;
-  totalPending: number;
-  totalConfirmed: number;
-  totalFailed: number;
-  averageGasPrice: bigint;
-  averageGasLimit: bigint;
-  totalProfits: bigint;
+  totalItems: number;
+  pendingItems: number;
+  failedItems: number;
+  byType: Record<TransactionType, QueueItemStats>;
 }
 
 export interface GovLstExecutorError extends Error {
