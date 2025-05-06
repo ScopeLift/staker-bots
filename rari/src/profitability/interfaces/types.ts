@@ -14,12 +14,15 @@ export type ProfitabilityCheck = {
     calculatorEligible: boolean;
     hasEnoughRewards: boolean;
     isProfitable: boolean;
+    hasScoreChanged?: boolean;
+    hasEarningPowerIncrease?: boolean;
   };
   estimates: {
     optimalTip: bigint;
     gasEstimate: bigint;
     expectedProfit: bigint;
     tipReceiver: string;
+    staticCallResult?: bigint;
   };
 };
 

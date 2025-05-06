@@ -291,6 +291,12 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
         }
       }
 
+      // Get MAX_BUMP_TIP value from the contract
+      const maxBumpTipValue = await this.stakerContract.maxBumpTip()
+      
+      // Get unclaimed rewards
+      const unclaimedRewards = await this.stakerContract.unclaimedReward(BigInt(deposit.deposit_id))
+
       // Calculate potential new earning power with a tip
       // Start with minimum tip and increase until profitable or hit max
       let tipAmount = BigInt(CONFIG.MIN_TIP_AMOUNT || '1000000000000000') // 0.001 ETH default
@@ -324,7 +330,19 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
           continue
         }
 
-        // Calculate score increase
+        // Check if this is a power decrease and if so, ensure there's enough for MAX_BUMP_TIP
+        const isEarningPowerDecrease = newScore < currentScore
+        
+        if (isEarningPowerDecrease) {
+          // For power decreases: (unclaimedRewards - tipAmount) must be >= maxBumpTip
+          if (unclaimedRewards - tipAmount < maxBumpTipValue) {
+            // This tip amount doesn't leave enough for MAX_BUMP_TIP
+            tipAmount += tipIncrement
+            continue
+          }
+        }
+
+        // Calculate score increase (could be negative)
         const scoreIncrease = newScore - currentScore
         
         // Calculate expected rewards from score increase

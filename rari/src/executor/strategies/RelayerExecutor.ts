@@ -40,6 +40,7 @@ import {
   processTransactionReceipt as processTransactionReceiptHelper,
   processQueue as processQueueHelper,
 } from './helpers';
+import { TransactionSimulator } from '../utils';
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -397,196 +398,56 @@ export class RelayerExecutor implements IExecutor {
         contractAddress: this.lstContract.target.toString(),
       });
 
-      const rewardTokenAbi = [
-        'function approve(address spender, uint256 amount) returns (bool)',
-        'function allowance(address owner, address spender) view returns (uint256)',
-      ] as const;
-
-      const rewardTokenContract = new ethers.Contract(
-        rewardTokenAddress,
-        rewardTokenAbi,
-        this.lstContract.runner,
-      ).connect(
-        this.relaySigner as unknown as ethers.Signer,
-      ) as ethers.Contract & {
-        approve(
-          spender: string,
-          amount: bigint,
-        ): Promise<ethers.ContractTransactionResponse>;
-        allowance(owner: string, spender: string): Promise<bigint>;
-      };
-
-      try {
-        // Get payout amount first to check against allowance
-        let payoutAmount: bigint;
-        try {
-          if (typeof this.lstContract.payoutAmount !== 'function') {
-            const error = new ContractMethodError('payoutAmount');
-            this.errorLogger.error(error, {
-              stage: 'executeTransaction',
-              txId: tx.id,
-              contractAddress: this.lstContract.target?.toString(),
-            });
-            throw error;
-          }
-
-          const rawPayoutAmount = await this.lstContract.payoutAmount();
-          this.logger.info('Raw payout amount details:', {
-            value: rawPayoutAmount,
-            type: typeof rawPayoutAmount,
-            stringified: String(rawPayoutAmount),
+      // Simulate the transaction before proceeding
+      const simulationResult = await this.simulateTransaction(
+        tx.depositIds,
+        this.config.defaultTipReceiver || await this.relaySigner.getAddress(),
+        tx.profitability.estimates.payout_amount || BigInt(0)
+      );
+      
+      if (!simulationResult.success) {
+        this.logger.error('Transaction simulation failed, not executing', {
+          txId: tx.id,
+          depositIds: tx.depositIds.map(String),
+          error: simulationResult.error
+        });
+        
+        tx.status = TransactionStatus.FAILED;
+        tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
+        this.queue.set(tx.id, tx);
+        
+        // Update database if available
+        if (this.db && queueItemId) {
+          await this.db.updateTransactionQueueItem(queueItemId, {
+            status: TransactionQueueStatus.FAILED,
+            error: `Simulation failed: ${simulationResult.error}`,
           });
-
-          payoutAmount = BigInt(rawPayoutAmount);
-          this.logger.info('Converted payout amount:', {
-            value: payoutAmount.toString(),
-            type: typeof payoutAmount,
-          });
-          this.logger.info(
-            `Retrieved payout amount: ${payoutAmount.toString()}`,
-            {
-              txId: tx.id,
-            },
-          );
-        } catch (error) {
-          this.logger.error('Failed to get payout amount for allowance check', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-          this.errorLogger.error(
-            error instanceof Error
-              ? error
-              : new Error(`Failed to get payout amount: ${String(error)}`),
-            {
-              stage: 'executeTransaction_payoutAmount',
-              txId: tx.id,
-            },
-          );
-          throw new ContractMethodError('payoutAmount');
         }
-
-        // Check current allowance
-        const signerAddress = await this.relaySigner.getAddress();
-        const lstContractAddress = this.lstContract.target.toString();
-
-        this.logger.info('Checking token allowance', {
-          signerAddress,
-          lstContractAddress,
-          rewardToken: rewardTokenAddress,
+        
+        // Log to error logger
+        this.errorLogger.error(tx.error, {
+          stage: 'executeTransaction_simulation',
+          txId: tx.id,
+          depositIds: tx.depositIds.map(String),
         });
-
-        const allowance = BigInt(
-          await rewardTokenContract.allowance(
-            signerAddress,
-            lstContractAddress,
-          ),
-        );
-
-        this.logger.info('Current allowance', {
-          allowance: allowance.toString(),
-          payoutAmount: payoutAmount.toString(),
-        });
-
-        // Use approval amount from config
-        const approvalAmount = BigInt(CONFIG.executor.approvalAmount);
-
-        // If allowance is less than payout amount, approve with approval amount
-        if (allowance < payoutAmount) {
-          this.logger.info('Approving reward token spend', {
-            token: rewardTokenAddress,
-            spender: lstContractAddress,
-            currentAllowance: allowance.toString(),
-            payoutAmount: payoutAmount.toString(),
-            approvalAmount: approvalAmount.toString(),
-          });
-
-          const approveTx = await rewardTokenContract.approve(
-            lstContractAddress,
-            approvalAmount,
-          );
-
-          this.logger.info('Approval transaction submitted', {
-            hash: approveTx.hash,
-            gasLimit: approveTx.gasLimit.toString(),
-          });
-
-          // Wait for the transaction to be mined
-          try {
-            this.logger.info('Waiting for approval transaction...');
-            let receipt;
-            try {
-              receipt = await pollForReceipt(
-                approveTx.hash,
-                this.relayProvider as unknown as ethers.Provider,
-                this.logger,
-                3,
-              );
-            } catch (confirmError: unknown) {
-              // If polling fails, just log the error
-              this.logger.warn('Standard wait for approval failed', {
-                error:
-                  confirmError instanceof Error
-                    ? confirmError.message
-                    : String(confirmError),
-                hash: approveTx.hash,
-                errorType:
-                  typeof confirmError === 'object' && confirmError !== null
-                    ? confirmError.constructor?.name || 'Unknown'
-                    : typeof confirmError,
-              });
-
-              this.logger.info(
-                'Continuing execution despite wait error - approval may still have succeeded',
-              );
-
-              // Skip polling and consider it a warning rather than error
-              this.logger.debug('Transaction details for debugging', {
-                transaction: {
-                  hash: approveTx.hash,
-                  to: approveTx.to,
-                  from: approveTx.from,
-                  nonce: approveTx.nonce,
-                },
-              });
-            }
-
-            this.logger.info('Approval transaction confirmed', {
-              hash: approveTx.hash,
-              blockNumber: receipt?.blockNumber,
-            });
-          } catch (waitError) {
-            this.logger.error('Failed waiting for approval transaction', {
-              error:
-                waitError instanceof Error
-                  ? waitError.message
-                  : String(waitError),
-              hash: approveTx.hash,
-            });
-            throw new ExecutorError(
-              'Failed waiting for approval confirmation',
-              {
-                error:
-                  waitError instanceof Error
-                    ? waitError.message
-                    : String(waitError),
-              },
-              false,
-            );
-          }
-        }
-      } catch (error) {
-        this.logger.error('Token approval error details', {
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
-          rewardToken: rewardTokenAddress,
-          contractAddress: this.lstContract.target.toString(),
-        });
-        throw new ExecutorError(
-          'Failed to approve reward token spend',
-          { error: error instanceof Error ? error.message : String(error) },
-          false,
-        );
+        
+        return;
       }
+      
+      this.logger.info('Transaction simulation successful', {
+        txId: tx.id,
+        depositIds: tx.depositIds.map(String)
+      });
+      
+      // Estimate gas parameters
+      const gasParams = await this.estimateGasParams(
+        tx.depositIds,
+        this.config.defaultTipReceiver || await this.relaySigner.getAddress(),
+        tx.profitability.estimates.payout_amount || BigInt(0)
+      );
 
+      // Continue with token approval process...
+      
       // Get the payout amount from contract before executing claim
       let payoutAmount: bigint = BigInt(0);
       try {
@@ -1272,6 +1133,125 @@ export class RelayerExecutor implements IExecutor {
           );
         },
       );
+    }
+  }
+  
+  /**
+   * Simulate a transaction to verify it will succeed
+   */
+  protected async simulateTransaction(
+    depositIds: bigint[],
+    recipient: string,
+    minExpectedReward: bigint
+  ): Promise<{ success: boolean; result?: any; error?: string }> {
+    try {
+      this.logger.info('Simulating claimAndDistributeReward transaction', {
+        depositIds: depositIds.map(String),
+        recipient,
+        minExpectedReward: minExpectedReward.toString()
+      });
+      
+      // Create transaction simulator instance
+      const simulator = new TransactionSimulator(
+        this.relayProvider as unknown as ethers.Provider, 
+        this.logger
+      );
+      
+      // Simulate the transaction
+      const simulation = await simulator.simulateContractFunction(
+        this.lstContract,
+        'claimAndDistributeReward',
+        [recipient, minExpectedReward, depositIds],
+        {
+          context: `depositIds:${depositIds.map(String).join(',')}`
+        }
+      );
+      
+      return simulation;
+    } catch (error) {
+      // Log the error and return failure
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      this.logger.error('Transaction simulation failed outside of simulator', {
+        depositIds: depositIds.map(String),
+        error: errorMessage
+      });
+      
+      this.errorLogger.error(
+        error instanceof Error 
+          ? error 
+          : new Error(`Transaction simulation failed: ${errorMessage}`),
+        {
+          stage: 'simulateTransaction',
+          depositIds: depositIds.map(String),
+        }
+      );
+      
+      return { success: false, error: errorMessage };
+    }
+  }
+  
+  /**
+   * Estimate gas parameters for a transaction
+   */
+  protected async estimateGasParams(
+    depositIds: bigint[],
+    recipient: string,
+    minExpectedReward: bigint
+  ): Promise<{ gasLimit: bigint; gasPrice: bigint }> {
+    try {
+      // Create transaction simulator instance
+      const simulator = new TransactionSimulator(
+        this.relayProvider as unknown as ethers.Provider, 
+        this.logger, 
+        {
+          gasBoostPercentage: this.config.gasBoostPercentage || 10,
+          gasLimitBufferPercentage: 20 // 20% buffer by default
+        }
+      );
+      
+      // Estimate gas parameters
+      const gasEstimate = await simulator.estimateGasParameters(
+        this.lstContract,
+        'claimAndDistributeReward',
+        [recipient, minExpectedReward, depositIds],
+        {
+          fallbackGasLimit: BigInt(500000),
+          context: `depositIds:${depositIds.map(String).join(',')}`
+        }
+      );
+      
+      this.logger.info('Gas parameters estimated', {
+        depositIds: depositIds.map(String),
+        gasLimit: gasEstimate.gasLimit.toString(),
+        gasPrice: gasEstimate.gasPrice.toString()
+      });
+      
+      return gasEstimate;
+    } catch (error) {
+      // Log the error and use fallback values
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      this.logger.error('Gas estimation failed completely', {
+        depositIds: depositIds.map(String),
+        error: errorMessage
+      });
+      
+      this.errorLogger.error(
+        error instanceof Error 
+          ? error 
+          : new Error(`Gas estimation failed: ${errorMessage}`),
+        {
+          stage: 'estimateGasParams',
+          depositIds: depositIds.map(String),
+        }
+      );
+      
+      // Use fallback values
+      return { 
+        gasLimit: BigInt(500000), 
+        gasPrice: BigInt(0) // This will be set by the relayer
+      };
     }
   }
 }

@@ -838,6 +838,41 @@ export class BaseExecutor implements IExecutor {
         depositIds: queueDepositIds,
       };
 
+      // Simulate transaction before execution to verify it will succeed
+      const simulationResult = await this.simulateTransaction(
+        depositIds,
+        this.config.defaultTipReceiver || this.wallet.address,
+        optimalThreshold
+      );
+      
+      if (!simulationResult.success) {
+        this.logger.error('Transaction simulation failed, not executing', {
+          id: tx.id,
+          depositIds: depositIds.map(String),
+          error: simulationResult.error
+        });
+        
+        // Update transaction status
+        tx.status = TransactionStatus.FAILED;
+        tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
+        this.queue.set(tx.id, tx);
+        
+        // Update database if available
+        if (this.db && queueItemId) {
+          await this.db.updateTransactionQueueItem(queueItemId, {
+            status: TransactionQueueStatus.FAILED,
+            error: `Simulation failed: ${simulationResult.error}`,
+          });
+        }
+        
+        return;
+      }
+      
+      this.logger.info('Transaction simulation successful', {
+        id: tx.id,
+        depositIds: depositIds.map(String),
+      });
+
       // Calculate gas parameters
       const gasEstimate = await this.estimateGas(depositIds, tx.profitability);
       const { finalGasLimit, boostedGasPrice } =
@@ -872,6 +907,75 @@ export class BaseExecutor implements IExecutor {
         error: error instanceof Error ? error.message : String(error),
       });
       await this.handleTransactionError(tx, error);
+    }
+  }
+
+  /**
+   * Simulates a transaction to check if it would succeed
+   * @param depositIds - Array of deposit IDs
+   * @param recipient - Recipient address for the reward
+   * @param minExpectedReward - Minimum expected reward
+   * @returns Object with success status and error message if applicable
+   */
+  private async simulateTransaction(
+    depositIds: bigint[],
+    recipient: string,
+    minExpectedReward: bigint
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      this.logger.info('Simulating transaction', {
+        depositIds: depositIds.map(String),
+        recipient,
+        minExpectedReward: minExpectedReward.toString()
+      });
+      
+      // Get the function reference
+      const claimFunction = this.govLstContract.claimAndDistributeReward as GovLstContractMethod;
+      
+      if (!claimFunction.estimateGas) {
+        throw new Error('Contract method is missing estimateGas function');
+      }
+      
+      // Use estimateGas as a way to simulate the transaction
+      // If it succeeds, the transaction will also succeed
+      await claimFunction.estimateGas(
+        recipient,
+        minExpectedReward,
+        depositIds
+      );
+      
+      this.logger.info('Transaction simulation successful', {
+        depositIds: depositIds.map(String)
+      });
+      
+      return { success: true };
+    } catch (error) {
+      // Extract user-friendly error message
+      let errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Look for known error patterns and provide more user-friendly messages
+      if (errorMessage.includes('insufficient funds')) {
+        errorMessage = 'Insufficient wallet balance to execute transaction';
+      } else if (errorMessage.includes('exceeds gas limit')) {
+        errorMessage = 'Transaction exceeds gas limit';
+      } else if (errorMessage.includes('InsufficientReward')) {
+        errorMessage = 'Insufficient reward amount to meet minimum threshold';
+      }
+      
+      this.logger.error('Transaction simulation failed', {
+        depositIds: depositIds.map(String),
+        error: errorMessage,
+        originalError: error instanceof Error ? error.message : String(error)
+      });
+      
+      if (this.errorLogger) {
+        await this.errorLogger.warn(error as Error, {
+          context: 'base-executor-simulation-failed',
+          depositIds: depositIds.map(String),
+        });
+      }
+      
+      return { success: false, error: errorMessage };
     }
   }
 

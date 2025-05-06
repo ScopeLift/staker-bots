@@ -13,6 +13,7 @@ import { ProfitabilityCheck } from '@/profitability/interfaces/types';
 import { v4 as uuidv4 } from 'uuid';
 import { DatabaseWrapper } from '@/database';
 import { TransactionQueueStatus } from '@/database/interfaces/types';
+import { TransactionSimulator } from '../utils';
 
 /**
  * Implementation of executor using OpenZeppelin Defender Relayer.
@@ -476,38 +477,45 @@ export class RelayerExecutor implements IExecutor {
         gasPrice: feeData.gasPrice?.toString() || 'undefined',
       });
 
+      // Simulate the transaction to check if it would succeed
+      const simulationResult = await this.simulateTransaction(depositId);
+      
+      if (!simulationResult.success) {
+        this.logger.error('Transaction simulation failed, not executing', {
+          id: tx.id,
+          depositId: depositId.toString(),
+          error: simulationResult.error
+        });
+        
+        tx.status = TransactionStatus.FAILED;
+        tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
+        
+        // Update database if needed
+        if (this.db && queueItemId) {
+          await this.db.updateTransactionQueueItem(queueItemId, {
+            status: TransactionQueueStatus.FAILED,
+            error: `Simulation failed: ${simulationResult.error}`,
+          });
+        }
+        
+        return;
+      }
+      
+      this.logger.info('Transaction simulation successful', {
+        id: tx.id,
+        depositId: depositId.toString(),
+        newEarningPower: simulationResult.result?.toString() || 'unknown'
+      });
+
+      // Estimate gas for the transaction
+      const gasParams = await this.estimateGasParams(depositId);
+      const gasLimit = gasParams.gasLimit;
+
       // Encode the function call
       const encodedData = this.contractInterface.encodeFunctionData(
         'bumpEarningPower',
         [depositId]
       );
-
-      // Estimate gas for the transaction
-      let gasLimit: bigint;
-      try {
-        gasLimit = await this.provider.estimateGas({
-          to: this.contractAddress,
-          data: encodedData,
-        });
-        
-        // Add 20% buffer for safety
-        gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
-        this.logger.info('Estimated gas', {
-          depositId: depositId.toString(),
-          gasLimit: gasLimit.toString(),
-        });
-      } catch (error) {
-        this.logger.error('Failed to estimate gas', {
-          error: error instanceof Error ? error.message : String(error),
-          depositId: depositId.toString(),
-        });
-        
-        // Use a default gas limit as fallback
-        gasLimit = BigInt(300000);
-        this.logger.info('Using fallback gas limit', {
-          gasLimit: gasLimit.toString(),
-        });
-      }
 
       // Prepare the transaction request for Defender API
       const payload = this.prepareRelayerPayload(
@@ -936,6 +944,100 @@ export class RelayerExecutor implements IExecutor {
     } catch (e) {
       // If not JSON, return empty object
       return {};
+    }
+  }
+
+  /**
+   * Simulate a transaction to verify it will succeed
+   * @param depositId The deposit ID
+   * @returns Result of the simulation with success flag and earning power or error
+   */
+  protected async simulateTransaction(
+    depositId: bigint
+  ): Promise<{ success: boolean; result?: bigint; error?: string }> {
+    try {
+      this.logger.info('Simulating transaction', {
+        depositId: depositId.toString()
+      });
+      
+      // Create transaction simulator instance
+      const simulator = new TransactionSimulator(this.provider, this.logger);
+      
+      // Simulate the transaction
+      const simulation = await simulator.simulateContractFunction<bigint>(
+        this.stakerContract,
+        'bumpEarningPower',
+        [depositId],
+        {
+          context: `depositId:${depositId.toString()}`
+        }
+      );
+      
+      return simulation;
+    } catch (error) {
+      // Log the error and return failure
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      this.logger.error('Transaction simulation failed outside of simulator', {
+        depositId: depositId.toString(),
+        error: errorMessage
+      });
+      
+      return { success: false, error: errorMessage };
+    }
+  }
+  
+  /**
+   * Estimate gas parameters for a transaction
+   * @param depositId The deposit ID
+   * @returns Gas parameters with gasLimit and gasPrice
+   */
+  protected async estimateGasParams(
+    depositId: bigint
+  ): Promise<{ gasLimit: bigint; gasPrice: bigint }> {
+    try {
+      // Create transaction simulator instance
+      const simulator = new TransactionSimulator(
+        this.provider, 
+        this.logger, 
+        {
+          gasBoostPercentage: this.config.gasBoostPercentage,
+          gasLimitBufferPercentage: 20 // 20% buffer by default
+        }
+      );
+      
+      // Estimate gas parameters
+      const gasEstimate = await simulator.estimateGasParameters(
+        this.stakerContract,
+        'bumpEarningPower',
+        [depositId],
+        {
+          fallbackGasLimit: BigInt(300000),
+          context: `depositId:${depositId.toString()}`
+        }
+      );
+      
+      this.logger.info('Gas parameters estimated', {
+        depositId: depositId.toString(),
+        gasLimit: gasEstimate.gasLimit.toString(),
+        gasPrice: gasEstimate.gasPrice.toString()
+      });
+      
+      return gasEstimate;
+    } catch (error) {
+      // Log the error and use fallback values
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      this.logger.error('Gas estimation failed completely', {
+        depositId: depositId.toString(),
+        error: errorMessage
+      });
+      
+      // Use fallback values
+      return { 
+        gasLimit: BigInt(300000), 
+        gasPrice: BigInt(0) // This will be set by the relayer
+      };
     }
   }
 }

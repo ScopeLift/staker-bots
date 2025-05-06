@@ -424,53 +424,51 @@ export class BaseExecutor implements IExecutor {
         }
       }
       
-      // Calculate gas parameters
-      const feeData = await this.provider.getFeeData();
-      const baseGasPrice = feeData.gasPrice || BigInt(0);
-      const boostMultiplier = BigInt(100 + this.config.gasBoostPercentage) / BigInt(100);
-      let gasPrice = baseGasPrice * boostMultiplier;
-      
-      // Ensure gas price is at least the base fee
-      const baseFeePerGas = feeData.maxFeePerGas || baseGasPrice;
-      if (gasPrice < baseFeePerGas) {
-        gasPrice = baseFeePerGas + BigInt(1_000_000); // Add 1 gwei buffer
+      // Verify transaction will succeed with static call before executing
+      const simulationResult = await this.simulateTransaction(depositId, tipReceiver, requestedTip);
+      if (!simulationResult.success) {
+        this.logger.error('Transaction simulation failed, not executing', {
+          depositId: depositId.toString(),
+          error: simulationResult.error
+        });
+        
+        tx.status = TransactionStatus.FAILED;
+        tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
+        
+        // Update database if needed
+        if (this.db && queueItemId) {
+          await this.db.updateTransactionQueueItem(queueItemId, {
+            status: TransactionQueueStatus.FAILED,
+            error: `Simulation failed: ${simulationResult.error}`,
+          });
+        }
+        
+        return;
       }
+      
+      this.logger.info('Transaction simulation successful', {
+        depositId: depositId.toString(),
+        newEarningPower: simulationResult.result?.toString() || 'unknown'
+      });
+      
+      // Calculate gas parameters
+      const gasParams = await this.estimateGasParams(depositId, tipReceiver, requestedTip);
       
       // Log wallet balance
       const walletBalance = await this.getWalletBalance();
       this.logger.info('Current wallet balance before transaction', {
         balance: walletBalance.toString(),
-        requestedTip: requestedTip.toString()
+        requestedTip: requestedTip.toString(),
+        estimatedGasCost: (gasParams.gasLimit * gasParams.gasPrice).toString()
       });
-      
-      // Estimate gas for the transaction
-      let gasLimit: bigint;
-      try {
-        gasLimit = await this.stakerContract.getFunction('bumpEarningPower').estimateGas(
-          depositId,
-          tipReceiver,
-          requestedTip,
-          { value: requestedTip }
-        );
-        // Add 20% buffer for safety
-        gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
-      } catch (err) {
-        this.logger.error('Failed to estimate gas', {
-          error: err instanceof Error ? err.message : String(err),
-          depositId: depositId.toString(),
-          tipReceiver,
-          requestedTip: requestedTip.toString()
-        });
-        gasLimit = BigInt(300000); // Fallback gas limit
-      }
       
       // Execute transaction
       this.logger.info('Executing bumpEarningPower transaction', {
         depositId: depositId.toString(),
         tipReceiver,
         requestedTip: requestedTip.toString(),
-        gasLimit: gasLimit.toString(),
-        gasPrice: gasPrice.toString()
+        gasLimit: gasParams.gasLimit.toString(),
+        gasPrice: gasParams.gasPrice.toString()
       });
       
       let txResponse;
@@ -480,8 +478,8 @@ export class BaseExecutor implements IExecutor {
           tipReceiver,
           requestedTip,
           {
-            gasLimit,
-            gasPrice,
+            gasLimit: gasParams.gasLimit,
+            gasPrice: gasParams.gasPrice,
             value: requestedTip
           }
         );
@@ -500,7 +498,7 @@ export class BaseExecutor implements IExecutor {
       
       // Store transaction info
       tx.hash = txResponse.hash;
-      tx.gasPrice = gasPrice;
+      tx.gasPrice = gasParams.gasPrice;
       
       // Wait for transaction to be mined
       const receipt = await txResponse.wait(this.config.minConfirmations);
@@ -543,6 +541,115 @@ export class BaseExecutor implements IExecutor {
       // Handle retries
       this.handleTransactionRetry(tx, error);
     }
+  }
+  
+  /**
+   * Simulate a transaction to verify it will succeed
+   * @param depositId The deposit ID
+   * @param tipReceiver The tip receiver address
+   * @param requestedTip The tip amount
+   * @returns Result of the simulation with success flag and earning power or error
+   */
+  protected async simulateTransaction(
+    depositId: bigint,
+    tipReceiver: string,
+    requestedTip: bigint
+  ): Promise<{ success: boolean; result?: bigint; error?: string }> {
+    try {
+      this.logger.info('Simulating transaction', {
+        depositId: depositId.toString(),
+        tipReceiver,
+        requestedTip: requestedTip.toString()
+      });
+      
+      // Get the function reference
+      const bumpFunction = this.stakerContract.getFunction('bumpEarningPower');
+      
+      // Simulate the transaction
+      const result = await bumpFunction.staticCall(
+        depositId,
+        tipReceiver,
+        requestedTip,
+        { value: requestedTip }
+      );
+      
+      this.logger.info('Simulation successful', {
+        depositId: depositId.toString(),
+        result: result.toString()
+      });
+      
+      return { success: true, result };
+    } catch (error) {
+      // Log the error and return failure
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      this.logger.error('Transaction simulation failed', {
+        depositId: depositId.toString(),
+        error: errorMessage
+      });
+      
+      return { success: false, error: errorMessage };
+    }
+  }
+  
+  /**
+   * Estimate gas parameters for a transaction
+   * @param depositId The deposit ID
+   * @param tipReceiver The tip receiver address
+   * @param requestedTip The tip amount
+   * @returns Gas parameters with gasLimit and gasPrice
+   */
+  protected async estimateGasParams(
+    depositId: bigint,
+    tipReceiver: string,
+    requestedTip: bigint
+  ): Promise<{ gasLimit: bigint; gasPrice: bigint }> {
+    // Calculate gas price with boost
+    const feeData = await this.provider.getFeeData();
+    const baseGasPrice = feeData.gasPrice || BigInt(0);
+    const boostMultiplier = BigInt(100 + this.config.gasBoostPercentage) / BigInt(100);
+    let gasPrice = baseGasPrice * boostMultiplier;
+    
+    // Ensure gas price is at least the base fee
+    const baseFeePerGas = feeData.maxFeePerGas || baseGasPrice;
+    if (gasPrice < baseFeePerGas) {
+      gasPrice = baseFeePerGas + BigInt(1_000_000); // Add 1 gwei buffer
+    }
+    
+    // Estimate gas for the transaction
+    let gasLimit: bigint;
+    try {
+      // Get the function reference
+      const bumpFunction = this.stakerContract.getFunction('bumpEarningPower');
+      
+      gasLimit = await bumpFunction.estimateGas(
+        depositId,
+        tipReceiver,
+        requestedTip,
+        { value: requestedTip }
+      );
+      
+      // Add 20% buffer for safety
+      gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
+      
+      this.logger.info('Gas estimation successful', {
+        depositId: depositId.toString(),
+        gasLimit: gasLimit.toString(),
+        gasPrice: gasPrice.toString()
+      });
+    } catch (err) {
+      this.logger.error('Failed to estimate gas', {
+        error: err instanceof Error ? err.message : String(err),
+        depositId: depositId.toString()
+      });
+      
+      // Use fallback gas limit
+      gasLimit = BigInt(300000);
+      
+      this.logger.warn(`Using fallback gas limit of ${gasLimit.toString()}`);
+    }
+    
+    return { gasLimit, gasPrice };
   }
   
   /**

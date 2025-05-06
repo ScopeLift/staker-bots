@@ -103,6 +103,25 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
         return this.createFailedProfitabilityCheck('calculatorEligible');
       }
 
+      // Check if delegatee score has changed
+      const hasScoreChanged = await this.checkScoreChanged(deposit.delegatee_address!);
+      if (!hasScoreChanged) {
+        return this.createFailedProfitabilityCheck('hasScoreChanged');
+      }
+      
+      // Check if the transaction would succeed using static call
+      const staticCallResult = await this.simulateTransaction(deposit);
+      if (staticCallResult === null) {
+        // If static call fails, transaction will also fail
+        return this.createFailedProfitabilityCheck('calculatorEligible');
+      }
+      
+      // Check if the earning power will actually change
+      const isEarningPowerIncrease = staticCallResult !== deposit.earning_power;
+      if (!isEarningPowerIncrease) {
+        return this.createFailedProfitabilityCheck('hasEarningPowerIncrease');
+      }
+
       // Calculate optimal tip
       const tipOptimization = await this.calculateOptimalTip(
         deposit,
@@ -110,10 +129,9 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       );
 
       // Check unclaimed rewards rules based on earning power change
-      const isEarningPowerIncrease =
-        requirements.newEarningPower > deposit.earning_power!;
+      const earningPowerIncreasing = staticCallResult > deposit.earning_power!;
 
-      if (isEarningPowerIncrease) {
+      if (earningPowerIncreasing) {
         // For power increases: unclaimedRewards must be >= requestedTip
         if (requirements.unclaimedRewards < tipOptimization.optimalTip) {
           return this.createFailedProfitabilityCheck('hasEnoughRewards');
@@ -130,7 +148,7 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
 
       // Check if operation is profitable
       const isProfitable =
-        tipOptimization.expectedProfit >= this.config.minProfitMargin;
+        tipOptimization.expectedProfit >= BigInt(this.config.minProfitMargin);
       if (!isProfitable) {
         return this.createFailedProfitabilityCheck('isProfitable');
       }
@@ -141,12 +159,15 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
           calculatorEligible: true,
           hasEnoughRewards: true,
           isProfitable: true,
+          hasScoreChanged: true,
+          hasEarningPowerIncrease: true
         },
         estimates: {
           optimalTip: tipOptimization.optimalTip,
           gasEstimate: tipOptimization.gasEstimate,
           expectedProfit: tipOptimization.expectedProfit,
           tipReceiver: this.config.defaultTipReceiver,
+          staticCallResult
         },
       };
     } catch (error) {
@@ -414,61 +435,59 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
         baseCostInToken = baseCost * BigInt(10000); // 1/0.0001 = 10000
       }
 
+      // Check if this is a power decrease
+      const isEarningPowerDecrease = 
+        requirements.newEarningPower < deposit.earning_power!;
+
       // Calculate optimal tip based on gas cost and minimum profit margin
       // Ensure tip doesn't exceed maxBumpTip
       const maxTip = BigInt(maxBumpTipValue.toString());
-      const desiredTip = baseCostInToken + BigInt(this.config.minProfitMargin);
+      let desiredTip = baseCostInToken + BigInt(this.config.minProfitMargin);
+      
+      // For power decreases, we need to ensure there's enough left for MAX_BUMP_TIP
+      if (isEarningPowerDecrease) {
+        // Calculate max available tip considering we need to leave MAX_BUMP_TIP
+        const maxAvailableTip = requirements.unclaimedRewards - maxBumpTipValue;
+        
+        // If maxAvailableTip is negative or zero, we can't proceed
+        if (maxAvailableTip <= 0) {
+          this.logger.info(
+            `Not enough unclaimed rewards for deposit ${deposit.deposit_id} to cover MAX_BUMP_TIP requirement:`,
+            {
+              unclaimedRewards: requirements.unclaimedRewards.toString(),
+              maxBumpTip: maxBumpTipValue.toString(),
+              availableForTip: maxAvailableTip.toString(),
+            },
+          );
+          return {
+            optimalTip: BigInt(0),
+            expectedProfit: BigInt(0),
+            gasEstimate: BigInt(0),
+          };
+        }
+        
+        // Ensure desiredTip doesn't exceed maxAvailableTip
+        if (desiredTip > maxAvailableTip) {
+          this.logger.info(
+            `Adjusting tip for deposit ${deposit.deposit_id} to leave room for MAX_BUMP_TIP:`,
+            {
+              originalDesiredTip: desiredTip.toString(),
+              adjustedTip: maxAvailableTip.toString(),
+              maxBumpTip: maxBumpTipValue.toString(),
+              unclaimedRewards: requirements.unclaimedRewards.toString(),
+            },
+          );
+          desiredTip = maxAvailableTip;
+        }
+      }
+      
+      // Apply usual max tip constraint
       const optimalTip = desiredTip > maxTip ? maxTip : desiredTip;
 
       // Calculate expected profit
       const expectedProfit =
         optimalTip > baseCostInToken ? optimalTip - baseCostInToken : BigInt(0); // Ensure we never return negative profit
 
-      // // Only proceed if we have enough unclaimed rewards and the operation would be profitable
-      // if (requirements.unclaimedRewards < optimalTip) {
-      //   this.logger.info(
-      //     `Not enough unclaimed rewards for deposit ${deposit.deposit_id}:`,
-      //     {
-      //       unclaimedRewards: requirements.unclaimedRewards.toString(),
-      //       optimalTip: optimalTip.toString(),
-      //     },
-      //   );
-      //   return {
-      //     optimalTip: BigInt(0),
-      //     expectedProfit: BigInt(0),
-      //     gasEstimate: BigInt(0),
-      //   };
-      // }
-
-      // // Ensure we only recommend transactions that would be profitable
-      // if (expectedProfit < this.config.minProfitMargin) {
-      //   this.logger.info(
-      //     `Transaction would not be profitable for deposit ${deposit.deposit_id}:`,
-      //     {
-      //       baseCostInToken: baseCostInToken.toString(),
-      //       optimalTip: optimalTip.toString(),
-      //       expectedProfit: expectedProfit.toString(),
-      //       minProfitMargin: this.config.minProfitMargin.toString(),
-      //     },
-      //   );
-
-      //   return {
-      //     optimalTip: BigInt(0),
-      //     expectedProfit: BigInt(0),
-      //     gasEstimate: BigInt(0),
-      //   };
-      // }
-
-      // this.logger.info(
-      //   `Profitable transaction found for deposit ${deposit.deposit_id}:`,
-      //   {
-      //     gasEstimate: gasEstimate.toString(),
-      //     baseCostInToken: baseCostInToken.toString(),
-      //     optimalTip: optimalTip.toString(),
-      //     expectedProfit: expectedProfit.toString(),
-      //     tipReceiver,
-      //   },
-      // );
 
       return {
         optimalTip,
@@ -533,13 +552,20 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
   private createFailedProfitabilityCheck(
     failedConstraint: keyof ProfitabilityCheck['constraints'],
   ): ProfitabilityCheck {
+    const constraints: ProfitabilityCheck['constraints'] = {
+      calculatorEligible: true,
+      hasEnoughRewards: true,
+      isProfitable: true,
+      hasScoreChanged: true,
+      hasEarningPowerIncrease: true
+    };
+
+    // Set the failed constraint to false
+    constraints[failedConstraint] = false;
+
     return {
       canBump: false,
-      constraints: {
-        calculatorEligible: failedConstraint !== 'calculatorEligible',
-        hasEnoughRewards: failedConstraint !== 'hasEnoughRewards',
-        isProfitable: failedConstraint !== 'isProfitable',
-      },
+      constraints,
       estimates: {
         optimalTip: BigInt(0),
         gasEstimate: BigInt(0),
@@ -575,5 +601,158 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       earning_power: d.earning_power ? BigInt(d.earning_power) : undefined
     }));
     throw new Error('processDepositsBatch must be implemented by derived class');
+  }
+
+  /**
+   * Check if a delegatee's score has changed since the last score event
+   * @param delegatee The delegatee address to check
+   * @returns true if the score has changed or if there's no previous score to compare against
+   */
+  protected async checkScoreChanged(delegatee: string): Promise<boolean> {
+    try {
+      if (!delegatee) {
+        this.logger.warn('No delegatee address provided for score change check');
+        return false;
+      }
+
+      // Get the latest score event
+      const latestScoreEvent = await this.calculator['db'].getLatestScoreEvent(delegatee);
+      if (!latestScoreEvent) {
+        this.logger.info(`No score events found for delegatee ${delegatee}`);
+        // If there are no score events, we can't determine if it changed
+        // Default to true for first-time delegatees to allow initial bumping
+        return true;
+      }
+      
+      // Get the latest score as BigInt
+      const latestScore = BigInt(latestScoreEvent.score);
+      this.logger.info(`Latest score for delegatee ${delegatee}: ${latestScore.toString()} at block ${latestScoreEvent.block_number}`);
+      
+      // Get earlier score events to compare
+      try {
+        let earlierEvents: Array<{delegatee: string, score: string, block_number: number}> = [];
+        
+        // Try to access getScoreEventsByBlockRange through dynamic property access
+        // @ts-ignore - We're checking existence at runtime
+        if (typeof this.calculator['db']['getScoreEventsByBlockRange'] === 'function') {
+          const blockRange = 20000000; // Look back 20 million blocks
+          // @ts-ignore - Using dynamic method that exists at runtime
+          earlierEvents = await this.calculator['db']['getScoreEventsByBlockRange'](
+            Math.max(1, latestScoreEvent.block_number - blockRange),
+            latestScoreEvent.block_number - 1 // Exclude the latest event
+          );
+        } else {
+          // Fallback approach: Assume score has changed to avoid missing opportunities
+          this.logger.warn(`getScoreEventsByBlockRange method not available, assuming score has changed`);
+          return true;
+        }
+        
+        // Filter for events belonging to this delegatee
+        // Fix implicit any type for event parameter
+        const delegateeEvents = earlierEvents.filter(
+          (event: {delegatee?: string, score?: string, block_number?: number}) => event?.delegatee === delegatee
+        ).filter((event): event is {delegatee: string, score: string, block_number: number} => 
+          event !== undefined && event !== null
+        );
+        
+        this.logger.info(`Found ${delegateeEvents.length} earlier score events for delegatee ${delegatee}`);
+        
+        // If no earlier events, treat as a change (first event)
+        if (delegateeEvents.length === 0) {
+          this.logger.info(`No previous scores found for delegatee ${delegatee}, treating as changed`);
+          return true;
+        }
+        
+        // Sort by block number (descending)
+        delegateeEvents.sort((a, b) => {
+          if (!a?.block_number || !b?.block_number) return 0;
+          return b.block_number - a.block_number;
+        });
+        
+        // Ensure we have score data
+        if (!delegateeEvents[0]?.score) {
+          this.logger.warn(`No score data found in previous events for delegatee ${delegatee}`);
+          return true;
+        }
+        
+        // Get the most recent previous score
+        const previousScore = BigInt(delegateeEvents[0].score);
+        const previousBlockNumber = delegateeEvents[0].block_number || 0;
+        
+        this.logger.info(`Previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`);
+        
+        // Compare scores
+        const hasChanged = latestScore !== previousScore;
+        this.logger.info(`Score change check for delegatee ${delegatee}: ${hasChanged ? 'CHANGED' : 'UNCHANGED'}`);
+        return hasChanged;
+      } catch (blockRangeError) {
+        this.logger.warn(`Error searching block range for scores:`, {
+          error: blockRangeError instanceof Error ? blockRangeError.message : String(blockRangeError)
+        });
+
+        return false;
+      }
+    } catch (error) {
+      this.logger.warn(`Error checking score change for delegatee ${delegatee}:`, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Simulate the transaction to check if it would succeed and get the resulting earning power
+   * @param deposit The deposit to simulate bumping
+   * @returns The new earning power value on success, or null if the transaction would fail
+   */
+  protected async simulateTransaction(deposit: Deposit): Promise<bigint | null> {
+    try {
+      if (!deposit.deposit_id || deposit.earning_power === undefined) {
+        this.logger.warn(`Cannot simulate transaction for deposit with missing ID or earning power`);
+        return null;
+      }
+      
+      // Use the configured tip receiver or default to zero address
+      const tipReceiver = this.config.defaultTipReceiver || ethers.ZeroAddress;
+      
+      // Use minimum tip for simulation (10% of max)
+      const maxBumpTipValue = await this.stakerContract.maxBumpTip();
+      const minimumTip = maxBumpTipValue / BigInt(10);
+      
+      this.logger.info(`Simulating bumpEarningPower transaction for deposit ${deposit.deposit_id}`, {
+        tipReceiver,
+        minimumTip: minimumTip.toString()
+      });
+      
+      // Simulate the transaction using staticCall
+      try {
+        // Use the function reference with staticCall method
+        const bumpFunction = this.stakerContract.getFunction('bumpEarningPower');
+        const newEarningPower = await bumpFunction.staticCall(
+          deposit.deposit_id,
+          tipReceiver,
+          minimumTip,
+          { value: minimumTip }
+        );
+        
+        this.logger.info(`Simulation successful for deposit ${deposit.deposit_id}:`, {
+          currentEarningPower: deposit.earning_power.toString(),
+          newEarningPower: newEarningPower.toString(),
+          hasDifference: newEarningPower !== deposit.earning_power
+        });
+        
+        return newEarningPower;
+      } catch (error) {
+        this.logger.error(`Transaction simulation failed for deposit ${deposit.deposit_id}:`, {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+      }
+    } catch (error) {
+      this.logger.error(`Error in transaction simulation for deposit ${deposit.deposit_id}:`, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
   }
 }

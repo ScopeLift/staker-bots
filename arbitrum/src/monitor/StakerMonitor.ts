@@ -326,14 +326,6 @@ export class StakerMonitor extends EventEmitter {
     toBlock: number,
   ): Promise<void> {
     try {
-      // Debug contract interface
-      this.logger.info('Contract interface check', {
-        address: this.contract.target,
-        hasEarningPowerBumpedFilter: !!this.contract.filters.EarningPowerBumped,
-        availableFilters: Object.keys(this.contract.filters),
-        fromBlock,
-        toBlock
-      });
 
       // One-time diagnostic query for any EarningPowerBumped events in a large range
       // Only do this once per run for diagnostic purposes
@@ -378,22 +370,8 @@ export class StakerMonitor extends EventEmitter {
                   toBlock: BigInt(end)
                 });
                 
-                if (diagnosticLogs.length > 0) {
-                  this.logger.info('FOUND EarningPowerBumped EVENTS in diagnostic query!', {
-                    count: diagnosticLogs.length,
-                    blockRange: `${start}-${end}`,
-                    firstEventBlock: diagnosticLogs[0]?.blockNumber || 'unknown',
-                    lastEventBlock: diagnosticLogs[diagnosticLogs.length - 1]?.blockNumber || 'unknown'
-                  });
-                  
-                  foundEvents = true;
-                  break;
-                }
               }
               
-              if (!foundEvents) {
-                this.logger.info('No EarningPowerBumped events found in wide diagnostic range');
-              }
             } catch (wideRangeError) {
               this.logger.error('Error in wide-range diagnostic query', { error: wideRangeError });
             }
@@ -434,13 +412,7 @@ export class StakerMonitor extends EventEmitter {
           // Get the exact event signature from the ABI
           const eventSignature = earningPowerBumpedFragment.format().replace('event ', '');
           const earningPowerBumpedTopic = ethers.id(eventSignature);
-          
-          this.logger.info('Querying for EarningPowerBumped events', {
-            eventSignature,
-            topic: earningPowerBumpedTopic,
-            fromBlock,
-            toBlock
-          });
+  
 
           // Direct logs query for EarningPowerBumped events
           const logs = await this.provider.getLogs({
@@ -450,12 +422,6 @@ export class StakerMonitor extends EventEmitter {
             toBlock: BigInt(toBlock)
           });
 
-          this.logger.info('EarningPowerBumped events found:', {
-            count: logs.length,
-            contractAddress: this.contract.target,
-            topic: earningPowerBumpedTopic
-          });
-          
           // Log the raw logs for debugging if any found
           if (logs.length > 0) {
             const firstLog = logs[0];
@@ -508,8 +474,6 @@ export class StakerMonitor extends EventEmitter {
                     count: allLogs.length
                   });
                 }
-              } else {
-                this.logger.info('No events of any kind found on the contract in this range');
               }
             } catch (error) {
               this.logger.warn('Error when querying for all logs', { error });
@@ -554,10 +518,6 @@ export class StakerMonitor extends EventEmitter {
                 return null;
               }
             }).filter(Boolean) as ethers.Log[];
-
-            this.logger.info('Successfully parsed EarningPowerBumped events', {
-              count: bumpedEvents.length
-            });
           }
         } else {
           this.logger.warn('EarningPowerBumped event not found in contract ABI, skipping query');
@@ -720,22 +680,8 @@ export class StakerMonitor extends EventEmitter {
               });
             }
           }
-        } else {
-          this.logger.info('No EarningPowerBumped events found in range', {
-            fromBlock,
-            toBlock
-          });
         }
         
-        // Overall event count summary
-        this.logger.info('Events processed summary', {
-          fromBlock,
-          toBlock,
-          depositedCount: depositedEvents.length,
-          withdrawnCount: withdrawnEvents.length,
-          alteredCount: alteredEvents.length,
-          earningPowerBumpedCount: bumpedEvents.length
-        });
       } catch (err) {
         this.logger.error('Error processing events in block range', {
           error: err,
