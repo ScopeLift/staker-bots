@@ -31,8 +31,6 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
     config,
     priceFeed,
     logger: loggerInstance = logger,
-    gasPriceMultiplier = 1.1,
-    maxGasPrice = '500000000000',
   }: {
     database: IDatabase
     executor: IExecutor

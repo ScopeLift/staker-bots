@@ -637,7 +637,6 @@ async function initializeRariClaimDistributeEngine(
   database: DatabaseWrapper,
   executor: IExecutor,
   logger: Logger,
-  errorLogger: ErrorLogger,
 ): Promise<RariClaimDistributeEngine> {
   logger.info('Initializing Rari Claim and Distribute Engine...');
 
@@ -819,7 +818,6 @@ async function main() {
           database,
           runningComponents.executor as IExecutor,
           profitabilityLogger,
-          profitabilityErrorLogger,
         );
     }
 
