@@ -46,11 +46,11 @@ export const createMonitorConfig = async (
   const startBlock = checkpoint ? checkpoint.last_block_number : CONFIG.monitor.startBlock;
 
   return {
-    ...CONFIG.monitor,  // Spread first to allow overrides
+    ...CONFIG.monitor,
     provider,
     database,
     networkName: 'arbitrum',
     arbTokenAddress: CONFIG.monitor.arbTestTokenAddress,
-    startBlock, // Override with checkpoint value if available
+    startBlock,
   };
 };

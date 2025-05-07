@@ -15,7 +15,6 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   private scoreCache: Map<string, bigint>;
   private readonly contract: IRewardCalculator;
   private readonly provider: ethers.Provider;
-  private lastProcessedBlock: number;
   private profitabilityEngine: ProfitabilityEngineWrapper | null = null;
 
   constructor(db: IDatabase, provider: ethers.Provider) {
@@ -23,7 +22,6 @@ export class BinaryEligibilityOracleEarningPowerCalculator
     this.provider = provider;
     this.logger = new ConsoleLogger('info');
     this.scoreCache = new Map();
-    this.lastProcessedBlock = 0;
 
     // Initialize contract
     if (!CONFIG.monitor.rewardCalculatorAddress) {
@@ -162,37 +160,12 @@ export class BinaryEligibilityOracleEarningPowerCalculator
       // Get events from blockchain
       const filter = this.contract.filters.DelegateeScoreUpdated();
 
-      this.logger.info('Event filter details:', {
-        address: CONFIG.monitor.rewardCalculatorAddress,
-        topics: filter.topics,
-        fromBlock,
-        toBlock,
-      });
-
       // Query events for the exact block range
       const events = await this.contract.queryFilter(
         filter,
         fromBlock,
         toBlock,
       );
-
-      this.logger.info('Raw events from contract:', {
-        eventCount: events.length,
-        events: events.map((e) => ({
-          address: e.address?.toLowerCase(),
-          topics: e.topics,
-          data: e.data,
-          blockNumber: e.blockNumber,
-        })),
-      });
-
-      this.logger.info('Processing score events', {
-        eventCount: events.length,
-        fromBlock,
-        toBlock,
-        contractAddress: CONFIG.monitor.rewardCalculatorAddress,
-        hasProfitabilityEngine: this.profitabilityEngine !== null,
-      });
 
       // Process events in batch
       for (const event of events) {
@@ -221,7 +194,6 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         last_update: new Date().toISOString(),
       });
 
-      this.lastProcessedBlock = toBlock;
       this.logger.info('Score events processed successfully', {
         processedEvents: events.length,
         fromBlock,
@@ -278,7 +250,6 @@ export class BinaryEligibilityOracleEarningPowerCalculator
               event,
             },
           );
-          // Continue processing even if notification fails
         }
       } else {
         this.logger.warn(

@@ -92,7 +92,7 @@ export class Calculator {
   }
 
   private async processLoop(): Promise<void> {
-    const CALCULATOR_BLOCK_RANGE = this.config.maxBlockRange; // Process 10k blocks at a time
+    const CALCULATOR_BLOCK_RANGE = this.config.maxBlockRange;
 
     while (this.isRunning) {
       try {
@@ -107,7 +107,7 @@ export class Calculator {
         const fromBlock = this.lastProcessedBlock + 1;
         const toBlock = Math.min(
           targetBlock,
-          fromBlock + CALCULATOR_BLOCK_RANGE - 1, // Use larger block range
+          fromBlock + CALCULATOR_BLOCK_RANGE - 1,
         );
 
         // Process blocks and update checkpoint in one go

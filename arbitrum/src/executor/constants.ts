@@ -11,7 +11,7 @@ export const EXECUTOR = {
   DEFAULT_CONFIG: {
     wallet: {
       privateKey: '',
-      minBalance: ethers.parseEther('0.1'), // 0.1 ETH
+      minBalance: ethers.parseEther('0.000001'), // 0.1 ETH
       maxPendingTransactions: 5,
     },
     maxQueueSize: 100,
@@ -31,7 +31,7 @@ export const EXECUTOR = {
     relayer: {
       apiKey: '',
       apiSecret: '',
-      minBalance: ethers.parseEther('0.1'), // 0.1 ETH
+      minBalance: ethers.parseEther('0.000001'), // 0.1 ETH
       maxPendingTransactions: 5,
     },
     maxQueueSize: 100,

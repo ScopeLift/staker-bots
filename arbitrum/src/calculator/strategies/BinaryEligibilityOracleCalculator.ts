@@ -1,7 +1,6 @@
 import { ethers } from 'ethers'
 import { IDatabase } from '@/database'
-import { ScoreEvent as DBScoreEvent } from '@/database/interfaces/types'
-import { ConsoleLogger, Logger } from '@/monitor/logging'
+import { ConsoleLogger } from '@/monitor/logging'
 import { CONFIG } from '@/configuration/constants'
 import { REWARD_CALCULATOR_ABI, MAX_SCORE_CACHE_SIZE } from '../constants'
 import { ICalculatorStrategy } from '../interfaces/ICalculatorStrategy'
@@ -19,8 +18,7 @@ function createBinaryEligibilityOracleCalculator(
   provider: ethers.Provider,
 ): ICalculatorStrategy {
   const logger = new ConsoleLogger('info')
-  const scoreCache = new Map<string, bigint>()
-  let lastProcessedBlock = 0
+  const scoreCache = new Map<string, bigint>();
   let profitabilityEngine: ProfitabilityEngineWrapper | null = null
 
   // Initialize contract
@@ -33,14 +31,6 @@ function createBinaryEligibilityOracleCalculator(
     REWARD_CALCULATOR_ABI,
     provider,
   ) as unknown as IRewardCalculator
-
-  /**
-   * Sets the profitability engine for score event notifications
-   */
-  function setProfitabilityEngine(engine: ProfitabilityEngineWrapper): void {
-    profitabilityEngine = engine
-    logger.info('Profitability engine registered for score event notifications')
-  }
 
   /**
    * Calculates the earning power for a stake
@@ -151,7 +141,6 @@ function createBinaryEligibilityOracleCalculator(
         last_update: new Date().toISOString(),
       })
 
-      lastProcessedBlock = toBlock
       logger.info('Score events processed successfully', {
         processedEvents: events.length,
         fromBlock,
@@ -189,11 +178,8 @@ function createBinaryEligibilityOracleCalculator(
         block_number: event.block_number,
       })
 
-      // Notify profitability engine about the score event if it's set
       if (profitabilityEngine) {
         try {
-          // Assumes the profitability engine has a method to handle score events
-          // This may need to be adjusted based on the actual API
           await profitabilityEngine.onScoreEvent(event.delegatee, event.score)
         } catch (notifyError) {
           logger.error('Error notifying profitability engine:', {
@@ -201,7 +187,6 @@ function createBinaryEligibilityOracleCalculator(
             delegatee: event.delegatee,
             score: event.score.toString(),
           })
-          // Don't throw here, continue processing even if notification fails
         }
       }
     } catch (error) {
