@@ -26,9 +26,6 @@ import { QueueManager } from './QueueManager';
 import { TransactionType, TransactionQueueStatus } from '@/database/interfaces/types';
 import { TransactionStatus } from './interfaces/types';
 
-// Basic sleep function implementation if not available in utils
-// const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
  * Supported executor types
  */
@@ -311,50 +308,6 @@ export class ExecutorWrapper {
         },
         false,
       );
-    }
-  }
-
-  /**
-   * Helper to potentially validate Defender credentials if enough time has passed.
-   * Assumes the underlying RelayerExecutor has a method like `validateCredentials`.
-   */
-  private async ensureDefenderCredentialsValid(): Promise<void> {
-    if (this.type !== ExecutorType.DEFENDER) return;
-
-    const oneHour = 3600 * 1000;
-    if (Date.now() - this.lastDefenderValidationTimestamp > oneHour) {
-      this.logger.info(
-        'Attempting to validate Defender credentials (after 1 hour)...',
-      );
-      try {
-        // Check if the executor has the validateCredentials method
-        if (this.executor.validateCredentials) {
-          await this.executor.validateCredentials();
-          this.logger.info('Defender credentials validated successfully.');
-        } else {
-          this.logger.warn(
-            'RelayerExecutor does not have a validateCredentials method.',
-          );
-        }
-        this.lastDefenderValidationTimestamp = Date.now();
-      } catch (error) {
-        this.logger.error('Failed to validate Defender credentials', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // Check if it's a 403 error, if so, prepare to exit
-        if (error instanceof Error && error.message.includes('403')) {
-          this.logger.error(
-            'CRITICAL: Defender credential validation resulted in 403. Exiting process.',
-          );
-          process.exit(1); // Exit the process, PM2 should restart it
-        }
-        // Otherwise, rethrow as a potentially retryable error
-        throw new ExecutorError(
-          'Defender credential validation failed',
-          { error: error instanceof Error ? error.message : String(error) },
-          true,
-        );
-      }
     }
   }
 

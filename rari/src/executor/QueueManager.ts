@@ -6,7 +6,6 @@ import {
   TransactionQueueStatus,
 } from '@/database/interfaces/types';
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
-import { v4 as uuidv4 } from 'uuid';
 
 interface QueueItemStats {
   total: number;

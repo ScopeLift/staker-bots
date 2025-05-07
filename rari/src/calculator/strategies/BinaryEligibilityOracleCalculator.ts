@@ -19,7 +19,7 @@ function createBinaryEligibilityOracleCalculator(
 ): ICalculatorStrategy {
   const logger = new ConsoleLogger('info')
   const scoreCache = new Map<string, bigint>()
-  let lastProcessedBlock = 0
+
   let profitabilityEngine: GovLstProfitabilityEngineWrapper | null = null
 
   // Initialize contract
@@ -32,14 +32,6 @@ function createBinaryEligibilityOracleCalculator(
     REWARD_CALCULATOR_ABI,
     provider,
   ) as unknown as IRewardCalculator
-
-  /**
-   * Sets the profitability engine for score event notifications
-   */
-  function setProfitabilityEngine(engine: GovLstProfitabilityEngineWrapper): void {
-    profitabilityEngine = engine
-    logger.info('Profitability engine registered for score event notifications')
-  }
 
   /**
    * Calculates the earning power for a stake
@@ -150,7 +142,6 @@ function createBinaryEligibilityOracleCalculator(
         last_update: new Date().toISOString(),
       })
 
-      lastProcessedBlock = toBlock
       logger.info('Score events processed successfully', {
         processedEvents: events.length,
         fromBlock,

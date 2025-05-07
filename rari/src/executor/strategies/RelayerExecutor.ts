@@ -645,7 +645,7 @@ export class RelayerExecutor implements IExecutor {
 
         // Calculate gas limit with extra buffer for complex operations
         const gasEstimate = tx.profitability.estimates.gas_estimate;
-        const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate; // Use minimum 500k gas if estimate is too low
+        const baseGasLimit = gasEstimate < 120000n ? 600000n : gasEstimate;
         const calculatedGasLimit = calculateGasLimit(
           baseGasLimit,
           depositIds.length,
