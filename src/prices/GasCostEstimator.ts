@@ -1,11 +1,24 @@
 import { ethers } from 'ethers';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
+import { CoinMarketCapFeed } from './CoinmarketcapFeed';
+import { CONFIG } from '../configuration';
 
 export class GasCostEstimator {
   private readonly logger: Logger;
+  private readonly priceFeed: CoinMarketCapFeed;
 
   constructor() {
     this.logger = new ConsoleLogger('info');
+
+    // Configure CoinMarketCapFeed with proper token addresses
+    this.priceFeed = new CoinMarketCapFeed(
+      {
+        ...CONFIG.priceFeed.coinmarketcap,
+        rewardToken: CONFIG.govlst.address,
+        gasToken: 'ETH',
+      },
+      this.logger,
+    );
   }
 
   /**
@@ -16,36 +29,48 @@ export class GasCostEstimator {
    */
   async estimateGasCostInRewardToken(
     provider: ethers.Provider,
+    gasLimit: bigint,
   ): Promise<bigint> {
-    // Get current gas price and estimate gas cost
-    const feeData = await provider.getFeeData();
-    const gasPrice = feeData.gasPrice ?? BigInt(0);
-    const gasLimit = BigInt(300000); // Estimated gas limit for claim
-    const gasCost = gasPrice * gasLimit;
+    try {
+      // Get current gas price
+      const gasPrice = await provider.getFeeData();
+      if (!gasPrice.gasPrice) throw new Error('Failed to get gas price');
 
-    // Use hardcoded prices for testing
-    // ETH price: $1800, Token price: $1
-    // Scale prices to token decimals (18)
-    const ethPriceInUsd = BigInt(1800); // $1800 per ETH
-    const tokenPriceInUsd = BigInt(1); // $1 per token
+      // Calculate total gas cost in wei
+      const gasCost = gasPrice.gasPrice * gasLimit;
 
-    // Calculate gas cost in reward tokens
-    // gasCost is in wei, convert to ETH by dividing by 1e18
-    // Then multiply by price ratio (ethPrice/tokenPrice) to get token amount
-    const gasCostInRewardTokens =
-      (gasCost * ethPriceInUsd) / (tokenPriceInUsd * BigInt(1e18));
+      // Get token prices
+      const prices = await this.priceFeed.getTokenPrices();
 
-    this.logger.info('Estimated gas cost in reward tokens:', {
-      gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
-      gasLimit: gasLimit.toString(),
-      gasCostWei: gasCost.toString(),
-      gasCostEth: ethers.formatEther(gasCost),
-      ethPriceUsd: ethPriceInUsd.toString(),
-      tokenPriceUsd: tokenPriceInUsd.toString(),
-      gasCostInRewardTokens: gasCostInRewardTokens.toString(),
-      gasCostInRewardTokensFormatted: ethers.formatEther(gasCostInRewardTokens),
-    });
+      this.logger.info('Price feed data for gas cost calculation', {
+        ethPriceUSD: prices.gasToken.usd.toString(),
+        tokenPriceUSD: prices.rewardToken.usd.toString(),
+        gasCostWei: gasCost.toString(),
+        gasLimit: gasLimit.toString(),
+        gasPriceWei: gasPrice.gasPrice.toString(),
+      });
 
-    return gasCostInRewardTokens;
+      // Convert gas cost to reward tokens:
+      // 1. gasCost (in wei) * ethPriceUSD = cost in USD (scaled by 1e18)
+      // 2. cost in USD / tokenPriceUSD = cost in reward tokens (scaled by 1e18)
+      // 3. Final result needs to be in reward token decimals
+      const ethPriceScaled = BigInt(Math.round(prices.gasToken.usd * 1e18));
+      const tokenPriceScaled = BigInt(
+        Math.round(prices.rewardToken.usd * 1e18),
+      );
+
+      const costInRewardTokens = (gasCost * ethPriceScaled) / tokenPriceScaled;
+
+      this.logger.info('Calculated gas cost in reward tokens', {
+        costInRewardTokens: costInRewardTokens.toString(),
+        ethPriceScaled: ethPriceScaled.toString(),
+        tokenPriceScaled: tokenPriceScaled.toString(),
+      });
+
+      return costInRewardTokens;
+    } catch (error) {
+      this.logger.error('Failed to estimate gas cost', { error });
+      throw error;
+    }
   }
 }

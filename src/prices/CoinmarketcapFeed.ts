@@ -56,6 +56,8 @@ export class CoinMarketCapFeed implements IPriceFeed {
   private readonly gasToken: string;
   private readonly idCache: Map<string, number>; // Cache for address -> CMC ID mapping
   private readonly symbolCache: Map<string, string>; // Cache for address -> symbol mapping
+  private readonly ETH_ID = 1027; // CoinMarketCap ID for ETH
+  private readonly OBOL_ID = 36278; // CoinMarketCap ID for Obol
 
   constructor(config: ExtendedPriceFeedConfig, logger: Logger) {
     this.client = axios.create({
@@ -63,6 +65,7 @@ export class CoinMarketCapFeed implements IPriceFeed {
       timeout: config.timeout || 5000,
       headers: {
         'X-CMC_PRO_API_KEY': config.apiKey,
+        Accept: 'application/json',
       },
     });
     this.logger = logger;
@@ -211,8 +214,26 @@ export class CoinMarketCapFeed implements IPriceFeed {
     }
 
     try {
-      // Step 1: Get the CoinMarketCap ID for the token
-      const tokenId = await this.getTokenId(tokenAddress);
+      let tokenId: number;
+
+      // Special handling for ETH
+      if (
+        tokenAddress.toLowerCase() === 'eth' ||
+        tokenAddress.toLowerCase() ===
+          '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+      ) {
+        tokenId = this.ETH_ID;
+        this.logger.info('Using ETH token ID', { tokenId });
+      } else if (
+        tokenAddress.toLowerCase() === this.rewardToken.toLowerCase()
+      ) {
+        // Special handling for Obol token
+        tokenId = this.OBOL_ID;
+        this.logger.info('Using Obol token ID', { tokenId });
+      } else {
+        // For other tokens, get their ID from the API
+        tokenId = await this.getTokenId(tokenAddress);
+      }
 
       this.logger.info('Fetching token price from CoinMarketCap', {
         tokenAddress,
@@ -277,11 +298,11 @@ export class CoinMarketCapFeed implements IPriceFeed {
       };
 
       // Cache the results
-      this.cache.set(tokenAddress, tokenPrice);
+      this.cache.set(tokenAddress.toLowerCase(), tokenPrice);
 
       return tokenPrice;
     } catch (error) {
-      this.logger.error('Failed to fetch token price from CoinMarketCap', {
+      this.logger.error('Failed to get token price', {
         error,
         tokenAddress,
       });
