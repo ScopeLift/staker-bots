@@ -604,6 +604,43 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
   }
 
   /**
+   * Handle score event updates for a delegatee
+   * @param delegatee The delegatee address
+   * @param score The new score value
+   */
+  async onScoreEvent(delegatee: string, score: bigint): Promise<void> {
+    try {
+      this.logger.info('Processing score event in base engine', {
+        delegatee,
+        score: score.toString(),
+      });
+
+      // Get all deposits for this delegatee
+      const deposits = await this.calculator['db'].getDepositsByDelegatee(delegatee);
+      
+      if (deposits.length === 0) {
+        this.logger.info('No deposits found for delegatee', { delegatee });
+        return;
+      }
+
+      this.logger.info('Found deposits for delegatee', {
+        delegatee,
+        count: deposits.length,
+      });
+
+      // Process the deposits batch
+      await this.processDepositsBatch({ deposits });
+    } catch (error) {
+      this.logger.error('Error processing score event in base engine', {
+        delegatee,
+        score: score.toString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Check if a delegatee's score has changed since the last score event
    * @param delegatee The delegatee address to check
    * @returns true if the score has changed or if there's no previous score to compare against

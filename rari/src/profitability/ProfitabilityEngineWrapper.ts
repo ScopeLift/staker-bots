@@ -801,18 +801,30 @@ export class GovLstProfitabilityEngineWrapper
           );
           await this.createQueueItems(groupDeposits, profitabilityCheck);
 
-          // Queue transaction with executor using serialized data
-          const serializedTxData = this.serializeBigIntValues({
-            depositIds: group.deposit_ids,
-            totalRewards: group.total_rewards,
-            expectedProfit: group.expected_profit,
-            gasEstimate: group.gas_estimate,
+          // FIXED: Generate proper contract call data instead of serialized JSON
+          // We need to use the claimAndDistributeReward function to perform the claim
+          const claimAndDistributeInterface = new ethers.Interface([
+            "function claimAndDistributeReward()"
+          ]);
+          
+          // Encode the function call
+          const txData = claimAndDistributeInterface.encodeFunctionData(
+            "claimAndDistributeReward",
+            []
+          );
+
+          this.logger.info('Queueing claimAndDistributeReward transaction with correct call data', {
+            groupSize: group.deposit_ids.length,
+            totalRewards: group.total_rewards.toString(),
+            expectedProfit: group.expected_profit.toString(),
+            txData
           });
 
+          // Queue the transaction with proper contract call data
           await this.executor.queueTransaction(
             group.deposit_ids,
             profitabilityCheck,
-            JSON.stringify(serializedTxData),
+            txData
           );
 
           this.logger.info('Successfully queued profitable group:', {

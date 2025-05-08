@@ -14,3 +14,10 @@ node_modules
 **/.env.*
 
 .cursor
+
+# Database files
+data/
+*.json
+!package.json
+!tsconfig.json
+!pnpm-workspace.yaml

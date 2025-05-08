@@ -5,7 +5,7 @@ import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { ethers } from 'ethers';
 import { CONFIG } from '@/configuration';
 import { REWARD_CALCULATOR_ABI } from '../constants';
-import { GovLstProfitabilityEngineWrapper } from '@/profitability';
+import { IProfitabilityEngine } from '@/profitability/interfaces/IProfitabilityEngine';
 
 export class BinaryEligibilityOracleEarningPowerCalculator
   implements ICalculatorStrategy
@@ -15,7 +15,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   private scoreCache: Map<string, bigint>;
   private readonly contract: IRewardCalculator;
   private readonly provider: ethers.Provider;
-  private profitabilityEngine: GovLstProfitabilityEngineWrapper | null = null;
+  private profitabilityEngine: IProfitabilityEngine | null = null;
 
   constructor(db: IDatabase, provider: ethers.Provider) {
     this.db = db;
@@ -37,7 +37,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   /**
    * Set the profitability engine for score event notifications
    */
-  setProfitabilityEngine(engine: GovLstProfitabilityEngineWrapper): void {
+  setProfitabilityEngine(engine: IProfitabilityEngine): void {
     this.profitabilityEngine = engine;
     this.logger.info(
       'Profitability engine registered for score event notifications',
@@ -151,17 +151,19 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
   async processScoreEvents(fromBlock: number, toBlock: number): Promise<void> {
     try {
+      const contractAddress = (this.contract as unknown as { address: string }).address;
+      
       this.logger.info('Querying score events from contract', {
         fromBlock,
         toBlock,
-        contractAddress: CONFIG.monitor.rewardCalculatorAddress,
+        contractAddress,
       });
 
       // Get events from blockchain
       const filter = this.contract.filters.DelegateeScoreUpdated();
 
       this.logger.info('Event filter details:', {
-        address: CONFIG.monitor.rewardCalculatorAddress,
+        address: contractAddress,
         topics: filter.topics,
         fromBlock,
         toBlock,
@@ -188,7 +190,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         eventCount: events.length,
         fromBlock,
         toBlock,
-        contractAddress: CONFIG.monitor.rewardCalculatorAddress,
+        contractAddress,
         hasProfitabilityEngine: this.profitabilityEngine !== null,
       });
 
@@ -227,12 +229,13 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         toBlock,
         blockHash: block.hash,
       });
+
     } catch (error) {
       this.logger.error('Error processing score events:', {
         error,
         fromBlock,
         toBlock,
-        contractAddress: CONFIG.monitor.rewardCalculatorAddress,
+        contractAddress: (this.contract as unknown as { address: string }).address,
       });
       throw error;
     }

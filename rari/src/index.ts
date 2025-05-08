@@ -19,11 +19,23 @@ import { RariClaimDistributeEngine } from './profitability/strategies/RariClaimD
 import { CalculatorWrapper } from './calculator/CalculatorWrapper';
 import { CoinMarketCapFeed } from './prices/CoinmarketcapFeed';
 import { BinaryEligibilityOracleEarningPowerCalculator } from './calculator';
+import path from 'path';
+import fs from 'fs/promises';
+
+// Ensure data directory exists
+const dataDir = path.resolve(process.cwd(), 'data');
+await fs.mkdir(dataDir, { recursive: true }).catch((error) => {
+  mainLogger.error('Failed to create data directory:', {
+    error: error instanceof Error ? error.message : String(error),
+    path: dataDir,
+  });
+});
 
 // Initialize database first to enable error logging
 const database = new DatabaseWrapper({
   type: CONFIG.monitor.databaseType as 'json' | 'supabase',
   fallbackToJson: true,
+  jsonDbPath: path.resolve(process.cwd(), 'data', 'rari-staker-monitor-db.json'),
 });
 
 // Initialize component-specific loggers with colors for better visual distinction
@@ -200,11 +212,11 @@ async function initializeMonitor(
   // Create monitor with config
   const monitor = new StakerMonitor(createMonitorConfig(provider, database));
 
-  // Start monitor
+  // Start monitor with coordinated block processing
   await monitor.start();
   logger.info('Monitor started successfully');
 
-  // Set up health check interval
+  // Set up health check interval - ONLY for status reporting, not for block processing
   setInterval(async () => {
     try {
       const status = await monitor.getMonitorStatus();
@@ -447,101 +459,9 @@ async function initializeCalculator(
     { type: 'binary' }
   );
 
-  // Start calculator
+  // Start calculator - this now includes its own processing loop
   await calculatorWrapper.start();
   logger.info('Calculator started successfully');
-
-  // Process initial events
-  const currentBlock = await provider.getBlockNumber();
-  const lastCheckpoint = await database.getCheckpoint('calculator');
-  const initialFromBlock = lastCheckpoint?.last_block_number
-    ? lastCheckpoint.last_block_number + 1
-    : CONFIG.monitor.startBlock;
-
-  const initialToBlock = Math.min(
-    currentBlock - CONFIG.monitor.confirmations,
-    initialFromBlock + CONFIG.monitor.maxBlockRange
-  );
-
-  if (initialToBlock > initialFromBlock) {
-    logger.info('Processing initial score events...', {
-      fromBlock: initialFromBlock,
-      toBlock: initialToBlock,
-      rewardCalculatorAddress: CONFIG.monitor.rewardCalculatorAddress,
-    });
-
-    await calculatorWrapper.processScoreEvents(initialFromBlock, initialToBlock);
-    
-    // Update checkpoint
-    const block = await provider.getBlock(initialToBlock);
-    if (!block) throw new Error(`Block ${initialToBlock} not found`);
-
-    await database.updateCheckpoint({
-      component_type: 'calculator',
-      last_block_number: initialToBlock,
-      block_hash: block.hash || '0x0000000000000000000000000000000000000000000000000000000000000000',
-      last_update: new Date().toISOString(),
-    });
-    
-    logger.info('Initial score events processed successfully');
-  }
-
-  // Set up periodic processing
-  const processInterval = setInterval(async () => {
-    try {
-      const status = await calculatorWrapper.getStatus();
-      if (!status.isRunning) {
-        logger.info('Calculator stopped, clearing interval');
-        clearInterval(processInterval);
-        return;
-      }
-
-      const currentBlock = await provider.getBlockNumber();
-      const lastCheckpoint = await database.getCheckpoint('calculator');
-      if (!lastCheckpoint) {
-        logger.error('No checkpoint found for calculator');
-        return;
-      }
-
-      const fromBlock = lastCheckpoint.last_block_number + 1;
-      const toBlock = Math.min(
-        currentBlock - CONFIG.monitor.confirmations,
-        fromBlock + CONFIG.monitor.maxBlockRange
-      );
-
-      if (toBlock > fromBlock) {
-        logger.info('Processing new score events...', {
-          fromBlock,
-          toBlock,
-          rewardCalculatorAddress: CONFIG.monitor.rewardCalculatorAddress,
-          lastProcessedBlock: lastCheckpoint.last_block_number,
-        });
-        
-        await calculatorWrapper.processScoreEvents(fromBlock, toBlock);
-
-        // Update checkpoint
-        const block = await provider.getBlock(toBlock);
-        if (!block) throw new Error(`Block ${toBlock} not found`);
-
-        await database.updateCheckpoint({
-          component_type: 'calculator',
-          last_block_number: toBlock,
-          block_hash: block.hash || '0x0000000000000000000000000000000000000000000000000000000000000000',
-          last_update: new Date().toISOString(),
-        });
-
-        logger.info('Score events processed successfully', {
-          fromBlock,
-          toBlock,
-          processedBlocks: toBlock - fromBlock + 1,
-        });
-      }
-    } catch (error) {
-      await errorLogger.error(error as Error, {
-        context: 'calculator-process-events',
-      });
-    }
-  }, CONFIG.monitor.pollInterval * 1000);
 
   // Set up health check interval
   setInterval(async () => {
@@ -802,6 +722,34 @@ async function main() {
           profitabilityLogger,
           profitabilityErrorLogger,
         );
+
+      // Connect calculator to profitability engine
+      const earningPowerCalculator = runningComponents.calculatorWrapper.getEarningPowerCalculator();
+      if (earningPowerCalculator) {
+        earningPowerCalculator.setProfitabilityEngine(runningComponents.bumpEarningPowerEngine);
+        mainLogger.info('Connected calculator to bump earning power engine');
+      }
+      
+      // Start the bump earning power engine to begin periodic checks
+      await runningComponents.bumpEarningPowerEngine!.start();
+      mainLogger.info('Bump Earning Power Engine started successfully');
+
+      // Set up health check interval for bump engine
+      setInterval(async () => {
+        try {
+          if (runningComponents.bumpEarningPowerEngine) {
+            const status = await runningComponents.bumpEarningPowerEngine.getStatus();
+            mainLogger.info('Bump Earning Power Engine health check:', {
+              isRunning: status.isRunning,
+              lastUpdateTimestamp: new Date(status.lastUpdateTimestamp).toISOString()
+            });
+          }
+        } catch (error) {
+          await profitabilityErrorLogger.error(error as Error, {
+            context: 'bump-engine-health-check',
+          });
+        }
+      }, CONFIG.monitor.healthCheckInterval * 1000);
     }
 
     // 6. Initialize Rari Claim and Distribute Engine if enabled
@@ -819,6 +767,27 @@ async function main() {
           runningComponents.executor as IExecutor,
           profitabilityLogger,
         );
+      
+      // Start the claim and distribute engine
+      await runningComponents.claimDistributeEngine.start();
+      mainLogger.info('Claim and Distribute Engine started successfully');
+      
+      // Set up health check interval for claim engine
+      setInterval(async () => {
+        try {
+          if (runningComponents.claimDistributeEngine) {
+            const status = await runningComponents.claimDistributeEngine.getStatus();
+            mainLogger.info('Claim and Distribute Engine health check:', {
+              isRunning: status.isRunning,
+              lastUpdateTimestamp: new Date(status.lastUpdateTimestamp).toISOString()
+            });
+          }
+        } catch (error) {
+          await profitabilityErrorLogger.error(error as Error, {
+            context: 'claim-engine-health-check',
+          });
+        }
+      }, CONFIG.monitor.healthCheckInterval * 1000);
     }
 
     // Log final status

@@ -20,6 +20,10 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
   private gasCostEstimator: GasCostEstimator
   protected database: IDatabase
   protected executor: IExecutor
+  private periodicCheckInterval: NodeJS.Timeout | null = null
+  protected isRunning = false
+  private readonly PERIODIC_CHECK_INTERVAL = 5 * 60 * 1000 // 5 minutes
+  protected lastUpdateTimestamp: number
 
   constructor({
     database,
@@ -65,6 +69,7 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
     this.gasCostEstimator = new GasCostEstimator()
     this.database = database
     this.executor = executor
+    this.lastUpdateTimestamp = Date.now()
   }
 
   async processItem({ item }: { item: ProcessingQueueItem }): Promise<ProfitabilityQueueResult> {
@@ -265,6 +270,43 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
     return results
   }
 
+  /**
+   * Handle score event updates for a delegatee
+   * @param delegatee The delegatee address
+   * @param score The new score value
+   */
+  async onScoreEvent(delegatee: string, score: bigint): Promise<void> {
+    try {
+      logger.info('Processing score event for delegatee', {
+        delegatee,
+        score: score.toString(),
+      })
+
+      // Get all deposits for this delegatee
+      const deposits = await this.database.getDepositsByDelegatee(delegatee)
+      
+      if (deposits.length === 0) {
+        logger.info('No deposits found for delegatee', { delegatee })
+        return
+      }
+
+      logger.info('Found deposits for delegatee', {
+        delegatee,
+        count: deposits.length,
+      })
+
+      // Process the deposits batch
+      await this.processDepositsBatch({ deposits })
+    } catch (error) {
+      logger.error('Error processing score event', {
+        delegatee,
+        score: score.toString(),
+        error: (error as Error).message,
+      })
+      throw error
+    }
+  }
+
   private async isBumpProfitable({
     deposit,
   }: {
@@ -385,5 +427,107 @@ export class RariBumpEarningPowerEngine extends BaseProfitabilityEngine implemen
         reason: `Error: ${(error as Error).message}`,
       }
     }
+  }
+
+  /**
+   * Start periodic checks for bump opportunities
+   */
+  async start(): Promise<void> {
+    if (this.isRunning) return;
+    
+    this.isRunning = true;
+    this.lastUpdateTimestamp = Date.now();
+    logger.info('Starting Rari Bump Earning Power Engine');
+    
+    // Start periodic checks for bump opportunities
+    this.startPeriodicChecks();
+    
+    // Perform initial check for all deposits
+    try {
+      const deposits = await this.database.getAllDeposits();
+      logger.info(`Initial check: Found ${deposits.length} deposits to check for bump opportunities`);
+      
+      if (deposits.length > 0) {
+        await this.processDepositsBatch({ deposits });
+      }
+    } catch (error) {
+      logger.error('Error during initial bump check', {
+        error: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Stop periodic checks
+   */
+  async stop(): Promise<void> {
+    if (!this.isRunning) return;
+    
+    this.isRunning = false;
+    this.stopPeriodicChecks();
+    logger.info('Stopped Rari Bump Earning Power Engine');
+  }
+  
+  /**
+   * Start periodic checks for bump opportunities
+   */
+  private startPeriodicChecks(): void {
+    if (this.periodicCheckInterval) return;
+    
+    this.periodicCheckInterval = setInterval(async () => {
+      try {
+        logger.info('Running periodic check for bump opportunities');
+        
+        // Get all deposits
+        const deposits = await this.database.getAllDeposits();
+        logger.info(`Periodic check: Found ${deposits.length} deposits to check for bump opportunities`);
+        
+        if (deposits.length > 0) {
+          await this.processDepositsBatch({ deposits });
+        }
+      } catch (error) {
+        logger.error('Error during periodic bump check', {
+          error: (error as Error).message
+        });
+      }
+    }, this.PERIODIC_CHECK_INTERVAL);
+    
+    logger.info('Started periodic checks for bump opportunities', {
+      intervalMs: this.PERIODIC_CHECK_INTERVAL
+    });
+  }
+  
+  /**
+   * Stop periodic checks
+   */
+  private stopPeriodicChecks(): void {
+    if (!this.periodicCheckInterval) return;
+    
+    clearInterval(this.periodicCheckInterval);
+    this.periodicCheckInterval = null;
+    logger.info('Stopped periodic checks for bump opportunities');
+  }
+  
+  /**
+   * Get current engine status
+   */
+  async getStatus(): Promise<{
+    isRunning: boolean;
+    lastGasPrice: bigint;
+    lastUpdateTimestamp: number;
+    queueSize: number;
+    delegateeCount: number;
+  }> {
+    return {
+      isRunning: this.isRunning,
+      lastGasPrice: BigInt(0), // Default value
+      lastUpdateTimestamp: this.lastUpdateTimestamp,
+      queueSize: 0, // We don't maintain a queue in this engine
+      delegateeCount: 0 // Not tracking delegatees separately
+    };
+  }
+
+  protected async updateTimestamp(): Promise<void> {
+    this.lastUpdateTimestamp = Date.now();
   }
 } 

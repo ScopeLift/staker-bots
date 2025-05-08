@@ -74,4 +74,11 @@ export interface IProfitabilityEngine {
   }: {
     deposits: Deposit[]
   }): Promise<ProfitabilityQueueBatchResult>
+
+  /**
+   * Handle score event updates for a delegatee
+   * @param delegatee The delegatee address
+   * @param score The new score value
+   */
+  onScoreEvent(delegatee: string, score: bigint): Promise<void>
 }

@@ -142,12 +142,6 @@ function createBinaryEligibilityOracleCalculator(
         last_update: new Date().toISOString(),
       })
 
-      logger.info('Score events processed successfully', {
-        processedEvents: events.length,
-        fromBlock,
-        toBlock,
-        blockHash,
-      })
     } catch (error) {
       logger.error('Error processing score events:', {
         error,

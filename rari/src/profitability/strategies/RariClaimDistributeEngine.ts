@@ -34,6 +34,11 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
     ): Promise<bigint>
     REWARD_TOKEN(): Promise<string>
   }
+  protected readonly logger: Logger
+  private periodicCheckInterval: NodeJS.Timeout | null = null
+  private readonly PERIODIC_CHECK_INTERVAL = 5 * 60 * 1000 // 5 minutes
+  protected isRunning = false
+  protected lastUpdateTimestamp: number
 
   constructor({
     database,
@@ -43,6 +48,7 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
     provider,
     config,
     priceFeed,
+    logger = new ConsoleLogger('info', { prefix: 'RariClaimDistributeEngine' }),
   }: {
     database: IDatabase
     executor: IExecutor
@@ -67,19 +73,111 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
     provider: ethers.Provider
     config: ProfitabilityConfig
     priceFeed: IPriceFeed
+    logger?: Logger
   }) {
     super(calculator, stakerContract, provider, config, priceFeed)
     this.database = database
     this.executor = executor
+    this.logger = logger
     this.stakerContract = stakerContract
+    this.lastUpdateTimestamp = Date.now()
 
-    // Initialize LST contract
+    // Initialize LST token contract
     this.lstToken = new ethers.Contract(
       CONFIG.LST_ADDRESS,
-      CONFIG.LST_ABI,
+      [
+        'function getUnclaimedRewards() external view returns (uint256)',
+        'function claimAndDistributeReward() external',
+      ],
       provider
     ) as ethers.Contract & {
       getUnclaimedRewards(): Promise<bigint>
+    }
+  }
+
+  /**
+   * Start periodic checks for claim opportunities
+   */
+  async start(): Promise<void> {
+    if (this.isRunning) return
+    
+    this.isRunning = true
+    this.lastUpdateTimestamp = Date.now()
+    this.logger.info('Starting Rari Claim and Distribute Engine')
+    
+    // Start periodic checks for claim opportunities
+    this.startPeriodicChecks()
+    
+    // Perform initial check right away
+    try {
+      this.logger.info('Performing initial check for claim opportunities')
+      await this.processDeposits()
+    } catch (error) {
+      this.logger.error('Error during initial claim check', {
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
+  
+  /**
+   * Stop periodic checks
+   */
+  async stop(): Promise<void> {
+    if (!this.isRunning) return
+    
+    this.isRunning = false
+    this.stopPeriodicChecks()
+    this.logger.info('Stopped Rari Claim and Distribute Engine')
+  }
+  
+  /**
+   * Start periodic checks for claim opportunities
+   */
+  private startPeriodicChecks(): void {
+    if (this.periodicCheckInterval) return
+    
+    this.periodicCheckInterval = setInterval(async () => {
+      try {
+        await this.processDeposits()
+      } catch (error) {
+        this.logger.error('Error during periodic claim check', {
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }, this.PERIODIC_CHECK_INTERVAL)
+    
+    this.logger.info('Started periodic checks for claim opportunities', {
+      intervalMs: this.PERIODIC_CHECK_INTERVAL
+    })
+  }
+  
+  /**
+   * Stop periodic checks
+   */
+  private stopPeriodicChecks(): void {
+    if (!this.periodicCheckInterval) return
+    
+    clearInterval(this.periodicCheckInterval)
+    this.periodicCheckInterval = null
+    this.logger.info('Stopped periodic checks for claim opportunities')
+  }
+  
+  /**
+   * Get current engine status
+   */
+  async getStatus(): Promise<{
+    isRunning: boolean
+    lastGasPrice: bigint
+    lastUpdateTimestamp: number
+    queueSize: number
+    delegateeCount: number
+  }> {
+    return {
+      isRunning: this.isRunning,
+      lastGasPrice: BigInt(0), // Default value
+      lastUpdateTimestamp: this.lastUpdateTimestamp,
+      queueSize: 0, // We don't maintain a queue in this engine
+      delegateeCount: 0 // Not tracking delegatees separately
     }
   }
 
@@ -96,7 +194,10 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
         ownerAddress: deposit.owner_address,
       })
 
-      const isClaimProfitable = await this.isClaimProfitable()
+      const isClaimProfitable = await this.isClaimProfitable({
+        deposit,
+        unclaimedRewards: await this.getUnclaimedRewards(deposit.deposit_id.toString())
+      })
 
       if (!isClaimProfitable.profitable) {
         this.logger.info('Claim not profitable', {
@@ -172,35 +273,54 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
   }: {
     deposits: Deposit[]
   }): Promise<ProfitabilityQueueBatchResult> {
-    this.logger.info(`Processing claim and distribute for ${deposits.length} deposits`)
+    this.logger.info(`Processing claim and distribute for ${deposits.length} deposits`);
+
+    if (deposits.length === 0) {
+      return {
+        success: true,
+        total: 0,
+        queued: 0,
+        notProfitable: 0,
+        errors: 0,
+        details: []
+      };
+    }
     
     // For claim and distribute, we only need to check profitability once
     // as it's a global operation, not per-deposit
-    const isClaimProfitable = await this.isClaimProfitable()
+    // We know deposits[0] exists because we checked length above
+    // TypeScript doesn't understand our length check guarantees an element exists
+    const firstDeposit = deposits[0]!;
     
-    if (!isClaimProfitable.profitable) {
-      return {
-        success: true,
-        total: deposits.length,
-        queued: 0,
-        notProfitable: deposits.length,
-        errors: 0,
-        details: deposits.map(deposit => ({
-          depositId: deposit.deposit_id,
-          result: 'not_profitable',
-          details: { reason: isClaimProfitable.reason },
-        })),
-      }
-    }
-
-    // If profitable, queue one transaction
-    const tx = {
-      to: CONFIG.LST_ADDRESS,
-      data: this.lstToken.interface.encodeFunctionData('claimAndDistributeReward', []),
-      gasLimit: CONFIG.CLAIM_GAS_LIMIT || '500000',
-    }
-
     try {
+      const unclaimedRewards = await this.getUnclaimedRewards(firstDeposit.deposit_id);
+      const isClaimProfitable = await this.isClaimProfitable({
+        deposit: firstDeposit,
+        unclaimedRewards
+      });
+      
+      if (!isClaimProfitable.profitable) {
+        return {
+          success: true,
+          total: deposits.length,
+          queued: 0,
+          notProfitable: deposits.length,
+          errors: 0,
+          details: deposits.map(deposit => ({
+            depositId: deposit.deposit_id,
+            result: 'not_profitable',
+            details: { reason: isClaimProfitable.reason },
+          })),
+        };
+      }
+
+      // If profitable, queue one transaction
+      const tx = {
+        to: CONFIG.LST_ADDRESS,
+        data: this.lstToken.interface.encodeFunctionData('claimAndDistributeReward', []),
+        gasLimit: CONFIG.CLAIM_GAS_LIMIT || '500000',
+      }
+
       await this.executor.queueTransaction(
         deposits.map(d => BigInt(d.deposit_id)),
         {
@@ -240,9 +360,10 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
         }],
       }
     } catch (error) {
-      this.logger.error('Error queueing claim and distribute transaction', {
-        error: (error as Error).message,
-      })
+      this.logger.error('Error processing first deposit', {
+        depositId: firstDeposit.deposit_id,
+        error: error instanceof Error ? error.message : String(error)
+      });
       return {
         success: false,
         total: deposits.length,
@@ -250,94 +371,176 @@ export class RariClaimDistributeEngine extends BaseProfitabilityEngine implement
         notProfitable: 0,
         errors: deposits.length,
         details: [{
-          depositId: 'global',
+          depositId: firstDeposit.deposit_id,
           result: 'error',
-          details: { error: (error as Error).message },
-        }],
-      }
+          details: { error: error instanceof Error ? error.message : String(error) }
+        }]
+      };
     }
   }
 
-  private async isClaimProfitable(): Promise<{
-    profitable: boolean
-    reason?: string
-    rewardAmount?: bigint
+  private async isClaimProfitable({
+    deposit,
+    unclaimedRewards
+  }: {
+    deposit: Deposit;
+    unclaimedRewards: bigint;
+  }): Promise<{
+    profitable: boolean;
+    reason?: string;
+    rewardAmount?: bigint;
   }> {
     try {
-      // Get unclaimed rewards amount
-      const unclaimedRewards = await this.getUnclaimedRewards()
-      
-      if (unclaimedRewards === 0n) {
-        return {
-          profitable: false,
-          reason: 'No unclaimed rewards',
-        }
-      }
-
       // Get current gas price
-      const feeData = await this.provider.getFeeData()
-      if (!feeData.gasPrice) {
-        throw new Error('Failed to get gas price')
-      }
-      const gasPriceBigInt = BigInt(feeData.gasPrice.toString())
+      const provider = this.stakerContract.runner?.provider || this.provider;
+      const feeData = await provider.getFeeData();
+      const gasPriceBigInt = feeData.gasPrice || BigInt('50000000000'); // 50 gwei default
       
-      // Estimate gas cost for claim transaction
-      const gasLimit = BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000')
-      const gasCost = gasPriceBigInt * gasLimit
+      // Estimate gas cost
+      const gasLimit = BigInt(CONFIG.CLAIM_GAS_LIMIT || '300000');
+      const gasCost = gasPriceBigInt * gasLimit;
 
-      // Get token prices for profitability calculation
-      const tokenPrice = await this.priceFeed.getTokenPrice(CONFIG.LST_ADDRESS)
-      if (!tokenPrice) {
+      // Check if rewards exceed gas cost with minimum profit margin
+      const minProfitMargin = BigInt(CONFIG.govlst.minProfitMargin || '1000000000000000'); // 0.001 ETH default
+      const minProfit = gasCost + minProfitMargin;
+
+      if (unclaimedRewards <= minProfit) {
         return {
           profitable: false,
-          reason: 'Could not get price data',
-        }
-      }
-
-      // Convert gas cost to token equivalent for comparison
-      const gasCostInToken = await this.priceFeed.getTokenPriceInWei(
-        CONFIG.LST_ADDRESS,
-        gasCost
-      )
-
-      // Check if profitable
-      const profit = unclaimedRewards - gasCostInToken
-
-      const profitThreshold = BigInt(CONFIG.CLAIM_PROFIT_THRESHOLD || '0')
-      
-      if (profit <= profitThreshold) {
-        return {
-          profitable: false,
-          reason: `Profit ${profit.toString()} below threshold ${profitThreshold.toString()}`,
-          rewardAmount: unclaimedRewards,
-        }
+          reason: `Unclaimed rewards (${unclaimedRewards}) less than minimum profit (${minProfit})`,
+          rewardAmount: unclaimedRewards
+        };
       }
 
       return {
         profitable: true,
-        rewardAmount: unclaimedRewards,
-      }
+        rewardAmount: unclaimedRewards
+      };
     } catch (error) {
       this.logger.error('Error calculating claim profitability', {
-        error: (error as Error).message,
-      })
+        depositId: deposit.deposit_id,
+        error: error instanceof Error ? error.message : String(error)
+      });
       return {
         profitable: false,
-        reason: `Error: ${(error as Error).message}`,
-      }
+        reason: `Error: ${error instanceof Error ? error.message : String(error)}`,
+        rewardAmount: 0n
+      };
     }
   }
 
-  private async getUnclaimedRewards(): Promise<bigint> {
+  private async getUnclaimedRewards(depositId: string): Promise<bigint> {
     try {
-      // Check for a view function on the LST contract that shows unclaimed rewards
-      const unclaimedRewards = await this.lstToken.getUnclaimedRewards()
+      const unclaimedRewards = await this.stakerContract.unclaimedReward(BigInt(depositId))
       return BigInt(unclaimedRewards.toString())
     } catch (error) {
       this.logger.error('Error getting unclaimed rewards', {
-        error: (error as Error).message,
+        depositId,
+        error: error instanceof Error ? error.message : String(error)
       })
-      return 0n
+      throw error
     }
+  }
+
+  public async processDeposits(): Promise<void> {
+    try {
+      const deposits = await this.database.getAllDeposits();
+      if (!deposits.length) {
+        this.logger.info('No deposits found to process');
+        return;
+      }
+
+      this.logger.info('Processing claim and distribute for deposits', {
+        count: deposits.length
+      });
+
+      for (const deposit of deposits) {
+        try {
+          const unclaimedRewards = await this.getUnclaimedRewards(deposit.deposit_id);
+          
+          if (unclaimedRewards <= 0n) {
+            this.logger.debug('No unclaimed rewards for deposit', {
+              depositId: deposit.deposit_id,
+              unclaimedRewards: unclaimedRewards.toString()
+            });
+            continue;
+          }
+
+          // Process claim if profitable
+          const isClaimProfitable = await this.isClaimProfitable({
+            deposit,
+            unclaimedRewards
+          });
+
+          if (!isClaimProfitable.profitable) {
+            this.logger.debug('Claim not profitable for deposit', {
+              depositId: deposit.deposit_id,
+              reason: isClaimProfitable.reason
+            });
+            continue;
+          }
+
+          // Queue the claim transaction
+          await this.queueClaimTransaction(deposit, unclaimedRewards);
+          
+        } catch (error) {
+          this.logger.error('Error processing deposit for claim', {
+            depositId: deposit.deposit_id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.error('Error processing deposits for claim and distribute', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    this.lastUpdateTimestamp = Date.now();
+  }
+
+  private async queueClaimTransaction(deposit: Deposit, unclaimedRewards: bigint): Promise<void> {
+    // Create transaction data
+    const claimInterface = new ethers.Interface([
+      "function claimReward(uint256 depositId)"
+    ])
+    
+    const data = claimInterface.encodeFunctionData("claimReward", [
+      deposit.deposit_id
+    ])
+
+    const tx = {
+      to: CONFIG.STAKER_CONTRACT_ADDRESS,
+      data,
+      gasLimit: CONFIG.CLAIM_GAS_LIMIT || '300000'
+    }
+
+    this.logger.info('Queueing claim transaction', {
+      depositId: deposit.deposit_id,
+      unclaimedRewards: unclaimedRewards.toString()
+    })
+
+    await this.executor.queueTransaction(
+      [BigInt(deposit.deposit_id)],
+      {
+        is_profitable: true,
+        constraints: {
+          has_enough_shares: true,
+          meets_min_reward: true,
+          meets_min_profit: true
+        },
+        estimates: {
+          total_shares: BigInt(deposit.amount),
+          payout_amount: unclaimedRewards,
+          gas_estimate: BigInt(CONFIG.CLAIM_GAS_LIMIT || '300000'),
+          gas_cost: BigInt(CONFIG.CLAIM_GAS_LIMIT || '300000'),
+          expected_profit: unclaimedRewards
+        },
+        deposit_details: [{
+          depositId: BigInt(deposit.deposit_id),
+          rewards: unclaimedRewards
+        }]
+      },
+      tx.data
+    )
   }
 } 
