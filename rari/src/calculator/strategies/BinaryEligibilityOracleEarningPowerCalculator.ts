@@ -76,27 +76,33 @@ export class BinaryEligibilityOracleEarningPowerCalculator
     try {
       // First try to get the latest score event from the database for this delegatee
       let latestScoreEvent = null;
-      
+
       try {
         latestScoreEvent = await this.db.getLatestScoreEvent(delegatee);
         if (latestScoreEvent) {
-          this.logger.info('Using latest score event from database for getNewEarningPower', {
-            delegatee,
-            score: latestScoreEvent.score,
-            blockNumber: latestScoreEvent.block_number,
-          });
+          this.logger.info(
+            'Using latest score event from database for getNewEarningPower',
+            {
+              delegatee,
+              score: latestScoreEvent.score,
+              blockNumber: latestScoreEvent.block_number,
+            },
+          );
         } else {
-          this.logger.info('No latest score event found in database for delegatee', {
-            delegatee
-          });
+          this.logger.info(
+            'No latest score event found in database for delegatee',
+            {
+              delegatee,
+            },
+          );
         }
       } catch (dbError) {
         this.logger.warn('Error getting latest score event from database', {
           error: dbError,
-          delegatee
+          delegatee,
         });
       }
-      
+
       // Call the contract's getNewEarningPower method
       const [newEarningPower, isBumpable] =
         await this.contract.getNewEarningPower(
@@ -105,37 +111,40 @@ export class BinaryEligibilityOracleEarningPowerCalculator
           delegatee,
           oldEarningPower,
         );
-        
+
       this.logger.info('Contract getNewEarningPower results', {
         delegatee,
         newEarningPower: newEarningPower.toString(),
         isBumpable,
         oldEarningPower: oldEarningPower.toString(),
-        hasLatestScoreEvent: !!latestScoreEvent
+        hasLatestScoreEvent: !!latestScoreEvent,
       });
-      
+
       // If we have a latest score event from the database, use it to make the final decision
       if (latestScoreEvent) {
         // Convert the score from string to bigint
         const latestScore = BigInt(latestScoreEvent.score);
-        
+
         // A deposit is bumpable if the contract's newEarningPower matches the latest score in the database
         // This means the earning power would be updated to the latest score
         const updatedBumpable = newEarningPower === latestScore;
-        
+
         if (updatedBumpable !== isBumpable) {
-          this.logger.info('Overriding bumpable decision based on latest score event', {
-            delegatee,
-            contractNewEarningPower: newEarningPower.toString(),
-            latestScore: latestScore.toString(),
-            contractIsBumpable: isBumpable,
-            updatedIsBumpable: updatedBumpable
-          });
+          this.logger.info(
+            'Overriding bumpable decision based on latest score event',
+            {
+              delegatee,
+              contractNewEarningPower: newEarningPower.toString(),
+              latestScore: latestScore.toString(),
+              contractIsBumpable: isBumpable,
+              updatedIsBumpable: updatedBumpable,
+            },
+          );
         }
-        
+
         return [BigInt(latestScore.toString()), updatedBumpable];
       }
-      
+
       return [BigInt(newEarningPower.toString()), isBumpable];
     } catch (error) {
       this.logger.error('Error getting new earning power from contract:', {
@@ -151,8 +160,9 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
   async processScoreEvents(fromBlock: number, toBlock: number): Promise<void> {
     try {
-      const contractAddress = (this.contract as unknown as { address: string }).address;
-      
+      const contractAddress = (this.contract as unknown as { address: string })
+        .address;
+
       this.logger.info('Querying score events from contract', {
         fromBlock,
         toBlock,
@@ -175,16 +185,6 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         fromBlock,
         toBlock,
       );
-
-      this.logger.info('Raw events from contract:', {
-        eventCount: events.length,
-        events: events.map((e) => ({
-          address: e.address?.toLowerCase(),
-          topics: e.topics,
-          data: e.data,
-          blockNumber: e.blockNumber,
-        })),
-      });
 
       this.logger.info('Processing score events', {
         eventCount: events.length,
@@ -222,20 +222,13 @@ export class BinaryEligibilityOracleEarningPowerCalculator
           '0x0000000000000000000000000000000000000000000000000000000000000000',
         last_update: new Date().toISOString(),
       });
-
-      this.logger.info('Score events processed successfully', {
-        processedEvents: events.length,
-        fromBlock,
-        toBlock,
-        blockHash: block.hash,
-      });
-
     } catch (error) {
       this.logger.error('Error processing score events:', {
         error,
         fromBlock,
         toBlock,
-        contractAddress: (this.contract as unknown as { address: string }).address,
+        contractAddress: (this.contract as unknown as { address: string })
+          .address,
       });
       throw error;
     }

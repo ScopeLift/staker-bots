@@ -131,23 +131,23 @@ export interface GovLstDepositDetail {
  * Result of processing a single item in the profitability queue
  */
 export interface ProfitabilityQueueResult {
-  success: boolean
-  result: 'queued' | 'not_profitable' | 'error'
-  details: Record<string, unknown>
+  success: boolean;
+  result: 'queued' | 'not_profitable' | 'error';
+  details: Record<string, unknown>;
 }
 
 /**
  * Result of batch processing deposits
  */
 export interface ProfitabilityQueueBatchResult {
-  success: boolean
-  total: number
-  queued: number
-  notProfitable: number
-  errors: number
+  success: boolean;
+  total: number;
+  queued: number;
+  notProfitable: number;
+  errors: number;
   details: Array<{
-    depositId: string
-    result: 'queued' | 'not_profitable' | 'error'
-    details: Record<string, unknown>
-  }>
+    depositId: string;
+    result: 'queued' | 'not_profitable' | 'error';
+    details: Record<string, unknown>;
+  }>;
 }

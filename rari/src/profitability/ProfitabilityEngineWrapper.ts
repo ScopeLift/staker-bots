@@ -804,27 +804,30 @@ export class GovLstProfitabilityEngineWrapper
           // FIXED: Generate proper contract call data instead of serialized JSON
           // We need to use the claimAndDistributeReward function to perform the claim
           const claimAndDistributeInterface = new ethers.Interface([
-            "function claimAndDistributeReward()"
+            'function claimAndDistributeReward()',
           ]);
-          
+
           // Encode the function call
           const txData = claimAndDistributeInterface.encodeFunctionData(
-            "claimAndDistributeReward",
-            []
+            'claimAndDistributeReward',
+            [],
           );
 
-          this.logger.info('Queueing claimAndDistributeReward transaction with correct call data', {
-            groupSize: group.deposit_ids.length,
-            totalRewards: group.total_rewards.toString(),
-            expectedProfit: group.expected_profit.toString(),
-            txData
-          });
+          this.logger.info(
+            'Queueing claimAndDistributeReward transaction with correct call data',
+            {
+              groupSize: group.deposit_ids.length,
+              totalRewards: group.total_rewards.toString(),
+              expectedProfit: group.expected_profit.toString(),
+              txData,
+            },
+          );
 
           // Queue the transaction with proper contract call data
           await this.executor.queueTransaction(
             group.deposit_ids,
             profitabilityCheck,
-            txData
+            txData,
           );
 
           this.logger.info('Successfully queued profitable group:', {
@@ -905,10 +908,11 @@ export class GovLstProfitabilityEngineWrapper
 
       // Convert deposits and check profitability
       const govLstDeposits = await Promise.all(
-        deposits.map((d) => this.convertToGovLstDeposit(d))
+        deposits.map((d) => this.convertToGovLstDeposit(d)),
       );
 
-      const profitabilityCheck = await this.checkGroupProfitability(govLstDeposits);
+      const profitabilityCheck =
+        await this.checkGroupProfitability(govLstDeposits);
       if (!profitabilityCheck.is_profitable) {
         this.logger.info('Deposits not profitable after score update', {
           delegatee,

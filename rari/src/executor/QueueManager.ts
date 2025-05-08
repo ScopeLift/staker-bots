@@ -39,13 +39,16 @@ export class QueueManager {
       throw new Error('Invalid deposit ID');
     }
 
-    const now = new Date().toISOString();
-    
-    const item: Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at' | 'attempts'> = {
+    const item: Omit<
+      TransactionQueueItem,
+      'id' | 'created_at' | 'updated_at' | 'attempts'
+    > = {
       transaction_type: this.type,
       deposit_id: firstDepositId.toString(),
       status: TransactionQueueStatus.PENDING,
-      tx_data: txData || JSON.stringify({ depositIds: depositIds.map(String), profitability }),
+      tx_data:
+        txData ||
+        JSON.stringify({ depositIds: depositIds.map(String), profitability }),
       profitability_check: JSON.stringify(profitability),
     };
 
@@ -76,8 +79,9 @@ export class QueueManager {
       // Filter by type and sort by created_at to get the oldest first
       const sortedItems = pendingItems
         .filter((item) => item.transaction_type === this.type)
-        .sort((a, b) => 
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        .sort(
+          (a, b) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
         );
 
       return sortedItems[0] || null;
@@ -96,14 +100,24 @@ export class QueueManager {
       const allItems = await this.db.getTransactionQueueItemsByStatus(
         TransactionQueueStatus.PENDING,
       );
-      const typeItems = allItems.filter((item) => item.transaction_type === this.type);
-      
+      const typeItems = allItems.filter(
+        (item) => item.transaction_type === this.type,
+      );
+
       return {
         total: typeItems.length,
-        pending: typeItems.filter(item => item.status === TransactionQueueStatus.PENDING).length,
-        submitted: typeItems.filter(item => item.status === TransactionQueueStatus.SUBMITTED).length,
-        confirmed: typeItems.filter(item => item.status === TransactionQueueStatus.CONFIRMED).length,
-        failed: typeItems.filter(item => item.status === TransactionQueueStatus.FAILED).length,
+        pending: typeItems.filter(
+          (item) => item.status === TransactionQueueStatus.PENDING,
+        ).length,
+        submitted: typeItems.filter(
+          (item) => item.status === TransactionQueueStatus.SUBMITTED,
+        ).length,
+        confirmed: typeItems.filter(
+          (item) => item.status === TransactionQueueStatus.CONFIRMED,
+        ).length,
+        failed: typeItems.filter(
+          (item) => item.status === TransactionQueueStatus.FAILED,
+        ).length,
       };
     } catch (error) {
       this.logger.error('Failed to get queue stats', {
@@ -116,7 +130,9 @@ export class QueueManager {
 
   async updateTransaction(
     id: string,
-    update: Partial<Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at'>>,
+    update: Partial<
+      Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at'>
+    >,
   ): Promise<void> {
     try {
       await this.db.updateTransactionQueueItem(id, update);
@@ -141,8 +157,10 @@ export class QueueManager {
       const items = await this.db.getTransactionQueueItemsByStatus(
         TransactionQueueStatus.PENDING,
       );
-      const typeItems = items.filter((item) => item.transaction_type === this.type);
-      
+      const typeItems = items.filter(
+        (item) => item.transaction_type === this.type,
+      );
+
       await Promise.all(
         typeItems.map((item) => this.db.deleteTransactionQueueItem(item.id)),
       );
@@ -155,4 +173,4 @@ export class QueueManager {
       throw error;
     }
   }
-} 
+}

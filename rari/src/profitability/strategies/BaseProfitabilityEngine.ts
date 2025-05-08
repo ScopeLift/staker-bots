@@ -12,7 +12,10 @@ import {
 } from '../interfaces/types';
 import { BinaryEligibilityOracleEarningPowerCalculator } from '@/calculator';
 import { ProcessingQueueItem } from '../../database/interfaces/types';
-import { ProfitabilityQueueResult, ProfitabilityQueueBatchResult } from '../interfaces/types';
+import {
+  ProfitabilityQueueResult,
+  ProfitabilityQueueBatchResult,
+} from '../interfaces/types';
 
 export class BaseProfitabilityEngine implements IProfitabilityEngine {
   protected readonly logger: Logger;
@@ -104,18 +107,20 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       }
 
       // Check if delegatee score has changed
-      const hasScoreChanged = await this.checkScoreChanged(deposit.delegatee_address!);
+      const hasScoreChanged = await this.checkScoreChanged(
+        deposit.delegatee_address!,
+      );
       if (!hasScoreChanged) {
         return this.createFailedProfitabilityCheck('hasScoreChanged');
       }
-      
+
       // Check if the transaction would succeed using static call
       const staticCallResult = await this.simulateTransaction(deposit);
       if (staticCallResult === null) {
         // If static call fails, transaction will also fail
         return this.createFailedProfitabilityCheck('calculatorEligible');
       }
-      
+
       // Check if the earning power will actually change
       const isEarningPowerIncrease = staticCallResult !== deposit.earning_power;
       if (!isEarningPowerIncrease) {
@@ -160,14 +165,14 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
           hasEnoughRewards: true,
           isProfitable: true,
           hasScoreChanged: true,
-          hasEarningPowerIncrease: true
+          hasEarningPowerIncrease: true,
         },
         estimates: {
           optimalTip: tipOptimization.optimalTip,
           gasEstimate: tipOptimization.gasEstimate,
           expectedProfit: tipOptimization.expectedProfit,
           tipReceiver: this.config.defaultTipReceiver,
-          staticCallResult
+          staticCallResult,
         },
       };
     } catch (error) {
@@ -245,8 +250,10 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
     try {
       if (deposit.delegatee_address) {
         // First check if we can get the latest score event from the database
-        latestScoreEvent = await this.calculator['db'].getLatestScoreEvent(deposit.delegatee_address);
-        
+        latestScoreEvent = await this.calculator['db'].getLatestScoreEvent(
+          deposit.delegatee_address,
+        );
+
         if (latestScoreEvent) {
           this.logger.info('Found latest score event for delegatee:', {
             delegatee: deposit.delegatee_address,
@@ -261,10 +268,13 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
         }
       }
     } catch (error) {
-      this.logger.warn('Error retrieving latest score event, continuing with contract call:', { 
-        error, 
-        delegatee: deposit.delegatee_address 
-      });
+      this.logger.warn(
+        'Error retrieving latest score event, continuing with contract call:',
+        {
+          error,
+          delegatee: deposit.delegatee_address,
+        },
+      );
     }
 
     // Call getNewEarningPower with the deposit information
@@ -340,7 +350,7 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
         const feeData = await this.provider.getFeeData();
         const maxFeePerGas = feeData.maxFeePerGas;
         const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas;
-        
+
         // Log fee data for debugging
         this.logger.info('Network fee data:', {
           maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
@@ -359,12 +369,12 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
           to: this.stakerContract.target,
           data: encodedData,
           from: tipReceiver, // Add from address for more accurate estimation
-          value: minimumTip // Include value since this affects gas usage
+          value: minimumTip, // Include value since this affects gas usage
         });
 
         // Add 20% buffer for safety
         gasEstimate = (gasEstimate * BigInt(120)) / BigInt(100);
-        
+
         this.logger.info(
           `Gas estimation succeeded for deposit ${deposit.deposit_id}:`,
           {
@@ -379,27 +389,36 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
           error: error instanceof Error ? error.message : String(error),
           depositId: deposit.deposit_id.toString(),
           minimumTip: minimumTip.toString(),
-          errorData: error instanceof Error && 'data' in error ? error.data : undefined,
-          errorReason: error instanceof Error && 'reason' in error ? error.reason : undefined,
+          errorData:
+            error instanceof Error && 'data' in error ? error.data : undefined,
+          errorReason:
+            error instanceof Error && 'reason' in error
+              ? error.reason
+              : undefined,
         });
 
         // Check for specific error types
-        if (error instanceof Error && 'code' in error && 'data' in error && 'reason' in error) {
+        if (
+          error instanceof Error &&
+          'code' in error &&
+          'data' in error &&
+          'reason' in error
+        ) {
           const err = error as { code: string; data: string; reason?: string };
           if (err.code === 'CALL_EXCEPTION') {
             if (err.data === '0x4e487b71' && err.reason?.includes('OVERFLOW')) {
               this.logger.warn(
-                `Overflow error for deposit ${deposit.deposit_id}. Using fallback gas estimate.`
+                `Overflow error for deposit ${deposit.deposit_id}. Using fallback gas estimate.`,
               );
             }
             if (err.data === '0xaca01fbc') {
               this.logger.warn(
-                `Deposit ${deposit.deposit_id} not eligible for bump. Using fallback gas estimate.`
+                `Deposit ${deposit.deposit_id} not eligible for bump. Using fallback gas estimate.`,
               );
             }
           }
         }
-        
+
         // Use a conservative fallback estimate
         gasEstimate = FALLBACK_GAS_ESTIMATE;
         this.logger.warn(
@@ -436,19 +455,19 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       }
 
       // Check if this is a power decrease
-      const isEarningPowerDecrease = 
+      const isEarningPowerDecrease =
         requirements.newEarningPower < deposit.earning_power!;
 
       // Calculate optimal tip based on gas cost and minimum profit margin
       // Ensure tip doesn't exceed maxBumpTip
       const maxTip = BigInt(maxBumpTipValue.toString());
       let desiredTip = baseCostInToken + BigInt(this.config.minProfitMargin);
-      
+
       // For power decreases, we need to ensure there's enough left for MAX_BUMP_TIP
       if (isEarningPowerDecrease) {
         // Calculate max available tip considering we need to leave MAX_BUMP_TIP
         const maxAvailableTip = requirements.unclaimedRewards - maxBumpTipValue;
-        
+
         // If maxAvailableTip is negative or zero, we can't proceed
         if (maxAvailableTip <= 0) {
           this.logger.info(
@@ -465,7 +484,7 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
             gasEstimate: BigInt(0),
           };
         }
-        
+
         // Ensure desiredTip doesn't exceed maxAvailableTip
         if (desiredTip > maxAvailableTip) {
           this.logger.info(
@@ -480,14 +499,13 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
           desiredTip = maxAvailableTip;
         }
       }
-      
+
       // Apply usual max tip constraint
       const optimalTip = desiredTip > maxTip ? maxTip : desiredTip;
 
       // Calculate expected profit
       const expectedProfit =
         optimalTip > baseCostInToken ? optimalTip - baseCostInToken : BigInt(0); // Ensure we never return negative profit
-
 
       return {
         optimalTip,
@@ -557,7 +575,7 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       hasEnoughRewards: true,
       isProfitable: true,
       hasScoreChanged: true,
-      hasEarningPowerIncrease: true
+      hasEarningPowerIncrease: true,
     };
 
     // Set the failed constraint to false
@@ -589,18 +607,35 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
     };
   }
 
-  async processItem({ item }: { item: ProcessingQueueItem }): Promise<ProfitabilityQueueResult> {
+  async processItem({
+    item: _item,
+  }: {
+    item: ProcessingQueueItem;
+  }): Promise<ProfitabilityQueueResult> {
     throw new Error('processItem must be implemented by derived class');
   }
 
-  async processDepositsBatch({ deposits }: { deposits: { deposit_id: string; owner_address: string; delegatee_address: string; amount: string; earning_power?: string }[] }): Promise<ProfitabilityQueueBatchResult> {
-    const convertedDeposits = deposits.map(d => ({
-      ...d,
-      deposit_id: BigInt(d.deposit_id),
-      amount: BigInt(d.amount),
-      earning_power: d.earning_power ? BigInt(d.earning_power) : undefined
-    }));
-    throw new Error('processDepositsBatch must be implemented by derived class');
+  async processDepositsBatch({
+    deposits: _deposits,
+  }: {
+    deposits: {
+      deposit_id: string;
+      owner_address: string;
+      delegatee_address: string;
+      amount: string;
+      earning_power?: string;
+    }[];
+  }): Promise<ProfitabilityQueueBatchResult> {
+    // We'll need to convert deposits, but implementation should be in derived classes
+    // const convertedDeposits = deposits.map(d => ({
+    //   ...d,
+    //   deposit_id: BigInt(d.deposit_id),
+    //   amount: BigInt(d.amount),
+    //   earning_power: d.earning_power ? BigInt(d.earning_power) : undefined
+    // }));
+    throw new Error(
+      'processDepositsBatch must be implemented by derived class',
+    );
   }
 
   /**
@@ -616,8 +651,9 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
       });
 
       // Get all deposits for this delegatee
-      const deposits = await this.calculator['db'].getDepositsByDelegatee(delegatee);
-      
+      const deposits =
+        await this.calculator['db'].getDepositsByDelegatee(delegatee);
+
       if (deposits.length === 0) {
         this.logger.info('No deposits found for delegatee', { delegatee });
         return;
@@ -648,91 +684,140 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
   protected async checkScoreChanged(delegatee: string): Promise<boolean> {
     try {
       if (!delegatee) {
-        this.logger.warn('No delegatee address provided for score change check');
+        this.logger.warn(
+          'No delegatee address provided for score change check',
+        );
         return false;
       }
 
       // Get the latest score event
-      const latestScoreEvent = await this.calculator['db'].getLatestScoreEvent(delegatee);
+      const latestScoreEvent =
+        await this.calculator['db'].getLatestScoreEvent(delegatee);
       if (!latestScoreEvent) {
         this.logger.info(`No score events found for delegatee ${delegatee}`);
         // If there are no score events, we can't determine if it changed
         // Default to true for first-time delegatees to allow initial bumping
         return true;
       }
-      
+
       // Get the latest score as BigInt
       const latestScore = BigInt(latestScoreEvent.score);
-      this.logger.info(`Latest score for delegatee ${delegatee}: ${latestScore.toString()} at block ${latestScoreEvent.block_number}`);
-      
+      this.logger.info(
+        `Latest score for delegatee ${delegatee}: ${latestScore.toString()} at block ${latestScoreEvent.block_number}`,
+      );
+
       // Get earlier score events to compare
       try {
-        let earlierEvents: Array<{delegatee: string, score: string, block_number: number}> = [];
-        
+        let earlierEvents: Array<{
+          delegatee: string;
+          score: string;
+          block_number: number;
+        }> = [];
+
         // Try to access getScoreEventsByBlockRange through dynamic property access
-        // @ts-ignore - We're checking existence at runtime
-        if (typeof this.calculator['db']['getScoreEventsByBlockRange'] === 'function') {
+        if (
+          typeof this.calculator['db'] === 'object' && 
+          this.calculator['db'] !== null &&
+          'getScoreEventsByBlockRange' in this.calculator['db']
+        ) {
           const blockRange = 20000000; // Look back 20 million blocks
-          // @ts-ignore - Using dynamic method that exists at runtime
-          earlierEvents = await this.calculator['db']['getScoreEventsByBlockRange'](
+          // Use type assertion for the database object with the method
+          const db = this.calculator['db'] as { 
+            getScoreEventsByBlockRange(fromBlock: number, toBlock: number): Promise<Array<{
+              delegatee: string;
+              score: string;
+              block_number: number;
+            }>>
+          };
+          earlierEvents = await db.getScoreEventsByBlockRange(
             Math.max(1, latestScoreEvent.block_number - blockRange),
-            latestScoreEvent.block_number - 1 // Exclude the latest event
+            latestScoreEvent.block_number - 1, // Exclude the latest event
           );
         } else {
           // Fallback approach: Assume score has changed to avoid missing opportunities
-          this.logger.warn(`getScoreEventsByBlockRange method not available, assuming score has changed`);
+          this.logger.warn(
+            `getScoreEventsByBlockRange method not available, assuming score has changed`,
+          );
           return true;
         }
-        
+
         // Filter for events belonging to this delegatee
         // Fix implicit any type for event parameter
-        const delegateeEvents = earlierEvents.filter(
-          (event: {delegatee?: string, score?: string, block_number?: number}) => event?.delegatee === delegatee
-        ).filter((event): event is {delegatee: string, score: string, block_number: number} => 
-          event !== undefined && event !== null
+        const delegateeEvents = earlierEvents
+          .filter(
+            (event: {
+              delegatee?: string;
+              score?: string;
+              block_number?: number;
+            }) => event?.delegatee === delegatee,
+          )
+          .filter(
+            (
+              event,
+            ): event is {
+              delegatee: string;
+              score: string;
+              block_number: number;
+            } => event !== undefined && event !== null,
+          );
+
+        this.logger.info(
+          `Found ${delegateeEvents.length} earlier score events for delegatee ${delegatee}`,
         );
-        
-        this.logger.info(`Found ${delegateeEvents.length} earlier score events for delegatee ${delegatee}`);
-        
+
         // If no earlier events, treat as a change (first event)
         if (delegateeEvents.length === 0) {
-          this.logger.info(`No previous scores found for delegatee ${delegatee}, treating as changed`);
+          this.logger.info(
+            `No previous scores found for delegatee ${delegatee}, treating as changed`,
+          );
           return true;
         }
-        
+
         // Sort by block number (descending)
         delegateeEvents.sort((a, b) => {
           if (!a?.block_number || !b?.block_number) return 0;
           return b.block_number - a.block_number;
         });
-        
+
         // Ensure we have score data
         if (!delegateeEvents[0]?.score) {
-          this.logger.warn(`No score data found in previous events for delegatee ${delegatee}`);
+          this.logger.warn(
+            `No score data found in previous events for delegatee ${delegatee}`,
+          );
           return true;
         }
-        
+
         // Get the most recent previous score
         const previousScore = BigInt(delegateeEvents[0].score);
         const previousBlockNumber = delegateeEvents[0].block_number || 0;
-        
-        this.logger.info(`Previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`);
-        
+
+        this.logger.info(
+          `Previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`,
+        );
+
         // Compare scores
         const hasChanged = latestScore !== previousScore;
-        this.logger.info(`Score change check for delegatee ${delegatee}: ${hasChanged ? 'CHANGED' : 'UNCHANGED'}`);
+        this.logger.info(
+          `Score change check for delegatee ${delegatee}: ${hasChanged ? 'CHANGED' : 'UNCHANGED'}`,
+        );
         return hasChanged;
       } catch (blockRangeError) {
         this.logger.warn(`Error searching block range for scores:`, {
-          error: blockRangeError instanceof Error ? blockRangeError.message : String(blockRangeError)
+          error:
+            blockRangeError instanceof Error
+              ? blockRangeError.message
+              : String(blockRangeError),
         });
 
         return false;
       }
     } catch (error) {
-      this.logger.warn(`Error checking score change for delegatee ${delegatee}:`, {
-        error: error instanceof Error ? error.message : String(error)
-      });
+      this.logger.warn(
+        `Error checking score change for delegatee ${delegatee}:`,
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
       return false;
     }
   }
@@ -742,53 +827,70 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
    * @param deposit The deposit to simulate bumping
    * @returns The new earning power value on success, or null if the transaction would fail
    */
-  protected async simulateTransaction(deposit: Deposit): Promise<bigint | null> {
+  protected async simulateTransaction(
+    deposit: Deposit,
+  ): Promise<bigint | null> {
     try {
       if (!deposit.deposit_id || deposit.earning_power === undefined) {
-        this.logger.warn(`Cannot simulate transaction for deposit with missing ID or earning power`);
+        this.logger.warn(
+          `Cannot simulate transaction for deposit with missing ID or earning power`,
+        );
         return null;
       }
-      
+
       // Use the configured tip receiver or default to zero address
       const tipReceiver = this.config.defaultTipReceiver || ethers.ZeroAddress;
-      
+
       // Use minimum tip for simulation (10% of max)
       const maxBumpTipValue = await this.stakerContract.maxBumpTip();
       const minimumTip = maxBumpTipValue / BigInt(10);
-      
-      this.logger.info(`Simulating bumpEarningPower transaction for deposit ${deposit.deposit_id}`, {
-        tipReceiver,
-        minimumTip: minimumTip.toString()
-      });
-      
+
+      this.logger.info(
+        `Simulating bumpEarningPower transaction for deposit ${deposit.deposit_id}`,
+        {
+          tipReceiver,
+          minimumTip: minimumTip.toString(),
+        },
+      );
+
       // Simulate the transaction using staticCall
       try {
         // Use the function reference with staticCall method
-        const bumpFunction = this.stakerContract.getFunction('bumpEarningPower');
+        const bumpFunction =
+          this.stakerContract.getFunction('bumpEarningPower');
         const newEarningPower = await bumpFunction.staticCall(
           deposit.deposit_id,
           tipReceiver,
           minimumTip,
-          { value: minimumTip }
+          { value: minimumTip },
         );
-        
-        this.logger.info(`Simulation successful for deposit ${deposit.deposit_id}:`, {
-          currentEarningPower: deposit.earning_power.toString(),
-          newEarningPower: newEarningPower.toString(),
-          hasDifference: newEarningPower !== deposit.earning_power
-        });
-        
+
+        this.logger.info(
+          `Simulation successful for deposit ${deposit.deposit_id}:`,
+          {
+            currentEarningPower: deposit.earning_power.toString(),
+            newEarningPower: newEarningPower.toString(),
+            hasDifference: newEarningPower !== deposit.earning_power,
+          },
+        );
+
         return newEarningPower;
       } catch (error) {
-        this.logger.error(`Transaction simulation failed for deposit ${deposit.deposit_id}:`, {
-          error: error instanceof Error ? error.message : String(error)
-        });
+        this.logger.error(
+          `Transaction simulation failed for deposit ${deposit.deposit_id}:`,
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
         return null;
       }
     } catch (error) {
-      this.logger.error(`Error in transaction simulation for deposit ${deposit.deposit_id}:`, {
-        error: error instanceof Error ? error.message : String(error)
-      });
+      this.logger.error(
+        `Error in transaction simulation for deposit ${deposit.deposit_id}:`,
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
       return null;
     }
   }

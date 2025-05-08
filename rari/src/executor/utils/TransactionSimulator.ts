@@ -39,7 +39,7 @@ export class TransactionSimulator {
     options: {
       gasBoostPercentage?: number;
       gasLimitBufferPercentage?: number;
-    } = {}
+    } = {},
   ) {
     this.provider = provider;
     this.logger = logger;
@@ -58,17 +58,19 @@ export class TransactionSimulator {
   async simulateContractFunction<T = unknown>(
     contract: ethers.Contract,
     functionName: string,
-    args: any[],
+    args: unknown[],
     options: {
       callOverrides?: ethers.Overrides;
       context?: string;
-    } = {}
+    } = {},
   ): Promise<SimulationResult<T>> {
     try {
       this.logger.info(`Simulating function call: ${functionName}`, {
-        args: args.map(arg => typeof arg === 'bigint' ? arg.toString() : arg),
+        args: args.map((arg) =>
+          typeof arg === 'bigint' ? arg.toString() : arg,
+        ),
         contract: contract.target,
-        context: options.context
+        context: options.context,
       });
 
       // Get the function reference
@@ -80,21 +82,22 @@ export class TransactionSimulator {
       // Simulate the call
       const result = await contractFunction.staticCall(
         ...args,
-        options.callOverrides || {}
+        options.callOverrides || {},
       );
 
       this.logger.info(`Simulation successful: ${functionName}`, {
         result: typeof result === 'bigint' ? result.toString() : result,
-        context: options.context
+        context: options.context,
       });
 
       return { success: true, result: result as T };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
       this.logger.error(`Simulation failed: ${functionName}`, {
         error: errorMessage,
-        context: options.context
+        context: options.context,
       });
 
       return { success: false, error: errorMessage };
@@ -112,25 +115,25 @@ export class TransactionSimulator {
   async estimateGasParameters(
     contract: ethers.Contract,
     functionName: string,
-    args: any[],
+    args: unknown[],
     options: {
       callOverrides?: ethers.Overrides;
       fallbackGasLimit?: bigint;
       context?: string;
-    } = {}
+    } = {},
   ): Promise<GasEstimateResult> {
     // Get current gas price from provider with boost
     const feeData = await this.provider.getFeeData();
     const baseGasPrice = feeData.gasPrice || BigInt(0);
     const boostMultiplier = BigInt(100 + this.gasBoostPercentage) / BigInt(100);
     let gasPrice = baseGasPrice * boostMultiplier;
-    
+
     // Ensure gas price is at least the base fee
     const baseFeePerGas = feeData.maxFeePerGas || baseGasPrice;
     if (gasPrice < baseFeePerGas) {
       gasPrice = baseFeePerGas + BigInt(1_000_000); // Add 1 gwei buffer
     }
-    
+
     // Estimate gas limit
     let gasLimit: bigint;
     try {
@@ -139,39 +142,41 @@ export class TransactionSimulator {
       if (!contractFunction) {
         throw new Error(`Function ${functionName} not found on contract`);
       }
-      
+
       // Estimate gas
       gasLimit = await contractFunction.estimateGas(
         ...args,
-        options.callOverrides || {}
+        options.callOverrides || {},
       );
-      
+
       // Add buffer for safety
-      const bufferMultiplier = BigInt(100 + this.gasLimitBufferPercentage) / BigInt(100);
+      const bufferMultiplier =
+        BigInt(100 + this.gasLimitBufferPercentage) / BigInt(100);
       gasLimit = gasLimit * bufferMultiplier;
-      
+
       this.logger.info(`Gas estimation successful: ${functionName}`, {
         rawGasLimit: gasLimit.toString(),
         bufferedGasLimit: gasLimit.toString(),
         gasPrice: gasPrice.toString(),
-        context: options.context
+        context: options.context,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
       this.logger.error(`Gas estimation failed: ${functionName}`, {
         error: errorMessage,
-        context: options.context
+        context: options.context,
       });
-      
+
       // Use fallback gas limit
       gasLimit = options.fallbackGasLimit || BigInt(300000);
-      
+
       this.logger.warn(`Using fallback gas limit: ${gasLimit.toString()}`, {
-        context: options.context
+        context: options.context,
       });
     }
-    
+
     return { gasLimit, gasPrice };
   }
 
@@ -186,12 +191,12 @@ export class TransactionSimulator {
   async simulateAndEstimateGas<T = unknown>(
     contract: ethers.Contract,
     functionName: string,
-    args: any[],
+    args: unknown[],
     options: {
       callOverrides?: ethers.Overrides;
       fallbackGasLimit?: bigint;
       context?: string;
-    } = {}
+    } = {},
   ): Promise<{
     simulation: SimulationResult<T>;
     gasEstimate: GasEstimateResult | null;
@@ -201,9 +206,9 @@ export class TransactionSimulator {
       contract,
       functionName,
       args,
-      options
+      options,
     );
-    
+
     // Only estimate gas if simulation succeeded
     let gasEstimate: GasEstimateResult | null = null;
     if (simulation.success) {
@@ -211,10 +216,10 @@ export class TransactionSimulator {
         contract,
         functionName,
         args,
-        options
+        options,
       );
     }
-    
+
     return { simulation, gasEstimate };
   }
-} 
+}

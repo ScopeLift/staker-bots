@@ -35,7 +35,11 @@ await fs.mkdir(dataDir, { recursive: true }).catch((error) => {
 const database = new DatabaseWrapper({
   type: CONFIG.monitor.databaseType as 'json' | 'supabase',
   fallbackToJson: true,
-  jsonDbPath: path.resolve(process.cwd(), 'data', 'rari-staker-monitor-db.json'),
+  jsonDbPath: path.resolve(
+    process.cwd(),
+    'data',
+    'rari-staker-monitor-db.json',
+  ),
 });
 
 // Initialize component-specific loggers with colors for better visual distinction
@@ -357,7 +361,6 @@ async function initializeProfitabilityEngine(
   executor: IExecutor,
   stakerAbi: ethers.InterfaceAbi,
   logger: Logger,
-  errorLogger: ErrorLogger,
 ): Promise<GovLstProfitabilityEngineWrapper> {
   logger.info('Initializing profitability engine...');
 
@@ -413,7 +416,6 @@ async function initializeProfitabilityEngine(
       priceFeed: {
         cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
       },
-      errorLogger, // Pass the error logger to the config
     },
     executor,
   );
@@ -433,7 +435,7 @@ async function initializeProfitabilityEngine(
         queueSize: status.queueSize,
       });
     } catch (error) {
-      await errorLogger.error(error as Error, {
+      await profitabilityErrorLogger.error(error as Error, {
         context: 'profitability-engine-health-check',
       });
     }
@@ -445,19 +447,17 @@ async function initializeProfitabilityEngine(
 // Initialize the Rari Earning Power Calculator
 async function initializeCalculator(
   logger: Logger,
-  errorLogger: ErrorLogger,
+  _errorLogger: ErrorLogger,
 ): Promise<CalculatorWrapper> {
   logger.info('Initializing Rari Earning Power Calculator...');
 
   // Create provider instance
   const provider = createProvider();
-  
+
   // Create calculator wrapper
-  const calculatorWrapper = new CalculatorWrapper(
-    database,
-    provider,
-    { type: 'binary' }
-  );
+  const calculatorWrapper = new CalculatorWrapper(database, provider, {
+    type: 'binary',
+  });
 
   // Start calculator - this now includes its own processing loop
   await calculatorWrapper.start();
@@ -469,15 +469,18 @@ async function initializeCalculator(
       const status = await calculatorWrapper.getStatus();
       const currentBlock = await provider.getBlockNumber();
       const lastCheckpoint = await database.getCheckpoint('calculator');
-      
+
       logger.info('Calculator health check:', {
         isRunning: status.isRunning,
-        lastProcessedBlock: lastCheckpoint?.last_block_number ?? status.lastProcessedBlock,
+        lastProcessedBlock:
+          lastCheckpoint?.last_block_number ?? status.lastProcessedBlock,
         currentBlock,
-        processingLag: currentBlock - (lastCheckpoint?.last_block_number ?? status.lastProcessedBlock),
+        processingLag:
+          currentBlock -
+          (lastCheckpoint?.last_block_number ?? status.lastProcessedBlock),
       });
     } catch (error) {
-      await errorLogger.error(error as Error, {
+      await _errorLogger.error(error as Error, {
         context: 'calculator-health-check',
       });
     }
@@ -493,7 +496,7 @@ async function initializeRariBumpEarningPowerEngine(
   executor: IExecutor,
   calculatorWrapper: CalculatorWrapper,
   logger: Logger,
-  errorLogger: ErrorLogger,
+  _errorLogger: ErrorLogger,
 ): Promise<RariBumpEarningPowerEngine> {
   logger.info('Initializing Rari Bump Earning Power Engine...');
 
@@ -501,25 +504,29 @@ async function initializeRariBumpEarningPowerEngine(
   const provider = createProvider();
 
   // Create price feed with correct config
-  const priceFeed = new CoinMarketCapFeed({
-    baseUrl: 'https://pro-api.coinmarketcap.com',
-    apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
-    rewardToken: CONFIG.govlst.address,
-    gasToken: ethers.ZeroAddress,
-    errorLogger: profitabilityErrorLogger,
-    timeout: 5000
-  }, profitabilityLogger);
+  const priceFeed = new CoinMarketCapFeed(
+    {
+      baseUrl: 'https://pro-api.coinmarketcap.com',
+      apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
+      rewardToken: CONFIG.govlst.address,
+      gasToken: ethers.ZeroAddress,
+      errorLogger: profitabilityErrorLogger,
+      timeout: 5000,
+    },
+    profitabilityLogger,
+  );
 
   // Create Rari Bump Earning Power Engine
   const bumpEarningPowerEngine = new RariBumpEarningPowerEngine({
     database,
     executor,
     calculatorWrapper,
-    calculator: calculatorWrapper as unknown as BinaryEligibilityOracleEarningPowerCalculator,
+    calculator:
+      calculatorWrapper as unknown as BinaryEligibilityOracleEarningPowerCalculator,
     stakerContract: new ethers.Contract(
       CONFIG.monitor.stakerAddress,
       stakerAbi,
-      provider
+      provider,
     ) as unknown as ethers.Contract & {
       deposits(depositId: bigint): Promise<{
         owner: string;
@@ -530,7 +537,11 @@ async function initializeRariBumpEarningPowerEngine(
       }>;
       unclaimedReward(depositId: bigint): Promise<bigint>;
       maxBumpTip(): Promise<bigint>;
-      bumpEarningPower(depositId: bigint, tipReceiver: string, tip: bigint): Promise<bigint>;
+      bumpEarningPower(
+        depositId: bigint,
+        tipReceiver: string,
+        tip: bigint,
+      ): Promise<bigint>;
       REWARD_TOKEN(): Promise<string>;
     },
     provider,
@@ -541,11 +552,10 @@ async function initializeRariBumpEarningPowerEngine(
       gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,
       maxBatchSize: CONFIG.govlst.maxBatchSize,
       priceFeed: {
-        cacheDuration: CONFIG.profitability.priceFeed.cacheDuration
-      }
+        cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
+      },
     },
     priceFeed,
-    logger: profitabilityLogger
   });
 
   logger.info('Rari Bump Earning Power Engine initialized successfully');
@@ -564,31 +574,33 @@ async function initializeRariClaimDistributeEngine(
   const provider = createProvider();
 
   // Create calculator wrapper
-  const calculatorWrapper = new CalculatorWrapper(
-    database,
-    provider,
-    { type: 'binary' }
-  );
+  const calculatorWrapper = new CalculatorWrapper(database, provider, {
+    type: 'binary',
+  });
 
   // Create price feed
-  const priceFeed = new CoinMarketCapFeed({
-    baseUrl: 'https://pro-api.coinmarketcap.com',
-    apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
-    rewardToken: CONFIG.govlst.address,
-    gasToken: ethers.ZeroAddress,
-    errorLogger: profitabilityErrorLogger,
-    timeout: 5000
-  }, profitabilityLogger);
+  const priceFeed = new CoinMarketCapFeed(
+    {
+      baseUrl: 'https://pro-api.coinmarketcap.com',
+      apiKey: CONFIG.priceFeed.coinmarketcap.apiKey,
+      rewardToken: CONFIG.govlst.address,
+      gasToken: ethers.ZeroAddress,
+      errorLogger: profitabilityErrorLogger,
+      timeout: 5000,
+    },
+    profitabilityLogger,
+  );
 
   // Create Rari Claim and Distribute Engine
   const claimDistributeEngine = new RariClaimDistributeEngine({
     database,
     executor,
-    calculator: calculatorWrapper as unknown as BinaryEligibilityOracleEarningPowerCalculator,
+    calculator:
+      calculatorWrapper as unknown as BinaryEligibilityOracleEarningPowerCalculator,
     stakerContract: new ethers.Contract(
       CONFIG.monitor.stakerAddress,
       stakerAbi,
-      provider
+      provider,
     ) as unknown as ethers.Contract & {
       deposits(depositId: bigint): Promise<{
         owner: string;
@@ -599,7 +611,11 @@ async function initializeRariClaimDistributeEngine(
       }>;
       unclaimedReward(depositId: bigint): Promise<bigint>;
       maxBumpTip(): Promise<bigint>;
-      bumpEarningPower(depositId: bigint, tipReceiver: string, tip: bigint): Promise<bigint>;
+      bumpEarningPower(
+        depositId: bigint,
+        tipReceiver: string,
+        tip: bigint,
+      ): Promise<bigint>;
       REWARD_TOKEN(): Promise<string>;
     },
     provider,
@@ -610,10 +626,10 @@ async function initializeRariClaimDistributeEngine(
       gasPriceBuffer: CONFIG.govlst.gasPriceBuffer,
       maxBatchSize: CONFIG.govlst.maxBatchSize,
       priceFeed: {
-        cacheDuration: CONFIG.profitability.priceFeed.cacheDuration
-      }
+        cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
+      },
     },
-    priceFeed
+    priceFeed,
   });
 
   logger.info('Rari Claim and Distribute Engine initialized successfully');
@@ -637,12 +653,18 @@ async function main() {
     const rawComponents = process.env.COMPONENTS?.split(',').map((c) =>
       c.trim().toLowerCase(),
     ) || ['all'];
-    
+
     // Add new Rari components
-    const supportedComponents = ['monitor', 'executor', 'profitability', 'bump', 'claim'];
+    const supportedComponents = [
+      'monitor',
+      'executor',
+      'profitability',
+      'bump',
+      'claim',
+    ];
     const componentsToRun = rawComponents.includes('all')
       ? supportedComponents
-      : rawComponents.filter(c => supportedComponents.includes(c));
+      : rawComponents.filter((c) => supportedComponents.includes(c));
 
     mainLogger.info('Components to run:', { components: componentsToRun });
 
@@ -687,7 +709,6 @@ async function main() {
           runningComponents.executor as IExecutor,
           stakerAbi,
           profitabilityLogger,
-          profitabilityErrorLogger,
         );
     }
 
@@ -724,12 +745,15 @@ async function main() {
         );
 
       // Connect calculator to profitability engine
-      const earningPowerCalculator = runningComponents.calculatorWrapper.getEarningPowerCalculator();
+      const earningPowerCalculator =
+        runningComponents.calculatorWrapper.getEarningPowerCalculator();
       if (earningPowerCalculator) {
-        earningPowerCalculator.setProfitabilityEngine(runningComponents.bumpEarningPowerEngine);
+        earningPowerCalculator.setProfitabilityEngine(
+          runningComponents.bumpEarningPowerEngine,
+        );
         mainLogger.info('Connected calculator to bump earning power engine');
       }
-      
+
       // Start the bump earning power engine to begin periodic checks
       await runningComponents.bumpEarningPowerEngine!.start();
       mainLogger.info('Bump Earning Power Engine started successfully');
@@ -738,10 +762,13 @@ async function main() {
       setInterval(async () => {
         try {
           if (runningComponents.bumpEarningPowerEngine) {
-            const status = await runningComponents.bumpEarningPowerEngine.getStatus();
+            const status =
+              await runningComponents.bumpEarningPowerEngine.getStatus();
             mainLogger.info('Bump Earning Power Engine health check:', {
               isRunning: status.isRunning,
-              lastUpdateTimestamp: new Date(status.lastUpdateTimestamp).toISOString()
+              lastUpdateTimestamp: new Date(
+                status.lastUpdateTimestamp,
+              ).toISOString(),
             });
           }
         } catch (error) {
@@ -767,19 +794,22 @@ async function main() {
           runningComponents.executor as IExecutor,
           profitabilityLogger,
         );
-      
+
       // Start the claim and distribute engine
       await runningComponents.claimDistributeEngine.start();
       mainLogger.info('Claim and Distribute Engine started successfully');
-      
+
       // Set up health check interval for claim engine
       setInterval(async () => {
         try {
           if (runningComponents.claimDistributeEngine) {
-            const status = await runningComponents.claimDistributeEngine.getStatus();
+            const status =
+              await runningComponents.claimDistributeEngine.getStatus();
             mainLogger.info('Claim and Distribute Engine health check:', {
               isRunning: status.isRunning,
-              lastUpdateTimestamp: new Date(status.lastUpdateTimestamp).toISOString()
+              lastUpdateTimestamp: new Date(
+                status.lastUpdateTimestamp,
+              ).toISOString(),
             });
           }
         } catch (error) {

@@ -18,12 +18,12 @@ import {
   TransactionValidationError,
 } from '@/configuration/errors';
 import { ErrorLogger } from '@/configuration/errorLogger';
-import {
-  getCurrentBlockNumberWithRetry,
-  sleep,
-} from './strategies/helpers';
+import { getCurrentBlockNumberWithRetry, sleep } from './strategies/helpers';
 import { QueueManager } from './QueueManager';
-import { TransactionType, TransactionQueueStatus } from '@/database/interfaces/types';
+import {
+  TransactionType,
+  TransactionQueueStatus,
+} from '@/database/interfaces/types';
 import { TransactionStatus } from './interfaces/types';
 
 /**
@@ -141,7 +141,10 @@ export class ExecutorWrapper {
     }
 
     this.bumpQueue = new QueueManager(TransactionType.BUMP, this.db);
-    this.claimQueue = new QueueManager(TransactionType.CLAIM_AND_DISTRIBUTE, this.db);
+    this.claimQueue = new QueueManager(
+      TransactionType.CLAIM_AND_DISTRIBUTE,
+      this.db,
+    );
   }
 
   /**
@@ -342,11 +345,16 @@ export class ExecutorWrapper {
 
     try {
       // Choose the appropriate queue based on transaction type
-      const queue = transactionType === TransactionType.BUMP
-        ? this.bumpQueue
-        : this.claimQueue;
+      const queue =
+        transactionType === TransactionType.BUMP
+          ? this.bumpQueue
+          : this.claimQueue;
 
-      const queueItem = await queue.addTransaction(depositIds, profitability, txData);
+      const queueItem = await queue.addTransaction(
+        depositIds,
+        profitability,
+        txData,
+      );
 
       // Convert QueueItem to QueuedTransaction
       const queuedTransaction: QueuedTransaction = {

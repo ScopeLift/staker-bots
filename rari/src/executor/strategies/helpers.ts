@@ -146,7 +146,11 @@ export async function cleanupQueueItems(
     let depositIdStrings = [...extractedDepositIds]; // Make a mutable copy
 
     // If we don't have deposit IDs yet, try to get them from tx.depositIds
-    if (depositIdStrings.length === 0 && tx.depositIds && tx.depositIds.length > 0) {
+    if (
+      depositIdStrings.length === 0 &&
+      tx.depositIds &&
+      tx.depositIds.length > 0
+    ) {
       depositIdStrings = tx.depositIds.map(String);
       logger.info('Using deposit IDs from transaction object:', {
         depositIds: depositIdStrings,
@@ -223,7 +227,10 @@ export async function cleanupQueueItems(
         });
       } catch (updateError) {
         logger.error('Failed to update/delete transaction queue item by ID', {
-          error: updateError instanceof Error ? updateError.message : String(updateError),
+          error:
+            updateError instanceof Error
+              ? updateError.message
+              : String(updateError),
           queueItemId,
           txHash,
         });
@@ -243,7 +250,8 @@ export async function cleanupQueueItems(
     if (!queueItemProcessed && depositIdStrings.length > 0) {
       for (const depositId of depositIdStrings) {
         try {
-          const txQueueItem = await db.getTransactionQueueItemByDepositId(depositId);
+          const txQueueItem =
+            await db.getTransactionQueueItemByDepositId(depositId);
           if (txQueueItem) {
             // Update the item status first
             await db.updateTransactionQueueItem(txQueueItem.id, {
@@ -269,11 +277,17 @@ export async function cleanupQueueItems(
             });
           }
         } catch (txQueueError) {
-          logger.error('Failed to clean up transaction queue item by deposit ID', {
-            error: txQueueError instanceof Error ? txQueueError.message : String(txQueueError),
-            depositId,
-            txHash,
-          });
+          logger.error(
+            'Failed to clean up transaction queue item by deposit ID',
+            {
+              error:
+                txQueueError instanceof Error
+                  ? txQueueError.message
+                  : String(txQueueError),
+              depositId,
+              txHash,
+            },
+          );
 
           if (errorLogger) {
             await errorLogger.error(txQueueError as Error, {
@@ -773,7 +787,7 @@ export async function queueTransactionWithValidation(
     totalShares: profitability.estimates.total_shares.toString(),
     expectedProfit: profitability.estimates.expected_profit.toString(),
   });
-  
+
   logger.info(`Transaction queued: ${tx.id}`, {
     id: tx.id,
     depositCount: depositIds.length,
@@ -1148,36 +1162,45 @@ export async function cleanupStaleTransactions(
         const completedItem = await db.getTransactionQueueItemByDepositId('1');
         if (completedItem) {
           if (logger) {
-            logger.info('Found completed but stuck transaction queue item for depositId 1', {
-              id: completedItem.id,
-              status: completedItem.status,
-              hash: completedItem.hash || 'unknown',
-            });
+            logger.info(
+              'Found completed but stuck transaction queue item for depositId 1',
+              {
+                id: completedItem.id,
+                status: completedItem.status,
+                hash: completedItem.hash || 'unknown',
+              },
+            );
           }
-          
+
           // Delete the item
           await db.deleteTransactionQueueItem(completedItem.id);
           databaseStaleCount++;
-          
+
           if (logger) {
-            logger.info('Deleted stuck transaction queue item for depositId 1', {
-              id: completedItem.id,
-            });
+            logger.info(
+              'Deleted stuck transaction queue item for depositId 1',
+              {
+                id: completedItem.id,
+              },
+            );
           }
         }
       } catch (emergencyError) {
         if (logger) {
           logger.error('Failed emergency cleanup for depositId 1', {
-            error: emergencyError instanceof Error ? emergencyError.message : String(emergencyError),
+            error:
+              emergencyError instanceof Error
+                ? emergencyError.message
+                : String(emergencyError),
           });
         }
       }
 
       // 1. Clean up transaction queue
       const allTxItems = await db.getTransactionQueueItemsByStatus(
-        TransactionQueueStatus.PENDING
+        TransactionQueueStatus.PENDING,
       );
-      
+
       if (logger) {
         logger.info('Found transaction queue items to check for staleness', {
           count: allTxItems.length,
@@ -1188,17 +1211,17 @@ export async function cleanupStaleTransactions(
         try {
           const createdAt = new Date(item.created_at);
           const elapsedMs = now.getTime() - createdAt.getTime();
-          
+
           if (elapsedMs > staleThresholdMs) {
             // This is a stale item, mark it as failed and then delete it
             await db.updateTransactionQueueItem(item.id, {
               status: TransactionQueueStatus.FAILED,
               error: `Transaction timed out after ${staleThresholdMinutes} minutes`,
             });
-            
+
             await db.deleteTransactionQueueItem(item.id);
             databaseStaleCount++;
-            
+
             if (logger) {
               logger.info('Cleaned up stale transaction queue item', {
                 id: item.id,
@@ -1211,51 +1234,58 @@ export async function cleanupStaleTransactions(
         } catch (itemError) {
           if (logger) {
             logger.error('Failed to clean up transaction queue item', {
-              error: itemError instanceof Error ? itemError.message : String(itemError),
+              error:
+                itemError instanceof Error
+                  ? itemError.message
+                  : String(itemError),
               itemId: item.id,
             });
           }
-          
+
           if (errorLogger) {
-            await errorLogger.error(
-              itemError instanceof Error 
-                ? itemError 
-                : new Error(`Failed to clean up transaction queue item: ${String(itemError)}`),
-              {
-                context: 'cleanup-stale-transaction-queue-item',
-                itemId: item.id,
-              }
-            ).catch(console.error);
+            await errorLogger
+              .error(
+                itemError instanceof Error
+                  ? itemError
+                  : new Error(
+                      `Failed to clean up transaction queue item: ${String(itemError)}`,
+                    ),
+                {
+                  context: 'cleanup-stale-transaction-queue-item',
+                  itemId: item.id,
+                },
+              )
+              .catch(console.error);
           }
         }
       }
-      
+
       // 2. Clean up processing queue
       const allProcessingItems = await db.getProcessingQueueItemsByStatus(
-        ProcessingQueueStatus.PENDING
+        ProcessingQueueStatus.PENDING,
       );
-      
+
       if (logger) {
         logger.info('Found processing queue items to check for staleness', {
           count: allProcessingItems.length,
         });
       }
-      
+
       for (const item of allProcessingItems) {
         try {
           const createdAt = new Date(item.created_at);
           const elapsedMs = now.getTime() - createdAt.getTime();
-          
+
           if (elapsedMs > staleThresholdMs) {
             // This is a stale item, mark it as failed and then delete it
             await db.updateProcessingQueueItem(item.id, {
               status: ProcessingQueueStatus.FAILED,
               error: `Processing timed out after ${staleThresholdMinutes} minutes`,
             });
-            
+
             await db.deleteProcessingQueueItem(item.id);
             databaseStaleCount++;
-            
+
             if (logger) {
               logger.info('Cleaned up stale processing queue item', {
                 id: item.id,
@@ -1268,40 +1298,52 @@ export async function cleanupStaleTransactions(
         } catch (itemError) {
           if (logger) {
             logger.error('Failed to clean up processing queue item', {
-              error: itemError instanceof Error ? itemError.message : String(itemError),
+              error:
+                itemError instanceof Error
+                  ? itemError.message
+                  : String(itemError),
               itemId: item.id,
             });
           }
-          
+
           if (errorLogger) {
-            await errorLogger.error(
-              itemError instanceof Error 
-                ? itemError 
-                : new Error(`Failed to clean up processing queue item: ${String(itemError)}`),
-              {
-                context: 'cleanup-stale-processing-queue-item',
-                itemId: item.id,
-              }
-            ).catch(console.error);
+            await errorLogger
+              .error(
+                itemError instanceof Error
+                  ? itemError
+                  : new Error(
+                      `Failed to clean up processing queue item: ${String(itemError)}`,
+                    ),
+                {
+                  context: 'cleanup-stale-processing-queue-item',
+                  itemId: item.id,
+                },
+              )
+              .catch(console.error);
           }
         }
       }
     } catch (dbError) {
       if (logger) {
-        logger.error('Failed to access database for stale transaction cleanup', {
-          error: dbError instanceof Error ? dbError.message : String(dbError),
-        });
-      }
-      
-      if (errorLogger) {
-        await errorLogger.error(
-          dbError instanceof Error 
-            ? dbError 
-            : new Error(`Database access error: ${String(dbError)}`),
+        logger.error(
+          'Failed to access database for stale transaction cleanup',
           {
-            context: 'cleanup-stale-transactions-db-access',
-          }
-        ).catch(console.error);
+            error: dbError instanceof Error ? dbError.message : String(dbError),
+          },
+        );
+      }
+
+      if (errorLogger) {
+        await errorLogger
+          .error(
+            dbError instanceof Error
+              ? dbError
+              : new Error(`Database access error: ${String(dbError)}`),
+            {
+              context: 'cleanup-stale-transactions-db-access',
+            },
+          )
+          .catch(console.error);
       }
     }
   }

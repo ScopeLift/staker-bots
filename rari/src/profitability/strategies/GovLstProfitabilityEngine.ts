@@ -307,7 +307,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     context: string,
     maxRetries = 3,
     delayMs = 1000,
-    fallbackFn?: () => T
+    fallbackFn?: () => T,
   ): Promise<T> {
     let lastError: Error | null = null;
 
@@ -346,7 +346,10 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     if (fallbackFn) {
       const fallbackValue = fallbackFn();
       this.logger.warn(`Using fallback value for ${context}`, {
-        fallbackValue: typeof fallbackValue === 'bigint' ? fallbackValue.toString() : fallbackValue
+        fallbackValue:
+          typeof fallbackValue === 'bigint'
+            ? fallbackValue.toString()
+            : fallbackValue,
       });
       return fallbackValue;
     }
@@ -377,24 +380,25 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         1000,
         () => {
           // Fallback to environment variable or default value
-          const fallbackValue = CONFIG.govlst.payoutAmount || ethers.parseEther('0.1'); // 0.1 token default
-          this.logger.info('Using fallback payout amount from config', { 
+          const fallbackValue =
+            CONFIG.govlst.payoutAmount || ethers.parseEther('0.1'); // 0.1 token default
+          this.logger.info('Using fallback payout amount from config', {
             payoutAmount: fallbackValue.toString(),
-            source: CONFIG.govlst.payoutAmount ? 'environment' : 'default'
+            source: CONFIG.govlst.payoutAmount ? 'environment' : 'default',
           });
           return fallbackValue;
-        }
+        },
       );
     } catch (error) {
       // If somehow the getContractDataWithRetry still throws (shouldn't happen with fallback)
       this.logger.error('Failed to get payout amount even with fallback', {
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
-      
+
       // Last resort fallback
       const defaultAmount = ethers.parseEther('0.1'); // 0.1 token
       this.logger.info('Using last resort default payout amount', {
-        payoutAmount: defaultAmount.toString()
+        payoutAmount: defaultAmount.toString(),
       });
       return defaultAmount;
     }

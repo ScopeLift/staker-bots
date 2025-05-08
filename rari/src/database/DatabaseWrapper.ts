@@ -111,15 +111,21 @@ export class DatabaseWrapper implements IDatabase {
         // New transaction type methods
         getTransactionQueueItemsByType: this.wrapWithFallback(
           async (type: TransactionType, status?: TransactionQueueStatus) => {
-            const items = await supabaseTransactionQueue.getTransactionQueueItemsByStatus(status!);
-            return items.filter(item => item.transaction_type === type);
-          }
+            const items =
+              await supabaseTransactionQueue.getTransactionQueueItemsByStatus(
+                status!,
+              );
+            return items.filter((item) => item.transaction_type === type);
+          },
         ),
         getTransactionQueueItemsByTypeAndStatus: this.wrapWithFallback(
           async (type: TransactionType, status: TransactionQueueStatus) => {
-            const items = await supabaseTransactionQueue.getTransactionQueueItemsByStatus(status);
-            return items.filter(item => item.transaction_type === type);
-          }
+            const items =
+              await supabaseTransactionQueue.getTransactionQueueItemsByStatus(
+                status,
+              );
+            return items.filter((item) => item.transaction_type === type);
+          },
         ),
         // GovLst Claim History Operations
         createGovLstClaimHistory: this.wrapWithFallback(

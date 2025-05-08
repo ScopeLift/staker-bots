@@ -38,7 +38,7 @@ export type ProcessingQueueItem = {
 
 export enum TransactionType {
   BUMP = 'bump',
-  CLAIM_AND_DISTRIBUTE = 'claim_and_distribute'
+  CLAIM_AND_DISTRIBUTE = 'claim_and_distribute',
 }
 
 export enum TransactionQueueStatus {

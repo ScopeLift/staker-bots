@@ -55,14 +55,15 @@ export class CalculatorWrapper implements ICalculatorStrategy {
       await this.db.updateCheckpoint({
         component_type: 'calculator',
         last_block_number: CONFIG.monitor.startBlock,
-        block_hash: '0x0000000000000000000000000000000000000000000000000000000000000000',
+        block_hash:
+          '0x0000000000000000000000000000000000000000000000000000000000000000',
         last_update: new Date().toISOString(),
       });
     }
 
     // Start the processing loop in the background
     this.processingPromise = this.processLoop();
-    
+
     this.logger.info('Calculator started with processing loop', {
       startBlock: this.lastProcessedBlock,
       pollInterval: CONFIG.monitor.pollInterval,
@@ -156,14 +157,10 @@ export class CalculatorWrapper implements ICalculatorStrategy {
         await this.db.updateCheckpoint({
           component_type: 'calculator',
           last_block_number: toBlock,
-          block_hash: block.hash || '0x0000000000000000000000000000000000000000000000000000000000000000',
+          block_hash:
+            block.hash ||
+            '0x0000000000000000000000000000000000000000000000000000000000000000',
           last_update: new Date().toISOString(),
-        });
-
-        this.logger.info('Score events processed successfully', {
-          fromBlock,
-          toBlock,
-          processedBlocks: toBlock - fromBlock + 1,
         });
 
         this.lastProcessedBlock = toBlock;
@@ -172,7 +169,7 @@ export class CalculatorWrapper implements ICalculatorStrategy {
           error: error instanceof Error ? error.message : String(error),
           lastProcessedBlock: this.lastProcessedBlock,
         });
-        
+
         // Wait before retrying
         await new Promise((resolve) =>
           setTimeout(resolve, CONFIG.monitor.pollInterval * 1000),

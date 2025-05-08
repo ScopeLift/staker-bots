@@ -367,7 +367,8 @@ export class RelayerExecutor implements IExecutor {
             error instanceof Error
               ? error
               : new Error(
-                  `Failed to update queue item status: ${String(error)}`),
+                  `Failed to update queue item status: ${String(error)}`,
+                ),
             {
               stage: 'executeTransaction',
               txId: tx.id,
@@ -401,21 +402,21 @@ export class RelayerExecutor implements IExecutor {
       // Simulate the transaction before proceeding
       const simulationResult = await this.simulateTransaction(
         tx.depositIds,
-        this.config.defaultTipReceiver || await this.relaySigner.getAddress(),
-        tx.profitability.estimates.payout_amount || BigInt(0)
+        this.config.defaultTipReceiver || (await this.relaySigner.getAddress()),
+        tx.profitability.estimates.payout_amount || BigInt(0),
       );
-      
+
       if (!simulationResult.success) {
         this.logger.error('Transaction simulation failed, not executing', {
           txId: tx.id,
           depositIds: tx.depositIds.map(String),
-          error: simulationResult.error
+          error: simulationResult.error,
         });
-        
+
         tx.status = TransactionStatus.FAILED;
         tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
         this.queue.set(tx.id, tx);
-        
+
         // Update database if available
         if (this.db && queueItemId) {
           await this.db.updateTransactionQueueItem(queueItemId, {
@@ -423,31 +424,31 @@ export class RelayerExecutor implements IExecutor {
             error: `Simulation failed: ${simulationResult.error}`,
           });
         }
-        
+
         // Log to error logger
         this.errorLogger.error(tx.error, {
           stage: 'executeTransaction_simulation',
           txId: tx.id,
           depositIds: tx.depositIds.map(String),
         });
-        
+
         return;
       }
-      
+
       this.logger.info('Transaction simulation successful', {
         txId: tx.id,
-        depositIds: tx.depositIds.map(String)
+        depositIds: tx.depositIds.map(String),
       });
-      
-      // Estimate gas parameters
-      const gasParams = await this.estimateGasParams(
-        tx.depositIds,
-        this.config.defaultTipReceiver || await this.relaySigner.getAddress(),
-        tx.profitability.estimates.payout_amount || BigInt(0)
-      );
+
+      // Estimate gas parameters - not used currently
+      // const gasParams = await this.estimateGasParams(
+      //   tx.depositIds,
+      //   this.config.defaultTipReceiver || await this.relaySigner.getAddress(),
+      //   tx.profitability.estimates.payout_amount || BigInt(0)
+      // );
 
       // Continue with token approval process...
-      
+
       // Get the payout amount from contract before executing claim
       let payoutAmount: bigint = BigInt(0);
       try {
@@ -711,7 +712,8 @@ export class RelayerExecutor implements IExecutor {
                   e instanceof Error
                     ? e
                     : new Error(
-                        `Failed to get network diagnostics: ${String(e)}`),
+                        `Failed to get network diagnostics: ${String(e)}`,
+                      ),
                   {
                     stage: 'executeTransaction_networkDiagnostics',
                     txId: tx.id,
@@ -829,7 +831,8 @@ export class RelayerExecutor implements IExecutor {
                       estimateError instanceof Error
                         ? estimateError
                         : new Error(
-                            `Gas estimation failed: ${String(estimateError)}`),
+                            `Gas estimation failed: ${String(estimateError)}`,
+                          ),
                       {
                         stage: 'executeTransaction_gasEstimation',
                         txId: tx.id,
@@ -1009,14 +1012,11 @@ export class RelayerExecutor implements IExecutor {
               this.logger,
               3,
             );
-            this.logger.info(
-              `Transaction receipt received: ${response.hash}`,
-              {
-                txId: tx.id,
-                blockNumber: receipt?.blockNumber?.toString() || 'unknown',
-                status: receipt?.status?.toString() || 'unknown',
-              },
-            );
+            this.logger.info(`Transaction receipt received: ${response.hash}`, {
+              txId: tx.id,
+              blockNumber: receipt?.blockNumber?.toString() || 'unknown',
+              status: receipt?.status?.toString() || 'unknown',
+            });
           } catch (confirmError: unknown) {
             // If polling fails, just log the error
             this.logger.warn('Transaction confirmation failed', {
@@ -1079,7 +1079,8 @@ export class RelayerExecutor implements IExecutor {
             waitError instanceof Error
               ? waitError
               : new Error(
-                  `Failed waiting for transaction confirmation: ${String(waitError)}`),
+                  `Failed waiting for transaction confirmation: ${String(waitError)}`,
+                ),
             {
               stage: 'executeTransaction_waitError',
               txId: tx.id,
@@ -1135,81 +1136,82 @@ export class RelayerExecutor implements IExecutor {
       );
     }
   }
-  
+
   /**
    * Simulate a transaction to verify it will succeed
    */
   protected async simulateTransaction(
     depositIds: bigint[],
     recipient: string,
-    minExpectedReward: bigint
-  ): Promise<{ success: boolean; result?: any; error?: string }> {
+    minExpectedReward: bigint,
+  ): Promise<{ success: boolean; result?: unknown; error?: string }> {
     try {
       this.logger.info('Simulating claimAndDistributeReward transaction', {
         depositIds: depositIds.map(String),
         recipient,
-        minExpectedReward: minExpectedReward.toString()
+        minExpectedReward: minExpectedReward.toString(),
       });
-      
+
       // Create transaction simulator instance
       const simulator = new TransactionSimulator(
-        this.relayProvider as unknown as ethers.Provider, 
-        this.logger
+        this.relayProvider as unknown as ethers.Provider,
+        this.logger,
       );
-      
+
       // Simulate the transaction
       const simulation = await simulator.simulateContractFunction(
         this.lstContract,
         'claimAndDistributeReward',
         [recipient, minExpectedReward, depositIds],
         {
-          context: `depositIds:${depositIds.map(String).join(',')}`
-        }
+          context: `depositIds:${depositIds.map(String).join(',')}`,
+        },
       );
-      
+
       return simulation;
     } catch (error) {
       // Log the error and return failure
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
       this.logger.error('Transaction simulation failed outside of simulator', {
         depositIds: depositIds.map(String),
-        error: errorMessage
+        error: errorMessage,
       });
-      
+
       this.errorLogger.error(
-        error instanceof Error 
-          ? error 
+        error instanceof Error
+          ? error
           : new Error(`Transaction simulation failed: ${errorMessage}`),
         {
           stage: 'simulateTransaction',
           depositIds: depositIds.map(String),
-        }
+        },
       );
-      
+
       return { success: false, error: errorMessage };
     }
   }
-  
+
   /**
    * Estimate gas parameters for a transaction
    */
   protected async estimateGasParams(
     depositIds: bigint[],
     recipient: string,
-    minExpectedReward: bigint
+    minExpectedReward: bigint,
   ): Promise<{ gasLimit: bigint; gasPrice: bigint }> {
     try {
       // Create transaction simulator instance
       const simulator = new TransactionSimulator(
-        this.relayProvider as unknown as ethers.Provider, 
-        this.logger, 
+        this.relayProvider as unknown as ethers.Provider,
+        this.logger,
         {
           gasBoostPercentage: this.config.gasBoostPercentage || 10,
-          gasLimitBufferPercentage: 20 // 20% buffer by default
-        }
+          gasLimitBufferPercentage: 20, // 20% buffer by default
+        },
       );
-      
+
       // Estimate gas parameters
       const gasEstimate = await simulator.estimateGasParameters(
         this.lstContract,
@@ -1217,40 +1219,41 @@ export class RelayerExecutor implements IExecutor {
         [recipient, minExpectedReward, depositIds],
         {
           fallbackGasLimit: BigInt(500000),
-          context: `depositIds:${depositIds.map(String).join(',')}`
-        }
+          context: `depositIds:${depositIds.map(String).join(',')}`,
+        },
       );
-      
+
       this.logger.info('Gas parameters estimated', {
         depositIds: depositIds.map(String),
         gasLimit: gasEstimate.gasLimit.toString(),
-        gasPrice: gasEstimate.gasPrice.toString()
+        gasPrice: gasEstimate.gasPrice.toString(),
       });
-      
+
       return gasEstimate;
     } catch (error) {
       // Log the error and use fallback values
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
       this.logger.error('Gas estimation failed completely', {
         depositIds: depositIds.map(String),
-        error: errorMessage
+        error: errorMessage,
       });
-      
+
       this.errorLogger.error(
-        error instanceof Error 
-          ? error 
+        error instanceof Error
+          ? error
           : new Error(`Gas estimation failed: ${errorMessage}`),
         {
           stage: 'estimateGasParams',
           depositIds: depositIds.map(String),
-        }
+        },
       );
-      
+
       // Use fallback values
-      return { 
-        gasLimit: BigInt(500000), 
-        gasPrice: BigInt(0) // This will be set by the relayer
+      return {
+        gasLimit: BigInt(500000),
+        gasPrice: BigInt(0), // This will be set by the relayer
       };
     }
   }

@@ -38,7 +38,7 @@ import {
 } from './helpers';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
 import { ErrorLogger } from '@/configuration/errorLogger';
-import { BASE_EVENTS, BASE_QUEUE } from './constants'; 
+import { BASE_EVENTS, BASE_QUEUE } from './constants';
 
 // Extended executor config with error logger
 export interface ExtendedExecutorConfig extends ExecutorConfig {
@@ -842,21 +842,21 @@ export class BaseExecutor implements IExecutor {
       const simulationResult = await this.simulateTransaction(
         depositIds,
         this.config.defaultTipReceiver || this.wallet.address,
-        optimalThreshold
+        optimalThreshold,
       );
-      
+
       if (!simulationResult.success) {
         this.logger.error('Transaction simulation failed, not executing', {
           id: tx.id,
           depositIds: depositIds.map(String),
-          error: simulationResult.error
+          error: simulationResult.error,
         });
-        
+
         // Update transaction status
         tx.status = TransactionStatus.FAILED;
         tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
         this.queue.set(tx.id, tx);
-        
+
         // Update database if available
         if (this.db && queueItemId) {
           await this.db.updateTransactionQueueItem(queueItemId, {
@@ -864,10 +864,10 @@ export class BaseExecutor implements IExecutor {
             error: `Simulation failed: ${simulationResult.error}`,
           });
         }
-        
+
         return;
       }
-      
+
       this.logger.info('Transaction simulation successful', {
         id: tx.id,
         depositIds: depositIds.map(String),
@@ -920,39 +920,36 @@ export class BaseExecutor implements IExecutor {
   private async simulateTransaction(
     depositIds: bigint[],
     recipient: string,
-    minExpectedReward: bigint
+    minExpectedReward: bigint,
   ): Promise<{ success: boolean; error?: string }> {
     try {
       this.logger.info('Simulating transaction', {
         depositIds: depositIds.map(String),
         recipient,
-        minExpectedReward: minExpectedReward.toString()
+        minExpectedReward: minExpectedReward.toString(),
       });
-      
+
       // Get the function reference
-      const claimFunction = this.govLstContract.claimAndDistributeReward as GovLstContractMethod;
-      
+      const claimFunction = this.govLstContract
+        .claimAndDistributeReward as GovLstContractMethod;
+
       if (!claimFunction.estimateGas) {
         throw new Error('Contract method is missing estimateGas function');
       }
-      
+
       // Use estimateGas as a way to simulate the transaction
       // If it succeeds, the transaction will also succeed
-      await claimFunction.estimateGas(
-        recipient,
-        minExpectedReward,
-        depositIds
-      );
-      
+      await claimFunction.estimateGas(recipient, minExpectedReward, depositIds);
+
       this.logger.info('Transaction simulation successful', {
-        depositIds: depositIds.map(String)
+        depositIds: depositIds.map(String),
       });
-      
+
       return { success: true };
     } catch (error) {
       // Extract user-friendly error message
       let errorMessage = error instanceof Error ? error.message : String(error);
-      
+
       // Look for known error patterns and provide more user-friendly messages
       if (errorMessage.includes('insufficient funds')) {
         errorMessage = 'Insufficient wallet balance to execute transaction';
@@ -961,20 +958,20 @@ export class BaseExecutor implements IExecutor {
       } else if (errorMessage.includes('InsufficientReward')) {
         errorMessage = 'Insufficient reward amount to meet minimum threshold';
       }
-      
+
       this.logger.error('Transaction simulation failed', {
         depositIds: depositIds.map(String),
         error: errorMessage,
-        originalError: error instanceof Error ? error.message : String(error)
+        originalError: error instanceof Error ? error.message : String(error),
       });
-      
+
       if (this.errorLogger) {
         await this.errorLogger.warn(error as Error, {
           context: 'base-executor-simulation-failed',
           depositIds: depositIds.map(String),
         });
       }
-      
+
       return { success: false, error: errorMessage };
     }
   }

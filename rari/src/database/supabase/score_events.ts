@@ -14,7 +14,9 @@ export async function createScoreEvent(event: ScoreEvent): Promise<void> {
   if (error) throw error;
 }
 
-export async function getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null> {
+export async function getLatestScoreEvent(
+  delegatee: string,
+): Promise<ScoreEvent | null> {
   const client = supabase();
   if (!client) {
     throw new Error(SUPABASE_NOT_CONFIGURED_ERROR);
@@ -30,4 +32,4 @@ export async function getLatestScoreEvent(delegatee: string): Promise<ScoreEvent
 
   if (error) throw error;
   return data;
-} 
+}

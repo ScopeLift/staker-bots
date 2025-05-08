@@ -3,8 +3,11 @@ import {
   GovLstProfitabilityCheck,
   GovLstBatchAnalysis,
 } from './types';
-import { Deposit, ProcessingQueueItem } from '../../database/interfaces/types'
-import { ProfitabilityQueueBatchResult, ProfitabilityQueueResult } from './types'
+import { Deposit, ProcessingQueueItem } from '../../database/interfaces/types';
+import {
+  ProfitabilityQueueBatchResult,
+  ProfitabilityQueueResult,
+} from './types';
 
 export interface ProfitabilityEngineConfig {
   gasPriceBuffer: number;
@@ -64,7 +67,11 @@ export interface IProfitabilityEngine {
   /**
    * Process a single item from the processing queue
    */
-  processItem({ item }: { item: ProcessingQueueItem }): Promise<ProfitabilityQueueResult>
+  processItem({
+    item,
+  }: {
+    item: ProcessingQueueItem;
+  }): Promise<ProfitabilityQueueResult>;
 
   /**
    * Process a batch of deposits for profitability analysis
@@ -72,13 +79,13 @@ export interface IProfitabilityEngine {
   processDepositsBatch({
     deposits,
   }: {
-    deposits: Deposit[]
-  }): Promise<ProfitabilityQueueBatchResult>
+    deposits: Deposit[];
+  }): Promise<ProfitabilityQueueBatchResult>;
 
   /**
    * Handle score event updates for a delegatee
    * @param delegatee The delegatee address
    * @param score The new score value
    */
-  onScoreEvent(delegatee: string, score: bigint): Promise<void>
+  onScoreEvent(delegatee: string, score: bigint): Promise<void>;
 }
