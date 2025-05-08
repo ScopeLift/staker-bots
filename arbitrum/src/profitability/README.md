@@ -224,10 +224,10 @@ await engine.onScoreEvent(delegateeAddress, newScore);
 
 ```typescript
 const profitability = await engine.checkProfitability(deposit);
-console.log('Can bump:', profitability.canBump);
-console.log('Optimal tip:', profitability.estimates.optimalTip.toString());
+console.log("Can bump:", profitability.canBump);
+console.log("Optimal tip:", profitability.estimates.optimalTip.toString());
 console.log(
-  'Expected profit:',
+  "Expected profit:",
   profitability.estimates.expectedProfit.toString(),
 );
 ```
@@ -236,9 +236,9 @@ console.log(
 
 ```typescript
 const batchAnalysis = await engine.analyzeBatchProfitability(deposits);
-console.log('Recommended batch size:', batchAnalysis.recommendedBatchSize);
+console.log("Recommended batch size:", batchAnalysis.recommendedBatchSize);
 console.log(
-  'Total expected profit:',
+  "Total expected profit:",
   batchAnalysis.totalExpectedProfit.toString(),
 );
 ```
@@ -247,15 +247,15 @@ console.log(
 
 ```typescript
 const status = await engine.getStatus();
-console.log('Engine running:', status.isRunning);
-console.log('Queue size:', status.queueSize);
-console.log('Delegatee count:', status.delegateeCount);
+console.log("Engine running:", status.isRunning);
+console.log("Queue size:", status.queueSize);
+console.log("Delegatee count:", status.delegateeCount);
 
 const queueStats = await engine.getQueueStats();
-console.log('Pending items:', queueStats.pendingCount);
-console.log('Processing items:', queueStats.processingCount);
-console.log('Completed items:', queueStats.completedCount);
-console.log('Failed items:', queueStats.failedCount);
+console.log("Pending items:", queueStats.pendingCount);
+console.log("Processing items:", queueStats.processingCount);
+console.log("Completed items:", queueStats.completedCount);
+console.log("Failed items:", queueStats.failedCount);
 ```
 
 ## Performance Optimizations
@@ -263,6 +263,7 @@ console.log('Failed items:', queueStats.failedCount);
 ### Caching System
 
 - **Deposit Cache**
+
   - Reduces database load
   - Quick access to frequent deposits
 

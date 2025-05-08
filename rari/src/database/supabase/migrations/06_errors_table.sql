@@ -1,12 +1,12 @@
 -- Create errors table
 CREATE TABLE IF NOT EXISTS errors (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    service_name TEXT NOT NULL,
-    error_message TEXT NOT NULL,
-    stack_trace TEXT,
-    severity TEXT NOT NULL,
-    meta JSONB,
-    context JSONB,
+    service_name TEXT NOT NULL CHECK (length(service_name) > 0),
+    error_message TEXT NOT NULL CHECK (length(error_message) > 0),
+    stack_trace TEXT CHECK (stack_trace IS NULL OR length(stack_trace) > 0),
+    severity TEXT NOT NULL CHECK (severity IN ('debug', 'info', 'warning', 'error', 'critical')),
+    meta JSONB CHECK (meta IS NULL OR jsonb_typeof(meta) = 'object'),
+    context JSONB CHECK (context IS NULL OR jsonb_typeof(context) = 'object'),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::TEXT, NOW()) NOT NULL
 );
 

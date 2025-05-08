@@ -1,8 +1,8 @@
-import { ethers } from 'ethers';
-import { IDatabase } from '@/database';
-import { ConsoleLogger, Logger } from '@/monitor/logging';
-import { CalculatorWrapper } from './CalculatorWrapper';
-import { MonitorConfig } from '@/monitor/types';
+import { ethers } from "ethers";
+import { IDatabase } from "@/database";
+import { ConsoleLogger, Logger } from "@/monitor/logging";
+import { CalculatorWrapper } from "./CalculatorWrapper";
+import { MonitorConfig } from "@/monitor/types";
 
 export class Calculator {
   private readonly db: IDatabase;
@@ -26,23 +26,23 @@ export class Calculator {
 
   async start(): Promise<void> {
     if (this.isRunning) {
-      this.logger.warn('Calculator is already running');
+      this.logger.warn("Calculator is already running");
       return;
     }
 
     this.isRunning = true;
-    this.logger.info('Starting Calculator', {
+    this.logger.info("Starting Calculator", {
       network: this.config.networkName,
       chainId: this.config.chainId,
       rewardCalculatorAddress: this.config.rewardCalculatorAddress,
     });
 
     // Check for existing checkpoint first
-    const checkpoint = await this.db.getCheckpoint('calculator');
+    const checkpoint = await this.db.getCheckpoint("calculator");
 
     if (checkpoint) {
       this.lastProcessedBlock = checkpoint.last_block_number;
-      this.logger.info('Resuming from checkpoint', {
+      this.logger.info("Resuming from checkpoint", {
         blockNumber: this.lastProcessedBlock,
         blockHash: checkpoint.block_hash,
         lastUpdate: checkpoint.last_update,
@@ -51,13 +51,13 @@ export class Calculator {
       // Initialize with start block if no checkpoint exists
       this.lastProcessedBlock = this.config.startBlock;
       await this.db.updateCheckpoint({
-        component_type: 'calculator',
+        component_type: "calculator",
         last_block_number: this.config.startBlock,
         block_hash:
-          '0x0000000000000000000000000000000000000000000000000000000000000000',
+          "0x0000000000000000000000000000000000000000000000000000000000000000",
         last_update: new Date().toISOString(),
       });
-      this.logger.info('Starting from initial block', {
+      this.logger.info("Starting from initial block", {
         blockNumber: this.lastProcessedBlock,
       });
     }
@@ -67,13 +67,13 @@ export class Calculator {
   }
 
   async stop(): Promise<void> {
-    this.logger.info('Stopping calculator...');
+    this.logger.info("Stopping calculator...");
     this.isRunning = false;
     await this.calculator.stop();
     if (this.processingPromise) {
       await this.processingPromise;
     }
-    this.logger.info('Calculator stopped');
+    this.logger.info("Calculator stopped");
   }
 
   async getCalculatorStatus(): Promise<{
@@ -117,7 +117,7 @@ export class Calculator {
         // No delays, continue immediately
         continue;
       } catch (error) {
-        this.logger.error('Error in processing loop', { error });
+        this.logger.error("Error in processing loop", { error });
         // Minimal error delay
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }

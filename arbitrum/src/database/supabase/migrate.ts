@@ -1,9 +1,9 @@
-import { supabase } from './client';
-import fs from 'fs';
-import path from 'path';
-import { ConsoleLogger } from '@/monitor/logging';
+import { supabase } from "./client";
+import fs from "fs";
+import path from "path";
+import { ConsoleLogger } from "@/monitor/logging";
 
-const logger = new ConsoleLogger('info');
+const logger = new ConsoleLogger("info");
 
 /**
  * Applies SQL migrations to the Supabase database
@@ -13,23 +13,23 @@ async function runMigrations() {
   try {
     // Migration files in order of application
     const migrationFiles = [
-      'schema.sql',
-      'score_events.sql',
-      'queue_tables.sql',
+      "schema.sql",
+      "score_events.sql",
+      "queue_tables.sql",
     ];
 
-    logger.info('Starting database migrations...');
+    logger.info("Starting database migrations...");
 
     for (const filename of migrationFiles) {
-      const filePath = path.join(__dirname, 'migrations', filename);
+      const filePath = path.join(__dirname, "migrations", filename);
       logger.info(`Applying migration: ${filename}`);
 
       try {
-        const sql = fs.readFileSync(filePath, 'utf8');
+        const sql = fs.readFileSync(filePath, "utf8");
 
         // Split SQL by semicolons to execute each statement separately
         const statements = sql
-          .split(';')
+          .split(";")
           .map((s) => s.trim())
           .filter((s) => s.length > 0);
 
@@ -37,7 +37,7 @@ async function runMigrations() {
           logger.debug(
             `Executing SQL statement: ${statement.substring(0, 100)}...`,
           );
-          const { error } = await supabase.rpc('exec_sql', { sql: statement });
+          const { error } = await supabase.rpc("exec_sql", { sql: statement });
 
           if (error) {
             logger.error(`Error executing statement in ${filename}:`, {
@@ -54,9 +54,9 @@ async function runMigrations() {
       }
     }
 
-    logger.info('Database migrations completed successfully');
+    logger.info("Database migrations completed successfully");
   } catch (error) {
-    logger.error('Error running migrations:', { error });
+    logger.error("Error running migrations:", { error });
     throw error;
   }
 }
@@ -65,11 +65,11 @@ async function runMigrations() {
 if (require.main === module) {
   runMigrations()
     .then(() => {
-      logger.info('Migration script completed');
+      logger.info("Migration script completed");
       process.exit(0);
     })
     .catch((error) => {
-      logger.error('Migration script failed:', { error });
+      logger.error("Migration script failed:", { error });
       process.exit(1);
     });
 }

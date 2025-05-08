@@ -1,4 +1,4 @@
-import { BatchAnalysis, Deposit, ProfitabilityCheck } from './types';
+import { BatchAnalysis, Deposit, ProfitabilityCheck } from "./types";
 
 export interface ProfitabilityEngineConfig {
   gasPriceBuffer: number;

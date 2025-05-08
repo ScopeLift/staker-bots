@@ -1,8 +1,8 @@
-import { ICalculatorStrategy } from './interfaces/ICalculatorStrategy';
-import { BinaryEligibilityOracleEarningPowerCalculator } from './strategies/BinaryEligibilityOracleEarningPowerCalculator';
-import { CalculatorConfig, CalculatorStatus } from './interfaces/types';
-import { IDatabase } from '@/database';
-import { ethers } from 'ethers';
+import { ICalculatorStrategy } from "./interfaces/ICalculatorStrategy";
+import { BinaryEligibilityOracleEarningPowerCalculator } from "./strategies/BinaryEligibilityOracleEarningPowerCalculator";
+import { CalculatorConfig, CalculatorStatus } from "./interfaces/types";
+import { IDatabase } from "@/database";
+import { ethers } from "ethers";
 
 export class CalculatorWrapper implements ICalculatorStrategy {
   private strategy: ICalculatorStrategy;
@@ -12,7 +12,7 @@ export class CalculatorWrapper implements ICalculatorStrategy {
   constructor(
     db: IDatabase,
     provider: ethers.Provider,
-    config: CalculatorConfig = { type: 'binary' },
+    config: CalculatorConfig = { type: "binary" },
   ) {
     // Initialize with BinaryEligibilityOracleEarningPowerCalculator strategy by default
     this.strategy = new BinaryEligibilityOracleEarningPowerCalculator(
@@ -23,7 +23,7 @@ export class CalculatorWrapper implements ICalculatorStrategy {
     this.lastProcessedBlock = 0;
 
     // Can extend here to support other calculator types
-    if (config.type !== 'binary') {
+    if (config.type !== "binary") {
       throw new Error(`Calculator type ${config.type} not supported`);
     }
   }

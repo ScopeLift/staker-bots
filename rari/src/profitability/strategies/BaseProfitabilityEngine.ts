@@ -716,18 +716,23 @@ export class BaseProfitabilityEngine implements IProfitabilityEngine {
 
         // Try to access getScoreEventsByBlockRange through dynamic property access
         if (
-          typeof this.calculator['db'] === 'object' && 
+          typeof this.calculator['db'] === 'object' &&
           this.calculator['db'] !== null &&
           'getScoreEventsByBlockRange' in this.calculator['db']
         ) {
           const blockRange = 20000000; // Look back 20 million blocks
           // Use type assertion for the database object with the method
-          const db = this.calculator['db'] as { 
-            getScoreEventsByBlockRange(fromBlock: number, toBlock: number): Promise<Array<{
-              delegatee: string;
-              score: string;
-              block_number: number;
-            }>>
+          const db = this.calculator['db'] as {
+            getScoreEventsByBlockRange(
+              fromBlock: number,
+              toBlock: number,
+            ): Promise<
+              Array<{
+                delegatee: string;
+                score: string;
+                block_number: number;
+              }>
+            >;
           };
           earlierEvents = await db.getScoreEventsByBlockRange(
             Math.max(1, latestScoreEvent.block_number - blockRange),

@@ -1,4 +1,4 @@
-import { ProfitabilityCheck } from '@/profitability/interfaces/types';
+import { ProfitabilityCheck } from "@/profitability/interfaces/types";
 
 export interface WalletConfig {
   privateKey: string;
@@ -35,10 +35,10 @@ export interface QueuedTransaction {
 }
 
 export enum TransactionStatus {
-  QUEUED = 'QUEUED',
-  PENDING = 'PENDING',
-  CONFIRMED = 'CONFIRMED',
-  FAILED = 'FAILED',
+  QUEUED = "QUEUED",
+  PENDING = "PENDING",
+  CONFIRMED = "CONFIRMED",
+  FAILED = "FAILED",
 }
 
 export interface ExecutorConfig {
@@ -53,7 +53,7 @@ export interface ExecutorConfig {
   defaultTipReceiver?: string;
 }
 
-export interface RelayerExecutorConfig extends Omit<ExecutorConfig, 'wallet'> {
+export interface RelayerExecutorConfig extends Omit<ExecutorConfig, "wallet"> {
   relayer: RelayerConfig;
 }
 

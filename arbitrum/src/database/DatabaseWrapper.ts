@@ -1,4 +1,4 @@
-import { IDatabase } from './interfaces/IDatabase';
+import { IDatabase } from "./interfaces/IDatabase";
 import {
   Deposit,
   ProcessingCheckpoint,
@@ -7,24 +7,24 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
-} from './interfaces/types';
-import * as supabaseDb from './supabase/deposits';
-import * as supabaseCheckpoints from './supabase/checkpoints';
-import * as supabaseScoreEvents from './supabase/score_events';
-import * as supabaseProcessingQueue from './supabase/processing_queue';
-import * as supabaseTransactionQueue from './supabase/transaction_queue';
-import { JsonDatabase } from './json/JsonDatabase';
+} from "./interfaces/types";
+import * as supabaseDb from "./supabase/deposits";
+import * as supabaseCheckpoints from "./supabase/checkpoints";
+import * as supabaseScoreEvents from "./supabase/score_events";
+import * as supabaseProcessingQueue from "./supabase/processing_queue";
+import * as supabaseTransactionQueue from "./supabase/transaction_queue";
+import { JsonDatabase } from "./json/JsonDatabase";
 
 export type DatabaseConfig = {
-  type: 'supabase' | 'json';
+  type: "supabase" | "json";
   jsonDbPath?: string;
 };
 
 export class DatabaseWrapper implements IDatabase {
   private db: IDatabase;
 
-  constructor(config: DatabaseConfig = { type: 'supabase' }) {
-    if (config.type === 'json') {
+  constructor(config: DatabaseConfig = { type: "supabase" }) {
+    if (config.type === "json") {
       this.db = new JsonDatabase(config.jsonDbPath);
     } else {
       this.db = {
@@ -86,7 +86,7 @@ export class DatabaseWrapper implements IDatabase {
 
   async updateDeposit(
     depositId: string,
-    update: Partial<Omit<Deposit, 'deposit_id'>>,
+    update: Partial<Omit<Deposit, "deposit_id">>,
   ): Promise<void> {
     return this.db.updateDeposit(depositId, update);
   }
@@ -167,7 +167,7 @@ export class DatabaseWrapper implements IDatabase {
   async createProcessingQueueItem(
     item: Omit<
       ProcessingQueueItem,
-      'id' | 'created_at' | 'updated_at' | 'attempts'
+      "id" | "created_at" | "updated_at" | "attempts"
     >,
   ): Promise<ProcessingQueueItem> {
     return this.db.createProcessingQueueItem(item);
@@ -176,7 +176,7 @@ export class DatabaseWrapper implements IDatabase {
   async updateProcessingQueueItem(
     id: string,
     update: Partial<
-      Omit<ProcessingQueueItem, 'id' | 'created_at' | 'updated_at'>
+      Omit<ProcessingQueueItem, "id" | "created_at" | "updated_at">
     >,
   ): Promise<void> {
     return this.db.updateProcessingQueueItem(id, update);
@@ -214,7 +214,7 @@ export class DatabaseWrapper implements IDatabase {
   async createTransactionQueueItem(
     item: Omit<
       TransactionQueueItem,
-      'id' | 'created_at' | 'updated_at' | 'attempts'
+      "id" | "created_at" | "updated_at" | "attempts"
     >,
   ): Promise<TransactionQueueItem> {
     return this.db.createTransactionQueueItem(item);
@@ -223,7 +223,7 @@ export class DatabaseWrapper implements IDatabase {
   async updateTransactionQueueItem(
     id: string,
     update: Partial<
-      Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at'>
+      Omit<TransactionQueueItem, "id" | "created_at" | "updated_at">
     >,
   ): Promise<void> {
     return this.db.updateTransactionQueueItem(id, update);

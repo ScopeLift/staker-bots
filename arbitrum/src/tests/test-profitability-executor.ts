@@ -1,26 +1,26 @@
-import { ethers } from 'ethers';
-import { BinaryEligibilityOracleEarningPowerCalculator } from '../calculator';
-import { BaseProfitabilityEngine } from '../profitability/strategies/BaseProfitabilityEngine';
+import { ethers } from "ethers";
+import { BinaryEligibilityOracleEarningPowerCalculator } from "../calculator";
+import { BaseProfitabilityEngine } from "../profitability/strategies/BaseProfitabilityEngine";
 import {
   ProfitabilityConfig,
   Deposit as ProfitabilityDeposit,
   ProfitabilityCheck,
   BatchAnalysis,
-} from '../profitability/interfaces/types';
-import { DatabaseWrapper } from '../database';
-import { ConsoleLogger, Logger } from '../monitor/logging';
-import fs from 'fs';
-import { Deposit } from '../database/interfaces/types';
-import { CoinMarketCapFeed } from '../shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
-import { CONFIG } from '@/configuration/constants';
-import { ExecutorWrapper, ExecutorType } from '../executor';
-import { TransactionStatus } from '../executor/interfaces/types';
-import { ProfitabilityEngineWrapper } from '../profitability/ProfitabilityEngineWrapper';
-import path from 'path';
+} from "../profitability/interfaces/types";
+import { DatabaseWrapper } from "../database";
+import { ConsoleLogger, Logger } from "../monitor/logging";
+import fs from "fs";
+import { Deposit } from "../database/interfaces/types";
+import { CoinMarketCapFeed } from "../shared/price-feeds/coinmarketcap/CoinMarketCapFeed";
+import { CONFIG } from "@/configuration/constants";
+import { ExecutorWrapper, ExecutorType } from "../executor";
+import { TransactionStatus } from "../executor/interfaces/types";
+import { ProfitabilityEngineWrapper } from "../profitability/ProfitabilityEngineWrapper";
+import path from "path";
 import {
   Deposit as DatabaseDeposit,
   ScoreEvent,
-} from '../database/interfaces/types';
+} from "../database/interfaces/types";
 
 // Define database deposit type
 interface DatabaseContent {
@@ -37,14 +37,14 @@ interface CheckpointData {
 }
 
 // Create logger instance
-const logger: Logger = new ConsoleLogger('info');
+const logger: Logger = new ConsoleLogger("info");
 
 // Helper function to convert from database deposits to profitability deposits
 function convertDeposit(deposit: Deposit): ProfitabilityDeposit {
   return {
     deposit_id: BigInt(deposit.deposit_id),
     owner_address: deposit.owner_address,
-    delegatee_address: deposit.delegatee_address || '',
+    delegatee_address: deposit.delegatee_address || "",
     amount: BigInt(deposit.amount),
     created_at: deposit.created_at,
     updated_at: deposit.updated_at,
@@ -52,7 +52,14 @@ function convertDeposit(deposit: Deposit): ProfitabilityDeposit {
 }
 
 // Define helper function to get score history for a delegatee from the database
-async function getScoreHistory(database: any, delegatee: string): Promise<{latestScore: bigint, previousScore: bigint | null, hasChanged: boolean}> {
+async function getScoreHistory(
+  database: DatabaseWrapper,
+  delegatee: string,
+): Promise<{
+  latestScore: bigint;
+  previousScore: bigint | null;
+  hasChanged: boolean;
+}> {
   try {
     // Get the latest score event
     const latestScoreEvent = await database.getLatestScoreEvent(delegatee);
@@ -60,79 +67,96 @@ async function getScoreHistory(database: any, delegatee: string): Promise<{lates
       logger.info(`No score events found for delegatee ${delegatee}`);
       return { latestScore: BigInt(0), previousScore: null, hasChanged: false };
     }
-    
+
     // Get the latest block number and score
     const latestBlockNumber = latestScoreEvent.block_number;
     const latestScore = BigInt(latestScoreEvent.score);
-    
-    logger.info(`Latest score for delegatee ${delegatee}: ${latestScore.toString()} at block ${latestBlockNumber}`);
-    
+
+    logger.info(
+      `Latest score for delegatee ${delegatee}: ${latestScore.toString()} at block ${latestBlockNumber}`,
+    );
+
     // We need to directly check the database file for a more comprehensive history
     // since the block range approach doesn't work well for widely spaced blocks
-    
+
     // For testing, we can check if this is one of the delegatees we know has history
-    if (delegatee === '0x714D8b5874b3a6a69f289f4e857F4C9670074296') {
+    if (delegatee === "0x714D8b5874b3a6a69f289f4e857F4C9670074296") {
       // This is the delegatee with known history in block 305729794
       const previousScore = BigInt(100); // We know this from the database file
       const previousBlockNumber = 305729794;
-      
-      logger.info(`Found known previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`);
-      
+
+      logger.info(
+        `Found known previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`,
+      );
+
       return {
         latestScore,
         previousScore,
-        hasChanged: latestScore !== previousScore
+        hasChanged: latestScore !== previousScore,
       };
     }
-    
+
     // For other delegatees, fall back to checking block ranges, but with a much larger range
     // In production, you'd want a proper database query to find all scores for a delegatee
     const blockRange = 20000000; // Looking back 20 million blocks should cover most historical data
     logger.info(`Searching for previous scores within ${blockRange} blocks`);
-    
+
     try {
       const earlierEvents = await database.getScoreEventsByBlockRange(
         Math.max(1, latestBlockNumber - blockRange),
-        latestBlockNumber - 1 // Exclude the latest event
+        latestBlockNumber - 1, // Exclude the latest event
       );
-      
+
       // Filter for events belonging to this delegatee
-      const delegateeEvents = earlierEvents.filter((event: ScoreEvent) => event.delegatee === delegatee);
-      
-      logger.info(`Found ${delegateeEvents.length} earlier score events for delegatee ${delegatee}`);
-      
+      const delegateeEvents = earlierEvents.filter(
+        (event: ScoreEvent) => event.delegatee === delegatee,
+      );
+
+      logger.info(
+        `Found ${delegateeEvents.length} earlier score events for delegatee ${delegatee}`,
+      );
+
       // Sort by block number (descending)
-      delegateeEvents.sort((a: ScoreEvent, b: ScoreEvent) => b.block_number - a.block_number);
-      
+      delegateeEvents.sort(
+        (a: ScoreEvent, b: ScoreEvent) => b.block_number - a.block_number,
+      );
+
       // If we found earlier events, get the most recent one
       if (delegateeEvents.length > 0) {
         const previousScore = BigInt(delegateeEvents[0].score);
         const previousBlockNumber = delegateeEvents[0].block_number;
-        
-        logger.info(`Found previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`);
-        
+
+        logger.info(
+          `Found previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`,
+        );
+
         return {
           latestScore,
           previousScore,
-          hasChanged: latestScore !== previousScore
+          hasChanged: latestScore !== previousScore,
         };
       }
     } catch (blockRangeError) {
       logger.warn(`Error searching block range for scores:`, {
-        error: blockRangeError instanceof Error ? blockRangeError.message : String(blockRangeError)
+        error:
+          blockRangeError instanceof Error
+            ? blockRangeError.message
+            : String(blockRangeError),
       });
     }
-    
+
     // If we reach here, no previous scores were found
-    logger.info(`No previous scores found for delegatee ${delegatee}, assuming no change`);
+    logger.info(
+      `No previous scores found for delegatee ${delegatee}, assuming no change`,
+    );
     return {
       latestScore,
       previousScore: null,
-      hasChanged: false // Assume no change if we can't find previous score
+      hasChanged: false, // Assume no change if we can't find previous score
     };
   } catch (error) {
     logger.warn(`Error getting score history for delegatee ${delegatee}:`, {
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
     });
     return { latestScore: BigInt(0), previousScore: null, hasChanged: false };
   }
@@ -149,22 +173,22 @@ interface ExtendedProfitabilityCheck extends ProfitabilityCheck {
 }
 
 async function main() {
-  logger.info('Starting profitability-executor integrated test...');
+  logger.info("Starting profitability-executor integrated test...");
 
   // Initialize database with JSON implementation
-  const dbPath = path.join(process.cwd(), 'test-staker-monitor-db.json');
+  const dbPath = path.join(process.cwd(), "test-staker-monitor-db.json");
   logger.info(`Using database at ${dbPath}`);
   const database = new DatabaseWrapper({
-    type: 'json',
-    jsonDbPath: 'test-staker-monitor-db.json',
+    type: "json",
+    jsonDbPath: "test-staker-monitor-db.json",
   });
 
   // Load database content for testing
   let dbContent: DatabaseContent;
   try {
-    logger.info('Loading staker-monitor database from file...');
+    logger.info("Loading staker-monitor database from file...");
     dbContent = JSON.parse(
-      fs.readFileSync('./staker-monitor-db.json', 'utf-8'),
+      fs.readFileSync("./staker-monitor-db.json", "utf-8"),
     ) as DatabaseContent;
     logger.info(
       `Found ${Object.keys(dbContent.deposits).length} deposits in file`,
@@ -211,7 +235,7 @@ async function main() {
             const blockKey = blockNumber.toString();
             const scoreEvent = blockEvents[blockKey as unknown as number];
 
-            if (scoreEvent && typeof scoreEvent.score === 'string') {
+            if (scoreEvent && typeof scoreEvent.score === "string") {
               // Store the latest score in our cache
               delegateeScores.set(delegatee, BigInt(scoreEvent.score));
 
@@ -253,14 +277,14 @@ async function main() {
         `Imported ${scoreEventCount} score events for ${delegateeScores.size} delegatees`,
       );
     } else {
-      logger.warn('No score events found in database file');
+      logger.warn("No score events found in database file");
     }
 
     // Import checkpoints if available
     if (dbContent.checkpoints && dbContent.checkpoints.calculator) {
-      logger.info('Importing calculator checkpoint');
+      logger.info("Importing calculator checkpoint");
       await database.updateCheckpoint({
-        component_type: 'calculator',
+        component_type: "calculator",
         last_block_number: dbContent.checkpoints.calculator.last_block_number,
         block_hash: dbContent.checkpoints.calculator.block_hash,
         last_update: dbContent.checkpoints.calculator.last_update,
@@ -268,7 +292,7 @@ async function main() {
     }
   } catch (error) {
     logger.warn(
-      'Could not load external database file, will use empty database:',
+      "Could not load external database file, will use empty database:",
       { error },
     );
     dbContent = { deposits: {} };
@@ -279,19 +303,19 @@ async function main() {
   logger.info(`Working with ${deposits.length} deposits in test database`);
 
   // Initialize provider
-  logger.info('Initializing provider...');
+  logger.info("Initializing provider...");
   const provider = new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
   const network = await provider.getNetwork();
-  logger.info('Connected to network:', {
+  logger.info("Connected to network:", {
     chainId: network.chainId,
     name: network.name,
   });
 
   // Initialize staker contract
-  logger.info('Initializing staker contract...');
+  logger.info("Initializing staker contract...");
   const stakerAddress = CONFIG.monitor.stakerAddress;
   const stakerAbi = JSON.parse(
-    fs.readFileSync('./src/tests/abis/staker.json', 'utf-8'),
+    fs.readFileSync("./src/tests/abis/staker.json", "utf-8"),
   );
   const stakerContract = new ethers.Contract(
     stakerAddress!,
@@ -302,14 +326,15 @@ async function main() {
   // Initialize wallet for transaction simulation
   const wallet = new ethers.Wallet(CONFIG.executor.privateKey, provider);
   const stakerContractWithSigner = stakerContract.connect(wallet);
-  
+
   // For testing, create a second wallet with more funds
-  const nonEmptyWallet = wallet;
-  
+  // Commenting out unused variables rather than removing them
+  // const nonEmptyWallet = wallet;
+
   // Set a flag to disable insufficient funds checks
   const BYPASS_WALLET_BALANCE_CHECKS = true;
-  
-  logger.info('Staker contract initialized at:', { address: stakerAddress });
+
+  logger.info("Staker contract initialized at:", { address: stakerAddress });
 
   // Define typed contract for better type safety
   const typedContract = stakerContract as ethers.Contract & {
@@ -331,26 +356,27 @@ async function main() {
   };
 
   // Define typed contract with signer for simulations
-  const typedContractWithSigner = stakerContractWithSigner as ethers.Contract & {
-    deposits(depositId: bigint): Promise<{
-      owner: string;
-      balance: bigint;
-      earningPower: bigint;
-      delegatee: string;
-      claimer: string;
-    }>;
-    unclaimedReward(depositId: bigint): Promise<bigint>;
-    maxBumpTip(): Promise<bigint>;
-    bumpEarningPower(
-      depositId: bigint,
-      tipReceiver: string,
-      tip: bigint,
-    ): Promise<bigint>;
-    REWARD_TOKEN(): Promise<string>;
-  };
+  // Commenting out unused variables rather than removing them
+  // const typedContractWithSigner = stakerContractWithSigner as ethers.Contract & {
+  //   deposits(depositId: bigint): Promise<{
+  //     owner: string;
+  //     balance: bigint;
+  //     earningPower: bigint;
+  //     delegatee: string;
+  //     claimer: string;
+  //   }>;
+  //   unclaimedReward(depositId: bigint): Promise<bigint>;
+  //   maxBumpTip(): Promise<bigint>;
+  //   bumpEarningPower(
+  //     depositId: bigint,
+  //     tipReceiver: string,
+  //     tip: bigint,
+  //   ): Promise<bigint>;
+  //   REWARD_TOKEN(): Promise<string>;
+  // };
 
   // Initialize calculator
-  logger.info('Initializing calculator...');
+  logger.info("Initializing calculator...");
   const calculator = new BinaryEligibilityOracleEarningPowerCalculator(
     database,
     provider,
@@ -365,7 +391,7 @@ async function main() {
   }
 
   // Verify score events are loaded by checking each delegatee's score
-  logger.info('Verifying score events are loaded in calculator...');
+  logger.info("Verifying score events are loaded in calculator...");
   let validatedScores = 0;
   let scoreDiscrepancies = 0;
 
@@ -380,7 +406,7 @@ async function main() {
         // Use the calculator's method to get the score (internally uses the cache)
         // We need to call a method that will use the delegatee score
         const amount = BigInt(1000000); // Dummy value
-        const owner = '0x0000000000000000000000000000000000000000'; // Dummy value
+        const owner = "0x0000000000000000000000000000000000000000"; // Dummy value
         const oldEarningPower = BigInt(0); // Dummy value
 
         // This method internally uses delegatee scores
@@ -424,7 +450,7 @@ async function main() {
   });
 
   // Configure profitability engine
-  logger.info('Configuring profitability engine...');
+  logger.info("Configuring profitability engine...");
   const config: ProfitabilityConfig = {
     minProfitMargin: BigInt(0), // 0 ETH for testing
     gasPriceBuffer: 20, // 20%
@@ -436,7 +462,7 @@ async function main() {
     },
   };
 
-  logger.info('Profitability config:', {
+  logger.info("Profitability config:", {
     minProfitMargin: ethers.formatEther(config.minProfitMargin),
     gasPriceBuffer: config.gasPriceBuffer,
     maxBatchSize: config.maxBatchSize,
@@ -454,7 +480,7 @@ async function main() {
   );
 
   // Initialize profitability engine directly
-  logger.info('Initializing direct profitability engine...');
+  logger.info("Initializing direct profitability engine...");
   const directProfitabilityEngine = new BaseProfitabilityEngine(
     calculator,
     typedContract,
@@ -465,10 +491,10 @@ async function main() {
 
   // Start the direct profitability engine
   await directProfitabilityEngine.start();
-  logger.info('Direct profitability engine started');
+  logger.info("Direct profitability engine started");
 
   // Also initialize our wrapper profitability engine with queue processing
-  logger.info('Initializing queue-based profitability engine wrapper...');
+  logger.info("Initializing queue-based profitability engine wrapper...");
   const profitabilityEngine = new ProfitabilityEngineWrapper(
     database,
     provider,
@@ -479,11 +505,11 @@ async function main() {
 
   // Start the profitability engine wrapper
   await profitabilityEngine.start();
-  logger.info('Queue-based profitability engine started');
+  logger.info("Queue-based profitability engine started");
 
   // Connect calculator to profitability engine for score event processing
   calculator.setProfitabilityEngine(profitabilityEngine);
-  logger.info('Connected calculator to profitability engine for score events');
+  logger.info("Connected calculator to profitability engine for score events");
 
   // PART 1: PROFITABILITY ANALYSIS
   logger.info(`\n======== PROFITABILITY ANALYSIS ========`);
@@ -497,14 +523,14 @@ async function main() {
     config: {
       wallet: {
         privateKey: CONFIG.executor.privateKey,
-        minBalance: ethers.parseEther('0.0000001'), // Very small value for testing
+        minBalance: ethers.parseEther("0.0000001"), // Very small value for testing
         maxPendingTransactions: 5,
       },
       maxQueueSize: 10,
       minConfirmations: 1,
       maxRetries: 2,
       retryDelayMs: 2000,
-      transferOutThreshold: ethers.parseEther('0.5'),
+      transferOutThreshold: ethers.parseEther("0.5"),
       gasBoostPercentage: 5,
       concurrentTransactions: 2,
     },
@@ -512,37 +538,49 @@ async function main() {
 
   // Start executor
   await executor.start();
-  logger.info('Executor started');
+  logger.info("Executor started");
 
   // Connect executor to profitability engine
   profitabilityEngine.setExecutor(executor);
 
   try {
     // Create an array to store the successfully analyzed deposits
-    const results: { depositId: bigint; profitability: ExtendedProfitabilityCheck }[] =
-      [];
+    const results: {
+      depositId: bigint;
+      profitability: ExtendedProfitabilityCheck;
+    }[] = [];
     let totalGasEstimate = BigInt(0);
     let totalExpectedProfit = BigInt(0);
     let profitableDeposits = 0;
 
     // Get current gas price for logging
     const currentGasPrice = await provider.getFeeData();
-    logger.info(`Current gas price: ${ethers.formatUnits(currentGasPrice.gasPrice || 0n, 'gwei')} Gwei`);
-    
+    logger.info(
+      `Current gas price: ${ethers.formatUnits(currentGasPrice.gasPrice || 0n, "gwei")} Gwei`,
+    );
+
     // Get ETH price from price feed for profitability calculations
     const ethPrice = await priceFeed.getTokenPrice(ethers.ZeroAddress);
     const ethPriceNumber = Number(String(ethPrice));
-    logger.info(`Current ETH price: $${isNaN(ethPriceNumber) ? '-' : ethPriceNumber.toFixed(2)}`);
-    
+    logger.info(
+      `Current ETH price: $${isNaN(ethPriceNumber) ? "-" : ethPriceNumber.toFixed(2)}`,
+    );
+
     // Get reward token price
-    const rewardTokenPrice = await priceFeed.getTokenPrice(config.rewardTokenAddress);
+    const rewardTokenPrice = await priceFeed.getTokenPrice(
+      config.rewardTokenAddress,
+    );
     const rewardTokenPriceNumber = Number(String(rewardTokenPrice));
-    logger.info(`Reward token price: $${isNaN(rewardTokenPriceNumber) ? '-' : rewardTokenPriceNumber.toFixed(6)}`);
+    logger.info(
+      `Reward token price: $${isNaN(rewardTokenPriceNumber) ? "-" : rewardTokenPriceNumber.toFixed(6)}`,
+    );
 
     // Process each deposit individually to avoid failing the entire batch
     for (const deposit of deposits) {
       try {
-        logger.info(`\n------- Analyzing deposit ${deposit.deposit_id} -------`);
+        logger.info(
+          `\n------- Analyzing deposit ${deposit.deposit_id} -------`,
+        );
         // Log deposit details
         logger.info(`Deposit details:`, {
           depositId: deposit.deposit_id,
@@ -550,10 +588,12 @@ async function main() {
           delegatee: deposit.delegatee_address,
           amount: ethers.formatEther(BigInt(deposit.amount)),
         });
-        
+
         // Get on-chain deposit data
         try {
-          const onChainDeposit = await typedContract.deposits(BigInt(deposit.deposit_id));
+          const onChainDeposit = await typedContract.deposits(
+            BigInt(deposit.deposit_id),
+          );
           logger.info(`On-chain deposit data:`, {
             owner: onChainDeposit.owner,
             balance: ethers.formatEther(onChainDeposit.balance),
@@ -561,11 +601,15 @@ async function main() {
             delegatee: onChainDeposit.delegatee,
             claimer: onChainDeposit.claimer,
           });
-          
+
           // Get unclaimed rewards
-          const unclaimedReward = await typedContract.unclaimedReward(BigInt(deposit.deposit_id));
-          logger.info(`Unclaimed rewards: ${ethers.formatEther(unclaimedReward)}`);
-          
+          const unclaimedReward = await typedContract.unclaimedReward(
+            BigInt(deposit.deposit_id),
+          );
+          logger.info(
+            `Unclaimed rewards: ${ethers.formatEther(unclaimedReward)}`,
+          );
+
           // Get delegatee score
           if (deposit.delegatee_address) {
             const latestScoreEvent = await database.getLatestScoreEvent(
@@ -586,10 +630,11 @@ async function main() {
 
         // Use actual profitability engine instead of mocks
         logger.info(`Checking profitability...`);
-        const profitability = await directProfitabilityEngine.checkProfitability(
-          profitabilityDeposit
-        ) as ExtendedProfitabilityCheck;
-        
+        const profitability =
+          (await directProfitabilityEngine.checkProfitability(
+            profitabilityDeposit,
+          )) as ExtendedProfitabilityCheck;
+
         // Initialize the hasEarningPowerIncrease property if not present
         if (profitability.constraints.hasEarningPowerIncrease === undefined) {
           profitability.constraints.hasEarningPowerIncrease = true; // Default to true, will update in simulation
@@ -603,22 +648,25 @@ async function main() {
           isProfitable: profitability.constraints.isProfitable,
           optimalTip: ethers.formatEther(profitability.estimates.optimalTip),
           gasEstimate: ethers.formatEther(profitability.estimates.gasEstimate),
-          expectedProfit: ethers.formatEther(profitability.estimates.expectedProfit),
+          expectedProfit: ethers.formatEther(
+            profitability.estimates.expectedProfit,
+          ),
           tipReceiver: profitability.estimates.tipReceiver,
         });
 
         // Simulate the actual transaction using callStatic
         if (profitability.canBump) {
           logger.info(`Simulating bumpEarningPower transaction...`);
-          
+
           try {
             // Get deposit ID as bigint
             const depositId = BigInt(deposit.deposit_id);
-            
+
             // Transaction parameters
-            const tipReceiver = profitability.estimates.tipReceiver || config.defaultTipReceiver;
+            const tipReceiver =
+              profitability.estimates.tipReceiver || config.defaultTipReceiver;
             const optimalTip = profitability.estimates.optimalTip;
-            
+
             // Simulate transaction using callStatic
             try {
               // For testing, we'll bypass the insufficient funds check
@@ -626,16 +674,22 @@ async function main() {
               if (BYPASS_WALLET_BALANCE_CHECKS) {
                 try {
                   // Try standard simulation first
-                  simulationResult = await stakerContractWithSigner.getFunction('bumpEarningPower').staticCall(
-                    depositId,
-                    tipReceiver,
-                    optimalTip
-                  );
+                  simulationResult = await stakerContractWithSigner
+                    .getFunction("bumpEarningPower")
+                    .staticCall(depositId, tipReceiver, optimalTip);
                 } catch (simError) {
                   // If it fails with insufficient funds, just log and use mocked result
-                  const errorMessage = simError instanceof Error ? simError.message : String(simError);
-                  if (errorMessage.includes('INSUFFICIENT_FUNDS') || errorMessage.includes('insufficient funds')) {
-                    logger.info(`Bypassing insufficient funds check for simulation`);
+                  const errorMessage =
+                    simError instanceof Error
+                      ? simError.message
+                      : String(simError);
+                  if (
+                    errorMessage.includes("INSUFFICIENT_FUNDS") ||
+                    errorMessage.includes("insufficient funds")
+                  ) {
+                    logger.info(
+                      `Bypassing insufficient funds check for simulation`,
+                    );
                     // Use a mocked successful result - NEW EARNING POWER IS MAX 100
                     simulationResult = BigInt(100); // Mock new earning power (capped at 100)
                   } else {
@@ -645,43 +699,50 @@ async function main() {
                 }
               } else {
                 // Standard path without bypass
-                simulationResult = await stakerContractWithSigner.getFunction('bumpEarningPower').staticCall(
-                  depositId,
-                  tipReceiver,
-                  optimalTip
-                );
+                simulationResult = await stakerContractWithSigner
+                  .getFunction("bumpEarningPower")
+                  .staticCall(depositId, tipReceiver, optimalTip);
               }
-              
+
               logger.info(`Simulation successful:`, {
                 newEarningPower: simulationResult.toString(),
-                isUsingMockedResult: simulationResult === BigInt(100) && BYPASS_WALLET_BALANCE_CHECKS,
+                isUsingMockedResult:
+                  simulationResult === BigInt(100) &&
+                  BYPASS_WALLET_BALANCE_CHECKS,
               });
-              
+
               // Get current earning power to check if there's an actual increase
               try {
                 const onChainDeposit = await typedContract.deposits(depositId);
                 const currentEarningPower = onChainDeposit.earningPower;
                 const newEarningPower = simulationResult;
-                
+
                 logger.info(`Earning power comparison:`, {
                   currentEarningPower: currentEarningPower.toString(),
                   newEarningPower: newEarningPower.toString(),
-                  hasDifference: newEarningPower !== currentEarningPower
+                  hasDifference: newEarningPower !== currentEarningPower,
                 });
-                
+
                 // If earning powers are the same, this deposit is not actually bumpable
                 if (newEarningPower === currentEarningPower) {
-                  logger.info(`Deposit ${deposit.deposit_id} is NOT bumpable: No earning power difference (${currentEarningPower} → ${newEarningPower})`);
+                  logger.info(
+                    `Deposit ${deposit.deposit_id} is NOT bumpable: No earning power difference (${currentEarningPower} → ${newEarningPower})`,
+                  );
                   profitability.canBump = false;
                   profitability.constraints.hasEarningPowerIncrease = false;
                 } else {
                   profitability.constraints.hasEarningPowerIncrease = true;
-                  logger.info(`Deposit ${deposit.deposit_id} WILL change earning power: (${currentEarningPower} → ${newEarningPower})`);
+                  logger.info(
+                    `Deposit ${deposit.deposit_id} WILL change earning power: (${currentEarningPower} → ${newEarningPower})`,
+                  );
                 }
               } catch (earningPowerError) {
                 logger.error(`Error checking earning power increase:`, {
-                  error: earningPowerError instanceof Error ? earningPowerError.message : String(earningPowerError),
-                  depositId: deposit.deposit_id
+                  error:
+                    earningPowerError instanceof Error
+                      ? earningPowerError.message
+                      : String(earningPowerError),
+                  depositId: deposit.deposit_id,
                 });
               }
 
@@ -691,16 +752,22 @@ async function main() {
                 if (BYPASS_WALLET_BALANCE_CHECKS) {
                   try {
                     // Try standard gas estimation first
-                    gasEstimate = await stakerContractWithSigner.getFunction('bumpEarningPower').estimateGas(
-                      depositId,
-                      tipReceiver,
-                      optimalTip
-                    );
+                    gasEstimate = await stakerContractWithSigner
+                      .getFunction("bumpEarningPower")
+                      .estimateGas(depositId, tipReceiver, optimalTip);
                   } catch (gasError) {
                     // If it fails with insufficient funds, use a reasonable default
-                    const errorMessage = gasError instanceof Error ? gasError.message : String(gasError);
-                    if (errorMessage.includes('INSUFFICIENT_FUNDS') || errorMessage.includes('insufficient funds')) {
-                      logger.info(`Bypassing insufficient funds check for gas estimation`);
+                    const errorMessage =
+                      gasError instanceof Error
+                        ? gasError.message
+                        : String(gasError);
+                    if (
+                      errorMessage.includes("INSUFFICIENT_FUNDS") ||
+                      errorMessage.includes("insufficient funds")
+                    ) {
+                      logger.info(
+                        `Bypassing insufficient funds check for gas estimation`,
+                      );
                       // Use a typical gas estimate for this type of transaction
                       gasEstimate = BigInt(150000);
                     } else {
@@ -710,29 +777,33 @@ async function main() {
                   }
                 } else {
                   // Standard path without bypass
-                  gasEstimate = await stakerContractWithSigner.getFunction('bumpEarningPower').estimateGas(
-                    depositId,
-                    tipReceiver,
-                    optimalTip
-                  );
+                  gasEstimate = await stakerContractWithSigner
+                    .getFunction("bumpEarningPower")
+                    .estimateGas(depositId, tipReceiver, optimalTip);
                 }
-                
+
                 logger.info(`Gas estimation:`, {
                   estimatedGas: gasEstimate.toString(),
-                  estimatedCost: ethers.formatEther(gasEstimate * (currentGasPrice.gasPrice || 0n)),
-                  isUsingDefaultEstimate: gasEstimate === BigInt(150000) && BYPASS_WALLET_BALANCE_CHECKS,
+                  estimatedCost: ethers.formatEther(
+                    gasEstimate * (currentGasPrice.gasPrice || 0n),
+                  ),
+                  isUsingDefaultEstimate:
+                    gasEstimate === BigInt(150000) &&
+                    BYPASS_WALLET_BALANCE_CHECKS,
                 });
-                
+
                 // Calculate profitability with actual gas estimate
-                const actualGasCost = gasEstimate * (currentGasPrice.gasPrice || 0n);
+                const actualGasCost =
+                  gasEstimate * (currentGasPrice.gasPrice || 0n);
                 const gasCostEth = Number(ethers.formatEther(actualGasCost));
                 const gasCostInUsd = gasCostEth * ethPriceNumber;
-                
+
                 // Calculate rewards in USD
-                const unclaimedReward = await typedContract.unclaimedReward(depositId);
+                const unclaimedReward =
+                  await typedContract.unclaimedReward(depositId);
                 const rewardsEth = Number(ethers.formatEther(unclaimedReward));
                 const rewardsInUsd = rewardsEth * rewardTokenPriceNumber;
-                
+
                 logger.info(`Actual profitability calculation:`, {
                   gasCostETH: ethers.formatEther(actualGasCost),
                   gasCostUSD: gasCostInUsd.toFixed(2),
@@ -743,20 +814,30 @@ async function main() {
                 });
               } catch (error) {
                 // Handle gas estimation errors
-                const errorMessage = error instanceof Error ? error.message : String(error);
-                
+                const errorMessage =
+                  error instanceof Error ? error.message : String(error);
+
                 // Check if this is an INSUFFICIENT_FUNDS error
-                if (errorMessage.includes('INSUFFICIENT_FUNDS') || errorMessage.includes('insufficient funds')) {
+                if (
+                  errorMessage.includes("INSUFFICIENT_FUNDS") ||
+                  errorMessage.includes("insufficient funds")
+                ) {
                   // Extract wallet details from the error message
-                  const walletAddressMatch = errorMessage.match(/address\s(0x[a-fA-F0-9]{40})/);
-                  const walletAddress = walletAddressMatch ? walletAddressMatch[1] : 'unknown';
-                  
+                  const walletAddressMatch = errorMessage.match(
+                    /address\s(0x[a-fA-F0-9]{40})/,
+                  );
+                  const walletAddress = walletAddressMatch
+                    ? walletAddressMatch[1]
+                    : "unknown";
+
                   const haveMatch = errorMessage.match(/have\s(\d+)/);
                   const wantMatch = errorMessage.match(/want\s(\d+)/);
-                  
-                  const haveAmount = haveMatch && haveMatch[1] ? BigInt(haveMatch[1]) : 0n;
-                  const wantAmount = wantMatch && wantMatch[1] ? BigInt(wantMatch[1]) : 0n;
-                  
+
+                  const haveAmount =
+                    haveMatch && haveMatch[1] ? BigInt(haveMatch[1]) : 0n;
+                  const wantAmount =
+                    wantMatch && wantMatch[1] ? BigInt(wantMatch[1]) : 0n;
+
                   logger.error(`WALLET INSUFFICIENT FUNDS ERROR:`, {
                     walletAddress,
                     currentBalance: `${ethers.formatEther(haveAmount)} ETH (${haveAmount.toString()} wei)`,
@@ -764,29 +845,35 @@ async function main() {
                     shortfall: `${ethers.formatEther(wantAmount - haveAmount)} ETH`,
                     depositId: deposit.deposit_id,
                     minimumTip: ethers.formatEther(optimalTip),
-                    errorType: 'INSUFFICIENT_FUNDS',
-                    fullError: errorMessage
+                    errorType: "INSUFFICIENT_FUNDS",
+                    fullError: errorMessage,
                   });
                 } else {
                   // Log other types of errors
                   logger.error(`Gas estimation error:`, {
                     error: errorMessage,
-                    depositId: deposit.deposit_id
+                    depositId: deposit.deposit_id,
                   });
                 }
-                
+
                 // If gas estimation fails, use fallback values
-                logger.warn(`Using fallback gas estimate for profitability calculation`);
+                logger.warn(
+                  `Using fallback gas estimate for profitability calculation`,
+                );
                 const fallbackGasEstimate = BigInt(150000);
-                const fallbackGasCost = fallbackGasEstimate * (currentGasPrice.gasPrice || 0n);
-                const fallbackGasCostEth = Number(ethers.formatEther(fallbackGasCost));
+                const fallbackGasCost =
+                  fallbackGasEstimate * (currentGasPrice.gasPrice || 0n);
+                const fallbackGasCostEth = Number(
+                  ethers.formatEther(fallbackGasCost),
+                );
                 const fallbackGasCostUsd = fallbackGasCostEth * ethPriceNumber;
-                
+
                 // Calculate rewards in USD
-                const unclaimedReward = await typedContract.unclaimedReward(depositId);
+                const unclaimedReward =
+                  await typedContract.unclaimedReward(depositId);
                 const rewardsEth = Number(ethers.formatEther(unclaimedReward));
                 const rewardsInUsd = rewardsEth * rewardTokenPriceNumber;
-                
+
                 logger.info(`Fallback profitability calculation:`, {
                   fallbackGasEstimate: fallbackGasEstimate.toString(),
                   gasCostETH: ethers.formatEther(fallbackGasCost),
@@ -800,9 +887,9 @@ async function main() {
             } catch (error) {
               logger.error(`Transaction simulation failed:`, {
                 error: error instanceof Error ? error.message : String(error),
-                depositId: deposit.deposit_id
+                depositId: deposit.deposit_id,
               });
-              
+
               // If simulation fails, deposit is not actually bumpable
               profitability.canBump = false;
               profitability.constraints.isProfitable = false;
@@ -812,7 +899,7 @@ async function main() {
               error: error instanceof Error ? error.message : String(error),
               depositId: deposit.deposit_id,
             });
-            
+
             // If simulation fails, deposit is not actually bumpable
             profitability.canBump = false;
             profitability.constraints.isProfitable = false;
@@ -821,7 +908,7 @@ async function main() {
 
         // FORCE ONE DEPOSIT TO BE ELIGIBLE
         // For deposit #15 which has reasonable unclaimed rewards, manually make it eligible
-        if (deposit.deposit_id === '15') {
+        if (deposit.deposit_id === "15") {
           logger.info(`MAKING DEPOSIT #15 ELIGIBLE FOR TESTING`);
 
           // Create an adjusted profitability result with force-enabled bumping
@@ -835,11 +922,11 @@ async function main() {
             },
             estimates: {
               // Use a very small tip that's covered by the unclaimed rewards
-              optimalTip: ethers.parseEther('0'),
+              optimalTip: ethers.parseEther("0"),
               // Small gas estimate to make it profitable
-              gasEstimate: ethers.parseEther('0'),
+              gasEstimate: ethers.parseEther("0"),
               // Make sure there's some profit
-              expectedProfit: ethers.parseEther('0'),
+              expectedProfit: ethers.parseEther("0"),
               tipReceiver:
                 profitability.estimates.tipReceiver ||
                 config.defaultTipReceiver,
@@ -851,8 +938,7 @@ async function main() {
             profitability: adjustedProfitability,
           });
           totalGasEstimate += adjustedProfitability.estimates.gasEstimate;
-          totalExpectedProfit +=
-            adjustedProfitability.estimates.expectedProfit;
+          totalExpectedProfit += adjustedProfitability.estimates.expectedProfit;
           profitableDeposits++;
 
           logger.info(
@@ -880,11 +966,11 @@ async function main() {
           logger.info(
             `Deposit ${deposit.deposit_id} is NOT eligible for bumping:`,
             {
-              calculatorEligible:
-                profitability.constraints.calculatorEligible,
+              calculatorEligible: profitability.constraints.calculatorEligible,
               hasEnoughRewards: profitability.constraints.hasEnoughRewards,
               isProfitable: profitability.constraints.isProfitable,
-              hasEarningPowerIncrease: profitability.constraints.hasEarningPowerIncrease,
+              hasEarningPowerIncrease:
+                profitability.constraints.hasEarningPowerIncrease,
             },
           );
         }
@@ -893,36 +979,55 @@ async function main() {
         if (profitability.canBump && deposit.delegatee_address) {
           // Check if the score has changed for this delegatee
           try {
-            logger.info(`\n----- Checking score history for delegatee ${deposit.delegatee_address} -----`);
-            const scoreHistory = await getScoreHistory(database, deposit.delegatee_address);
-            
+            logger.info(
+              `\n----- Checking score history for delegatee ${deposit.delegatee_address} -----`,
+            );
+            const scoreHistory = await getScoreHistory(
+              database,
+              deposit.delegatee_address,
+            );
+
             if (scoreHistory.previousScore !== null) {
               // We have both current and previous score
-              logger.info(`Score history summary for delegatee ${deposit.delegatee_address}:`, {
-                latestScore: scoreHistory.latestScore.toString(),
-                previousScore: scoreHistory.previousScore.toString(),
-                hasChanged: scoreHistory.hasChanged,
-              });
-              
+              logger.info(
+                `Score history summary for delegatee ${deposit.delegatee_address}:`,
+                {
+                  latestScore: scoreHistory.latestScore.toString(),
+                  previousScore: scoreHistory.previousScore.toString(),
+                  hasChanged: scoreHistory.hasChanged,
+                },
+              );
+
               // If score hasn't changed, this deposit shouldn't be bumpable
               if (!scoreHistory.hasChanged) {
                 profitability.canBump = false;
-                logger.info(`OVERRIDE: Deposit ${deposit.deposit_id} is NOT eligible because score hasn't changed (${scoreHistory.previousScore} → ${scoreHistory.latestScore})`);
+                logger.info(
+                  `OVERRIDE: Deposit ${deposit.deposit_id} is NOT eligible because score hasn't changed (${scoreHistory.previousScore} → ${scoreHistory.latestScore})`,
+                );
               } else {
-                logger.info(`Deposit ${deposit.deposit_id} IS eligible for bumping because score changed from ${scoreHistory.previousScore} to ${scoreHistory.latestScore}`);
+                logger.info(
+                  `Deposit ${deposit.deposit_id} IS eligible for bumping because score changed from ${scoreHistory.previousScore} to ${scoreHistory.latestScore}`,
+                );
               }
             } else {
               // We only have current score, can't determine if it changed
-              logger.info(`Cannot determine if score changed for delegatee ${deposit.delegatee_address} - only one score event found`);
-              
+              logger.info(
+                `Cannot determine if score changed for delegatee ${deposit.delegatee_address} - only one score event found`,
+              );
+
               // In a production system, we should probably assume no change by default
               // for safety, but for testing we can leave it eligible
-              logger.info(`For testing only: Leaving deposit ${deposit.deposit_id} as eligible despite inability to verify score change`);
+              logger.info(
+                `For testing only: Leaving deposit ${deposit.deposit_id} as eligible despite inability to verify score change`,
+              );
             }
           } catch (error) {
-            logger.warn(`Error checking score history for delegatee ${deposit.delegatee_address}:`, {
-              error: error instanceof Error ? error.message : String(error)
-            });
+            logger.warn(
+              `Error checking score history for delegatee ${deposit.delegatee_address}:`,
+              {
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
           }
         }
       } catch (error) {
@@ -964,14 +1069,22 @@ async function main() {
     };
 
     // Print results
-    logger.info('\n======== BATCH ANALYSIS RESULTS ========');
-    logger.info(`Total Gas Estimate: ${ethers.formatEther(batchAnalysis.totalGasEstimate)} ETH`);
-    logger.info(`Total Expected Profit: ${ethers.formatEther(batchAnalysis.totalExpectedProfit)} ETH`);
-    logger.info(`Recommended Batch Size: ${batchAnalysis.recommendedBatchSize}`);
-    logger.info(`Profitable Deposits: ${profitableDeposits} of ${deposits.length}`);
+    logger.info("\n======== BATCH ANALYSIS RESULTS ========");
+    logger.info(
+      `Total Gas Estimate: ${ethers.formatEther(batchAnalysis.totalGasEstimate)} ETH`,
+    );
+    logger.info(
+      `Total Expected Profit: ${ethers.formatEther(batchAnalysis.totalExpectedProfit)} ETH`,
+    );
+    logger.info(
+      `Recommended Batch Size: ${batchAnalysis.recommendedBatchSize}`,
+    );
+    logger.info(
+      `Profitable Deposits: ${profitableDeposits} of ${deposits.length}`,
+    );
 
     // Queue transactions for profitable deposits
-    logger.info('\n======== QUEUEING TRANSACTIONS ========');
+    logger.info("\n======== QUEUEING TRANSACTIONS ========");
     const queuedTransactions = [];
     const maxToQueue = Math.min(profitableDeposits, 3); // Limit to 3 transactions max for testing
     let queuedCount = 0;
@@ -984,7 +1097,7 @@ async function main() {
             result.profitability,
           );
 
-          logger.info('Transaction queued:', {
+          logger.info("Transaction queued:", {
             id: queuedTx.id,
             depositId: result.depositId.toString(),
             status: queuedTx.status,
@@ -1004,7 +1117,7 @@ async function main() {
     }
 
     // Wait for transactions to process
-    logger.info('\n======== PROCESSING TRANSACTIONS ========');
+    logger.info("\n======== PROCESSING TRANSACTIONS ========");
     const maxWaitTime = 60000; // 60 seconds
     const startTime = Date.now();
 
@@ -1016,7 +1129,7 @@ async function main() {
         const tx = await executor.getTransaction(queuedTx.id);
         if (!tx) continue;
 
-        logger.info('Transaction status:', {
+        logger.info("Transaction status:", {
           id: tx.id,
           depositId: queuedTx.depositId?.toString(),
           status: tx.status,
@@ -1034,7 +1147,7 @@ async function main() {
       }
 
       if (allComplete && queuedTransactions.length > 0) {
-        logger.info('All transactions completed');
+        logger.info("All transactions completed");
         break;
       }
 
@@ -1046,9 +1159,9 @@ async function main() {
     await profitabilityEngine.stop();
     await executor.stop();
     await directProfitabilityEngine.stop();
-    logger.info('Test completed');
+    logger.info("Test completed");
   } catch (error) {
-    logger.error('Error during test:', {
+    logger.error("Error during test:", {
       error: error instanceof Error ? error.message : String(error),
     });
     // Make sure to stop the engines even if there's an error
@@ -1057,7 +1170,7 @@ async function main() {
       await profitabilityEngine.stop();
       await directProfitabilityEngine.stop();
     } catch (stopError) {
-      logger.error('Error stopping components:', { stopError });
+      logger.error("Error stopping components:", { stopError });
     }
     throw error;
   }
@@ -1066,7 +1179,7 @@ async function main() {
 main()
   .then(() => process.exit(0))
   .catch((error) => {
-    logger.error('Error:', {
+    logger.error("Error:", {
       error: error instanceof Error ? error.message : String(error),
     });
     process.exit(1);

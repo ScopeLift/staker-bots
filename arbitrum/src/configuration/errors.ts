@@ -3,7 +3,7 @@
  */
 export class BaseError extends Error {
   constructor(
-    message: string, 
+    message: string,
     public readonly context: Record<string, unknown>,
     public readonly retryable: boolean = false,
   ) {
@@ -21,7 +21,7 @@ export class MonitorError extends BaseError {
     retryable: boolean = false,
   ) {
     super(message, context, retryable);
-    this.name = 'MonitorError';
+    this.name = "MonitorError";
   }
 }
 
@@ -36,7 +36,7 @@ export class EventProcessingError extends MonitorError {
       context,
       true, // Most event processing errors are retryable
     );
-    this.name = 'EventProcessingError';
+    this.name = "EventProcessingError";
   }
 }
 
@@ -51,18 +51,18 @@ export class DatabaseError extends MonitorError {
       context,
       true, // Database errors are generally retryable
     );
-    this.name = 'DatabaseError';
+    this.name = "DatabaseError";
   }
 }
 
 export class DepositNotFoundError extends MonitorError {
   constructor(depositId: string) {
     super(
-      'Deposit not found',
+      "Deposit not found",
       { depositId },
       false, // Non-existent deposits are not retryable
     );
-    this.name = 'DepositNotFoundError';
+    this.name = "DepositNotFoundError";
   }
 }
 
@@ -75,7 +75,7 @@ export class ExecutorError extends BaseError {
     retryable: boolean = false,
   ) {
     super(message, context, retryable);
-    this.name = 'ExecutorError';
+    this.name = "ExecutorError";
   }
 }
 
@@ -90,7 +90,7 @@ export class TransactionExecutionError extends ExecutorError {
       context,
       true, // Most transaction errors are retryable
     );
-    this.name = 'TransactionExecutionError';
+    this.name = "TransactionExecutionError";
   }
 }
 
@@ -101,7 +101,7 @@ export class GasEstimationError extends ExecutorError {
       context,
       true, // Gas estimation errors are generally retryable
     );
-    this.name = 'GasEstimationError';
+    this.name = "GasEstimationError";
   }
 }
 
@@ -112,7 +112,7 @@ export class ContractMethodError extends ExecutorError {
       { methodName },
       false, // Contract method errors are not retryable
     );
-    this.name = 'ContractMethodError';
+    this.name = "ContractMethodError";
   }
 }
 
@@ -127,7 +127,7 @@ export class QueueOperationError extends ExecutorError {
       context,
       true, // Queue operation errors are generally retryable
     );
-    this.name = 'QueueOperationError';
+    this.name = "QueueOperationError";
   }
 }
 
@@ -138,21 +138,21 @@ export class TransactionValidationError extends ExecutorError {
       context,
       false, // Validation errors are not retryable
     );
-    this.name = 'TransactionValidationError';
+    this.name = "TransactionValidationError";
   }
 }
 
 export class InsufficientBalanceError extends ExecutorError {
   constructor(currentBalance: bigint, requiredBalance: bigint) {
     super(
-      'Insufficient gas balance for transaction, top up your wallet',
+      "Insufficient gas balance for transaction, top up your wallet",
       {
         currentBalance: currentBalance.toString(),
         requiredBalance: requiredBalance.toString(),
       },
       true, // Balance errors are retryable once funds are added
     );
-    this.name = 'InsufficientBalanceError';
+    this.name = "InsufficientBalanceError";
   }
 }
 
@@ -163,7 +163,7 @@ export class TransactionReceiptError extends ExecutorError {
       context,
       true, // Receipt errors might be temporary network issues
     );
-    this.name = 'TransactionReceiptError';
+    this.name = "TransactionReceiptError";
   }
 }
 
@@ -176,7 +176,7 @@ export class ProfitabilityError extends BaseError {
     retryable: boolean = false,
   ) {
     super(message, context, retryable);
-    this.name = 'ProfitabilityError';
+    this.name = "ProfitabilityError";
   }
 }
 
@@ -187,18 +187,18 @@ export class ProfitabilityDepositNotFoundError extends ProfitabilityError {
       { depositId },
       false, // Non-existent deposits are not retryable
     );
-    this.name = 'ProfitabilityDepositNotFoundError';
+    this.name = "ProfitabilityDepositNotFoundError";
   }
 }
 
 export class InvalidDepositDataError extends ProfitabilityError {
   constructor(deposit: unknown) {
     super(
-      'Invalid deposit data received',
+      "Invalid deposit data received",
       { deposit },
       false, // Data validation errors are not retryable
     );
-    this.name = 'InvalidDepositDataError';
+    this.name = "InvalidDepositDataError";
   }
 }
 
@@ -209,7 +209,7 @@ export class ProfitabilityGasEstimationError extends ProfitabilityError {
       context,
       true, // Gas estimation errors are generally retryable
     );
-    this.name = 'ProfitabilityGasEstimationError';
+    this.name = "ProfitabilityGasEstimationError";
   }
 }
 
@@ -220,7 +220,7 @@ export class QueueProcessingError extends ProfitabilityError {
       context,
       true, // Queue processing errors are generally retryable
     );
-    this.name = 'QueueProcessingError';
+    this.name = "QueueProcessingError";
   }
 }
 
@@ -234,7 +234,7 @@ export function createError(
   context: Record<string, unknown> = {},
 ): BaseError {
   if (isBaseError(error)) return error;
-  
+
   const message = error instanceof Error ? error.message : String(error);
   return new BaseError(message, context, false);
-} 
+}

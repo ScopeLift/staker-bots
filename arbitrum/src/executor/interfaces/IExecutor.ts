@@ -1,6 +1,6 @@
-import { ProfitabilityCheck } from '@/profitability/interfaces/types';
-import { QueuedTransaction, QueueStats, TransactionReceipt } from './types';
-import { DatabaseWrapper } from '@/database';
+import { ProfitabilityCheck } from "@/profitability/interfaces/types";
+import { QueuedTransaction, QueueStats, TransactionReceipt } from "./types";
+import { DatabaseWrapper } from "@/database";
 
 export interface IExecutor {
   /**

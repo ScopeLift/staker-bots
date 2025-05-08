@@ -16,6 +16,7 @@ import {
 } from '@/configuration/errors';
 import { CONFIG } from '@/configuration';
 import { ErrorLogger } from '@/configuration/errorLogger';
+import { CoinMarketCapFeed } from '@/prices/CoinmarketcapFeed';
 
 /**
  * Updated ProfitabilityConfig to include errorLogger
@@ -32,6 +33,7 @@ export interface EnhancedProfitabilityConfig extends ProfitabilityConfig {
 export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly logger: Logger;
   private readonly errorLogger?: ErrorLogger;
+  private readonly priceFeed: CoinMarketCapFeed;
   private isRunning: boolean;
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
@@ -74,6 +76,16 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     this.lastGasPrice = BigInt(0);
     this.lastUpdateTimestamp = 0;
     this.config = config;
+
+    // Initialize price feed
+    this.priceFeed = new CoinMarketCapFeed(
+      {
+        ...CONFIG.priceFeed.coinmarketcap,
+        rewardToken: CONFIG.priceFeed.coinmarketcap.rewardTokenAddress,
+        gasToken: 'ETH'
+      },
+      this.logger
+    );
   }
 
   /**
@@ -861,18 +873,34 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         gasCostEther: ethers.formatEther(gasCost),
       });
 
-      // Use hardcoded prices for testing
-      // ETH price: $1800, Token price: $1
-      const ethPriceScaled = BigInt(1800) * BigInt(1e18);
-      const rewardTokenPriceScaled = BigInt(1) * BigInt(1e18);
+      // Get real-time price data from CoinMarketCap
+      const prices = await this.priceFeed.getTokenPrices();
+      
+      // Log raw price data for verification
+      this.logger.info('Price data from CoinMarketCap:', {
+        gasToken: {
+          address: 'ETH',
+          priceUsd: prices.gasToken.usd,
+          lastUpdated: prices.gasToken.lastUpdated
+        },
+        rewardToken: {
+          address: CONFIG.priceFeed.coinmarketcap.rewardTokenAddress,
+          priceUsd: prices.rewardToken.usd,
+          lastUpdated: prices.rewardToken.lastUpdated
+        }
+      });
+
+      // Convert prices to scaled values (18 decimals)
+      const ethPriceScaled = BigInt(Math.floor(prices.gasToken.usd * 1e18));
+      const rewardTokenPriceScaled = BigInt(Math.floor(prices.rewardToken.usd * 1e18));
 
       // Calculate gas cost in reward tokens
       const gasCostInRewardTokens =
         (gasCost * ethPriceScaled) / rewardTokenPriceScaled;
 
       this.logger.info('Gas cost in reward tokens:', {
-        ethPriceUSD: ethers.formatEther(ethPriceScaled),
-        tokenPriceUSD: ethers.formatEther(rewardTokenPriceScaled),
+        ethPriceUSD: prices.gasToken.usd.toFixed(2),
+        tokenPriceUSD: prices.rewardToken.usd.toFixed(8),
         gasCostInTokens: ethers.formatEther(gasCostInRewardTokens),
       });
 

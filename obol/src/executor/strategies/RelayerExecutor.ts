@@ -366,7 +366,8 @@ export class RelayerExecutor implements IExecutor {
             error instanceof Error
               ? error
               : new Error(
-                  `Failed to update queue item status: ${String(error)}`),
+                  `Failed to update queue item status: ${String(error)}`,
+                ),
             {
               stage: 'executeTransaction',
               txId: tx.id,
@@ -850,7 +851,8 @@ export class RelayerExecutor implements IExecutor {
                   e instanceof Error
                     ? e
                     : new Error(
-                        `Failed to get network diagnostics: ${String(e)}`),
+                        `Failed to get network diagnostics: ${String(e)}`,
+                      ),
                   {
                     stage: 'executeTransaction_networkDiagnostics',
                     txId: tx.id,
@@ -968,7 +970,8 @@ export class RelayerExecutor implements IExecutor {
                       estimateError instanceof Error
                         ? estimateError
                         : new Error(
-                            `Gas estimation failed: ${String(estimateError)}`),
+                            `Gas estimation failed: ${String(estimateError)}`,
+                          ),
                       {
                         stage: 'executeTransaction_gasEstimation',
                         txId: tx.id,
@@ -1148,14 +1151,11 @@ export class RelayerExecutor implements IExecutor {
               this.logger,
               3,
             );
-            this.logger.info(
-              `Transaction receipt received: ${response.hash}`,
-              {
-                txId: tx.id,
-                blockNumber: receipt?.blockNumber?.toString() || 'unknown',
-                status: receipt?.status?.toString() || 'unknown',
-              },
-            );
+            this.logger.info(`Transaction receipt received: ${response.hash}`, {
+              txId: tx.id,
+              blockNumber: receipt?.blockNumber?.toString() || 'unknown',
+              status: receipt?.status?.toString() || 'unknown',
+            });
           } catch (confirmError: unknown) {
             // If polling fails, just log the error
             this.logger.warn('Transaction confirmation failed', {
@@ -1218,7 +1218,8 @@ export class RelayerExecutor implements IExecutor {
             waitError instanceof Error
               ? waitError
               : new Error(
-                  `Failed waiting for transaction confirmation: ${String(waitError)}`),
+                  `Failed waiting for transaction confirmation: ${String(waitError)}`,
+                ),
             {
               stage: 'executeTransaction_waitError',
               txId: tx.id,

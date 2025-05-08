@@ -1,5 +1,5 @@
-import { ethers } from 'ethers';
-import { CONFIG } from './constants';
+import { ethers } from "ethers";
+import { CONFIG } from "./constants";
 
 /**
  * Delays execution for the specified number of milliseconds
@@ -37,17 +37,17 @@ export function formatBigInt(value: bigint, decimals = 18): string {
   const divisor = 10n ** BigInt(decimals);
   const integerPart = value / divisor;
   const fractionalPart = value % divisor;
-  
+
   // Pad the fractional part with leading zeros
-  const fractionalStr = fractionalPart.toString().padStart(decimals, '0');
-  
+  const fractionalStr = fractionalPart.toString().padStart(decimals, "0");
+
   // Trim trailing zeros
-  const trimmedFractional = fractionalStr.replace(/0+$/, '');
-  
+  const trimmedFractional = fractionalStr.replace(/0+$/, "");
+
   if (trimmedFractional.length === 0) {
     return integerPart.toString();
   }
-  
+
   return `${integerPart}.${trimmedFractional}`;
 }
 
@@ -63,11 +63,11 @@ export function truncateAddress(
   startLength = 6,
   endLength = 4,
 ): string {
-  if (!address) return '';
-  
+  if (!address) return "";
+
   const start = address.substring(0, startLength + 2); // +2 for '0x'
   const end = address.substring(address.length - endLength);
-  
+
   return `${start}...${end}`;
 }
 
@@ -80,7 +80,7 @@ export function truncateAddress(
  */
 export function formatTokenAmount(
   amount: bigint,
-  symbol = 'ETH',
+  symbol = "ETH",
   decimals = 18,
 ): string {
   return `${formatBigInt(amount, decimals)} ${symbol}`;
@@ -104,7 +104,7 @@ export async function canAffordTransaction(
   const gasCost = estimatedGas * gasPrice;
   const bufferMultiplier = 100n + BigInt(CONFIG.profitability.gasPriceBuffer);
   const bufferedGasCost = (gasCost * bufferMultiplier) / 100n;
-  
+
   return balance >= bufferedGasCost;
 }
 
@@ -118,12 +118,15 @@ export function groupBy<T, K extends string | number | symbol>(
   items: T[],
   keyFn: (item: T) => K,
 ): Record<K, T[]> {
-  return items.reduce((result, item) => {
-    const key = keyFn(item);
-    result[key] = result[key] || [];
-    result[key].push(item);
-    return result;
-  }, {} as Record<K, T[]>);
+  return items.reduce(
+    (result, item) => {
+      const key = keyFn(item);
+      result[key] = result[key] || [];
+      result[key].push(item);
+      return result;
+    },
+    {} as Record<K, T[]>,
+  );
 }
 
 /**
@@ -136,4 +139,4 @@ export function chunk<T>(array: T[], size: number): T[][] {
   return Array(Math.ceil(array.length / size))
     .fill(null)
     .map((_, index) => array.slice(index * size, (index + 1) * size));
-} 
+}

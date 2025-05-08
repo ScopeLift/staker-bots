@@ -38,7 +38,7 @@ import {
 } from './helpers';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
 import { ErrorLogger } from '@/configuration/errorLogger';
-import { BASE_EVENTS, BASE_QUEUE } from './constants'; 
+import { BASE_EVENTS, BASE_QUEUE } from './constants';
 
 // Extended executor config with error logger
 export interface ExtendedExecutorConfig extends ExecutorConfig {

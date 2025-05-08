@@ -135,30 +135,30 @@ HEALTH_CHECK_INTERVAL=60 # Health check interval in seconds
 3. Start the monitor:
 
 ```typescript
-import { ethers } from 'ethers';
-import { StakerMonitor } from './StakerMonitor';
-import { createMonitorConfig } from './constants';
-import { DatabaseWrapper } from '../database';
+import { ethers } from "ethers";
+import { StakerMonitor } from "./StakerMonitor";
+import { createMonitorConfig } from "./constants";
+import { DatabaseWrapper } from "../database";
 
 async function main() {
   // Initialize provider
   const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
-  
+
   // Initialize database
   const db = new DatabaseWrapper({
-    type: process.env.DATABASE_TYPE || 'supabase',
+    type: process.env.DATABASE_TYPE || "supabase",
     // Additional DB config
   });
-  
+
   // Create monitor config
   const config = createMonitorConfig(provider, db);
-  
+
   // Initialize and start monitor
   const monitor = new StakerMonitor(config);
   await monitor.start();
-  
+
   // Graceful shutdown
-  process.on('SIGINT', async () => {
+  process.on("SIGINT", async () => {
     await monitor.stop();
     process.exit(0);
   });

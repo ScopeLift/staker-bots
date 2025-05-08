@@ -1,19 +1,19 @@
-import { ethers } from 'ethers';
-import axios from 'axios';
-import { ConsoleLogger, Logger } from '@/monitor/logging';
-import { IExecutor } from '../interfaces/IExecutor';
+import { ethers } from "ethers";
+import axios from "axios";
+import { ConsoleLogger, Logger } from "@/monitor/logging";
+import { IExecutor } from "../interfaces/IExecutor";
 import {
   RelayerExecutorConfig,
   QueuedTransaction,
   TransactionStatus,
   QueueStats,
   TransactionReceipt,
-} from '../interfaces/types';
-import { ProfitabilityCheck } from '@/profitability/interfaces/types';
-import { v4 as uuidv4 } from 'uuid';
-import { DatabaseWrapper } from '@/database';
-import { TransactionQueueStatus } from '@/database/interfaces/types';
-import { TransactionSimulator } from '../utils';
+} from "../interfaces/types";
+import { ProfitabilityCheck } from "@/profitability/interfaces/types";
+import { v4 as uuidv4 } from "uuid";
+import { DatabaseWrapper } from "@/database";
+import { TransactionQueueStatus } from "@/database/interfaces/types";
+import { TransactionSimulator } from "../utils";
 
 /**
  * Implementation of executor using OpenZeppelin Defender Relayer.
@@ -25,18 +25,18 @@ export class RelayerExecutor implements IExecutor {
   private isRunning: boolean;
   private processingInterval: NodeJS.Timeout | null;
   private db?: DatabaseWrapper;
-  
+
   // Defender relayer credentials
   private readonly relayerApiKey: string;
   private readonly relayerApiSecret: string;
-  
+
   // Contract details
   private readonly contractAddress: string;
   private readonly contractInterface: ethers.Interface;
   private readonly stakerContract: ethers.Contract & {
     bumpEarningPower(
       depositId: bigint,
-      overrides?: ethers.Overrides
+      overrides?: ethers.Overrides,
     ): Promise<ethers.ContractTransactionResponse>;
   };
 
@@ -48,7 +48,7 @@ export class RelayerExecutor implements IExecutor {
     private readonly provider: ethers.Provider,
     private readonly config: RelayerExecutorConfig,
   ) {
-    this.logger = new ConsoleLogger('info');
+    this.logger = new ConsoleLogger("info");
     this.queue = new Map();
     this.isRunning = false;
     this.processingInterval = null;
@@ -59,25 +59,26 @@ export class RelayerExecutor implements IExecutor {
 
     // Validate required config
     if (!config.relayer.apiKey || !config.relayer.apiSecret) {
-      throw new Error('Relayer API key and secret are required');
+      throw new Error("Relayer API key and secret are required");
     }
 
     this.relayerApiKey = config.relayer.apiKey;
     this.relayerApiSecret = config.relayer.apiSecret;
 
     // Validate contract has required functions
-    if (!this.contractInterface.hasFunction('bumpEarningPower')) {
+    if (!this.contractInterface.hasFunction("bumpEarningPower")) {
       throw new Error(
-        'Invalid staker contract: missing bumpEarningPower function',
+        "Invalid staker contract: missing bumpEarningPower function",
       );
     }
 
     // Initialize Defender Relay Provider and Signer
     try {
-      const credentials = { 
-        apiKey: this.relayerApiKey, 
-        apiSecret: this.relayerApiSecret 
-      };
+      // Credentials are now directly used in API calls, not needed as a variable
+      // const credentials = {
+      //   apiKey: this.relayerApiKey,
+      //   apiSecret: this.relayerApiSecret
+      // };
 
       // Use axios to create a client for sending transactions directly
       // We'll use this approach for sending transactions through the Defender API
@@ -85,9 +86,8 @@ export class RelayerExecutor implements IExecutor {
       // Create contract instance with direct ethers interface for estimating gas
       // Note: For actual transaction submission, we'll use the Defender API directly
       this.stakerContract = stakerContract as typeof this.stakerContract;
-      
     } catch (error) {
-      this.logger.error('Failed to initialize Defender SDK or contract', {
+      this.logger.error("Failed to initialize Defender SDK or contract", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -99,7 +99,7 @@ export class RelayerExecutor implements IExecutor {
    */
   setDatabase(db: DatabaseWrapper): void {
     this.db = db;
-    this.logger.info('Database set for relayer executor');
+    this.logger.info("Database set for relayer executor");
   }
 
   /**
@@ -115,7 +115,7 @@ export class RelayerExecutor implements IExecutor {
       await this.validateCredentials();
 
       this.isRunning = true;
-      this.logger.info('Relayer executor started');
+      this.logger.info("Relayer executor started");
 
       // Start processing queue periodically
       this.processingInterval = setInterval(
@@ -126,15 +126,15 @@ export class RelayerExecutor implements IExecutor {
       // Also check for transactions in the DB queue
       setInterval(() => {
         this.checkDatabaseTransactionQueue().catch((error) => {
-          this.logger.error('Error checking database transaction queue:', {
+          this.logger.error("Error checking database transaction queue:", {
             error: error instanceof Error ? error.message : String(error),
           });
         });
       }, 15000); // Check database queue every 15 seconds
 
-      this.logger.info('Queue processing intervals started');
+      this.logger.info("Queue processing intervals started");
     } catch (error) {
-      this.logger.error('Failed to start relayer executor:', {
+      this.logger.error("Failed to start relayer executor:", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -155,7 +155,7 @@ export class RelayerExecutor implements IExecutor {
       this.processingInterval = null;
     }
 
-    this.logger.info('Relayer executor stopped');
+    this.logger.info("Relayer executor stopped");
   }
 
   /**
@@ -164,25 +164,25 @@ export class RelayerExecutor implements IExecutor {
   private async validateCredentials(): Promise<void> {
     try {
       // Request the relayer endpoint to verify credentials
-      const url = 'https://api.defender.openzeppelin.com/relayer/relayers';
+      const url = "https://api.defender.openzeppelin.com/relayer/relayers";
       const response = await axios.get(url, {
         headers: {
-          'X-Api-Key': this.relayerApiKey,
-          'X-Api-Secret': this.relayerApiSecret,
+          "X-Api-Key": this.relayerApiKey,
+          "X-Api-Secret": this.relayerApiSecret,
         },
       });
 
       // Check if response is valid
       if (!response.data || response.status !== 200) {
-        throw new Error('Invalid relayer response');
+        throw new Error("Invalid relayer response");
       }
 
-      this.logger.info('Relayer credentials validated');
+      this.logger.info("Relayer credentials validated");
     } catch (error) {
-      this.logger.error('Failed to validate relayer credentials:', {
+      this.logger.error("Failed to validate relayer credentials:", {
         error: error instanceof Error ? error.message : String(error),
       });
-      throw new Error('Invalid relayer credentials');
+      throw new Error("Invalid relayer credentials");
     }
   }
 
@@ -209,7 +209,7 @@ export class RelayerExecutor implements IExecutor {
         queueSize: this.queue.size,
       };
     } catch (error) {
-      this.logger.error('Failed to get relayer status:', {
+      this.logger.error("Failed to get relayer status:", {
         error: error instanceof Error ? error.message : String(error),
       });
       return {
@@ -227,30 +227,31 @@ export class RelayerExecutor implements IExecutor {
   private async getRelayerBalance(): Promise<bigint> {
     try {
       // Query relayer balance via Defender API
-      const url = 'https://api.defender.openzeppelin.com/relayer/relayers';
+      const url = "https://api.defender.openzeppelin.com/relayer/relayers";
       const response = await axios.get(url, {
         headers: {
-          'X-Api-Key': this.relayerApiKey,
-          'X-Api-Secret': this.relayerApiSecret,
+          "X-Api-Key": this.relayerApiKey,
+          "X-Api-Secret": this.relayerApiSecret,
         },
       });
 
       if (!response.data || response.status !== 200) {
-        throw new Error('Invalid relayer response');
+        throw new Error("Invalid relayer response");
       }
 
       // Find our relayer in the response
       const relayer = response.data.find(
-        (r: any) => r.network === 'mainnet' || r.network === 'arbitrum',
+        (r: { network: string; balance?: string }) =>
+          r.network === "mainnet" || r.network === "arbitrum",
       );
 
       if (!relayer) {
-        throw new Error('Relayer not found');
+        throw new Error("Relayer not found");
       }
 
-      return BigInt(relayer.balance || '0');
+      return BigInt(relayer.balance || "0");
     } catch (error) {
-      this.logger.error('Failed to get relayer balance:', {
+      this.logger.error("Failed to get relayer balance:", {
         error: error instanceof Error ? error.message : String(error),
       });
       return BigInt(0);
@@ -267,7 +268,7 @@ export class RelayerExecutor implements IExecutor {
   ): Promise<QueuedTransaction> {
     // Check queue size
     if (this.queue.size >= this.config.maxQueueSize) {
-      throw new Error('Queue is full');
+      throw new Error("Queue is full");
     }
 
     // Create transaction object
@@ -282,7 +283,7 @@ export class RelayerExecutor implements IExecutor {
 
     // Add to queue
     this.queue.set(tx.id, tx);
-    this.logger.info('Transaction queued:', {
+    this.logger.info("Transaction queued:", {
       id: tx.id,
       depositId: tx.depositId.toString(),
       hasTxData: !!txData,
@@ -370,7 +371,7 @@ export class RelayerExecutor implements IExecutor {
         effectiveGasPrice: receipt.gasPrice || BigInt(0),
       };
     } catch (error) {
-      this.logger.error('Failed to get transaction receipt:', {
+      this.logger.error("Failed to get transaction receipt:", {
         hash,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -382,7 +383,7 @@ export class RelayerExecutor implements IExecutor {
    * Transfer accumulated tips to the configured receiver
    */
   async transferOutTips(): Promise<TransactionReceipt | null> {
-    this.logger.info('Transfer out tips not implemented for relayer executor');
+    this.logger.info("Transfer out tips not implemented for relayer executor");
     return null;
   }
 
@@ -391,7 +392,7 @@ export class RelayerExecutor implements IExecutor {
    */
   async clearQueue(): Promise<void> {
     this.queue.clear();
-    this.logger.info('Transaction queue cleared');
+    this.logger.info("Transaction queue cleared");
   }
 
   /**
@@ -418,7 +419,7 @@ export class RelayerExecutor implements IExecutor {
 
     // If we have too many pending transactions, don't execute more
     if (pendingTxCount >= this.config.relayer.maxPendingTransactions) {
-      this.logger.info('Too many pending transactions, skipping execution');
+      this.logger.info("Too many pending transactions, skipping execution");
       return;
     }
 
@@ -426,7 +427,7 @@ export class RelayerExecutor implements IExecutor {
     const toProcess = queuedTxs.slice(0, this.config.concurrentTransactions);
     for (const tx of toProcess) {
       this.executeTransaction(tx).catch((error) => {
-        this.logger.error('Error executing transaction:', {
+        this.logger.error("Error executing transaction:", {
           txId: tx.id,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -439,7 +440,7 @@ export class RelayerExecutor implements IExecutor {
    */
   private async executeTransaction(tx: QueuedTransaction): Promise<void> {
     if (!this.isRunning) {
-      this.logger.info('Executor not running, skipping transaction');
+      this.logger.info("Executor not running, skipping transaction");
       return;
     }
 
@@ -447,49 +448,50 @@ export class RelayerExecutor implements IExecutor {
       // Update status to pending
       tx.status = TransactionStatus.PENDING;
       tx.executedAt = new Date();
-      this.logger.info('Executing transaction through relayer', { id: tx.id });
-      
+      this.logger.info("Executing transaction through relayer", { id: tx.id });
+
       // Parse transaction data and extract queue item ID
       const { depositId, queueItemId } = this.parseTransactionData(tx);
-      
+
       // Update database with pending status if queueItemId exists
       if (this.db && queueItemId) {
         try {
           await this.db.updateTransactionQueueItem(queueItemId, {
             status: TransactionQueueStatus.PENDING,
           });
-          this.logger.info('Updated transaction queue item status to PENDING', {
+          this.logger.info("Updated transaction queue item status to PENDING", {
             queueItemId,
           });
         } catch (error) {
-          this.logger.error('Failed to update transaction queue item status', {
+          this.logger.error("Failed to update transaction queue item status", {
             error: error instanceof Error ? error.message : String(error),
             queueItemId,
           });
         }
       }
-      
+
       // Get current network conditions
       const feeData = await this.provider.getFeeData();
-      this.logger.info('Network fee data', {
-        maxFeePerGas: feeData.maxFeePerGas?.toString() || 'undefined',
-        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas?.toString() || 'undefined',
-        gasPrice: feeData.gasPrice?.toString() || 'undefined',
+      this.logger.info("Network fee data", {
+        maxFeePerGas: feeData.maxFeePerGas?.toString() || "undefined",
+        maxPriorityFeePerGas:
+          feeData.maxPriorityFeePerGas?.toString() || "undefined",
+        gasPrice: feeData.gasPrice?.toString() || "undefined",
       });
 
       // Simulate the transaction to check if it would succeed
       const simulationResult = await this.simulateTransaction(depositId);
-      
+
       if (!simulationResult.success) {
-        this.logger.error('Transaction simulation failed, not executing', {
+        this.logger.error("Transaction simulation failed, not executing", {
           id: tx.id,
           depositId: depositId.toString(),
-          error: simulationResult.error
+          error: simulationResult.error,
         });
-        
+
         tx.status = TransactionStatus.FAILED;
         tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
-        
+
         // Update database if needed
         if (this.db && queueItemId) {
           await this.db.updateTransactionQueueItem(queueItemId, {
@@ -497,14 +499,14 @@ export class RelayerExecutor implements IExecutor {
             error: `Simulation failed: ${simulationResult.error}`,
           });
         }
-        
+
         return;
       }
-      
-      this.logger.info('Transaction simulation successful', {
+
+      this.logger.info("Transaction simulation successful", {
         id: tx.id,
         depositId: depositId.toString(),
-        newEarningPower: simulationResult.result?.toString() || 'unknown'
+        newEarningPower: simulationResult.result?.toString() || "unknown",
       });
 
       // Estimate gas for the transaction
@@ -513,8 +515,8 @@ export class RelayerExecutor implements IExecutor {
 
       // Encode the function call
       const encodedData = this.contractInterface.encodeFunctionData(
-        'bumpEarningPower',
-        [depositId]
+        "bumpEarningPower",
+        [depositId],
       );
 
       // Prepare the transaction request for Defender API
@@ -522,7 +524,7 @@ export class RelayerExecutor implements IExecutor {
         this.contractAddress,
         encodedData,
         gasLimit,
-        feeData
+        feeData,
       );
 
       // Send transaction through Defender API
@@ -530,23 +532,23 @@ export class RelayerExecutor implements IExecutor {
 
       // Store transaction info
       tx.hash = txResponse.hash;
-      this.logger.info('Transaction sent through relayer', {
+      this.logger.info("Transaction sent through relayer", {
         id: tx.id,
         hash: tx.hash,
         depositId: depositId.toString(),
       });
 
       // Wait for transaction to be mined
-      this.logger.info('Waiting for transaction to be mined...');
+      this.logger.info("Waiting for transaction to be mined...");
       const receipt = await txResponse.wait();
-      
+
       if (!receipt) {
-        throw new Error('Transaction receipt not received');
+        throw new Error("Transaction receipt not received");
       }
 
       // Update transaction status
       tx.status = TransactionStatus.CONFIRMED;
-      this.logger.info('Transaction confirmed', {
+      this.logger.info("Transaction confirmed", {
         id: tx.id,
         hash: receipt.hash,
         blockNumber: receipt.blockNumber,
@@ -560,12 +562,12 @@ export class RelayerExecutor implements IExecutor {
             status: TransactionQueueStatus.CONFIRMED,
             hash: receipt.hash,
           });
-          this.logger.info('Updated transaction queue item to CONFIRMED', {
+          this.logger.info("Updated transaction queue item to CONFIRMED", {
             queueItemId,
             hash: receipt.hash,
           });
         } catch (error) {
-          this.logger.error('Failed to update transaction queue status', {
+          this.logger.error("Failed to update transaction queue status", {
             error: error instanceof Error ? error.message : String(error),
             queueItemId,
           });
@@ -576,17 +578,17 @@ export class RelayerExecutor implements IExecutor {
       tx.status = TransactionStatus.FAILED;
       tx.error = error as Error;
       tx.retryCount = (tx.retryCount ?? 0) + 1;
-      
-      this.logger.error('Transaction execution failed', {
+
+      this.logger.error("Transaction execution failed", {
         id: tx.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      
+
       // Handle retries
       this.handleTransactionRetry(tx, error);
     }
   }
-  
+
   /**
    * Parse transaction data from tx_data
    */
@@ -596,26 +598,26 @@ export class RelayerExecutor implements IExecutor {
   } {
     const depositId = tx.depositId;
     let queueItemId: string | undefined;
-    
+
     // Parse tx_data if available
     if (tx.tx_data) {
       try {
         // Check if tx_data is a JSON string
-        if (tx.tx_data.startsWith('{')) {
+        if (tx.tx_data.startsWith("{")) {
           const txData = JSON.parse(tx.tx_data);
           queueItemId = txData.id;
         }
       } catch (error) {
-        this.logger.debug('Failed to parse tx_data', {
+        this.logger.debug("Failed to parse tx_data", {
           error: error instanceof Error ? error.message : String(error),
-          txData: tx.tx_data?.substring(0, 20) + '...',
+          txData: tx.tx_data?.substring(0, 20) + "...",
         });
       }
     }
-    
+
     return { depositId, queueItemId };
   }
-  
+
   /**
    * Prepare payload for Defender Relayer API
    */
@@ -623,86 +625,93 @@ export class RelayerExecutor implements IExecutor {
     contractAddress: string,
     encodedData: string,
     gasLimit: bigint,
-    feeData: ethers.FeeData
-  ): Record<string, any> {
-    const payload: Record<string, any> = {
+    feeData: ethers.FeeData,
+  ): Record<string, string | number | boolean> {
+    const payload: Record<string, string | number | boolean> = {
       to: contractAddress,
       data: encodedData,
       gasLimit: gasLimit.toString(),
-      speed: 'fast',
+      speed: "fast",
     };
 
     // Add gas policy if specified in config
     if (this.config.relayer.gasPolicy) {
       if (this.config.relayer.gasPolicy.maxFeePerGas) {
-        payload.maxFeePerGas = this.config.relayer.gasPolicy.maxFeePerGas.toString();
+        payload.maxFeePerGas =
+          this.config.relayer.gasPolicy.maxFeePerGas.toString();
       } else if (feeData.maxFeePerGas) {
         payload.maxFeePerGas = feeData.maxFeePerGas.toString();
       }
-      
+
       if (this.config.relayer.gasPolicy.maxPriorityFeePerGas) {
-        payload.maxPriorityFeePerGas = this.config.relayer.gasPolicy.maxPriorityFeePerGas.toString();
+        payload.maxPriorityFeePerGas =
+          this.config.relayer.gasPolicy.maxPriorityFeePerGas.toString();
       } else if (feeData.maxPriorityFeePerGas) {
         payload.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas.toString();
       }
     }
 
-    this.logger.info('Prepared transaction payload for Defender API', {
+    this.logger.info("Prepared transaction payload for Defender API", {
       to: payload.to,
       gasLimit: payload.gasLimit,
       speed: payload.speed,
       hasData: !!payload.data,
     });
-    
+
     return payload;
   }
-  
+
   /**
    * Send transaction via Defender Relayer API
    */
-  private async sendRelayerTransaction(payload: Record<string, any>): Promise<{
+  private async sendRelayerTransaction(
+    payload: Record<string, string | number | boolean>,
+  ): Promise<{
     hash: string;
     wait: (confirmations?: number) => Promise<TransactionReceipt | null>;
   }> {
-    const url = 'https://api.defender.openzeppelin.com/relayer/transactions';
+    const url = "https://api.defender.openzeppelin.com/relayer/transactions";
     const response = await axios.post(url, payload, {
       headers: {
-        'X-Api-Key': this.relayerApiKey,
-        'X-Api-Secret': this.relayerApiSecret,
-        'Content-Type': 'application/json',
+        "X-Api-Key": this.relayerApiKey,
+        "X-Api-Secret": this.relayerApiSecret,
+        "Content-Type": "application/json",
       },
     });
 
     // Validate response
     if (!response.data || !response.data.hash) {
-      throw new Error('Invalid Defender API response: missing transaction hash');
+      throw new Error(
+        "Invalid Defender API response: missing transaction hash",
+      );
     }
 
     return {
       hash: response.data.hash,
       wait: async (confirmations?: number) => {
         return this.waitForTransaction(
-          response.data.hash, 
-          confirmations || this.config.minConfirmations
+          response.data.hash,
+          confirmations || this.config.minConfirmations,
         );
-      }
+      },
     };
   }
-  
+
   /**
    * Handle transaction retry logic
    */
   private handleTransactionRetry(tx: QueuedTransaction, error: unknown): void {
     // If we have retries left, requeue the transaction
     if ((tx.retryCount ?? 0) < this.config.maxRetries) {
-      this.logger.info('Requeuing failed transaction', {
+      this.logger.info("Requeuing failed transaction", {
         id: tx.id,
         retryCount: tx.retryCount ?? 0,
         error: error instanceof Error ? error.message : String(error),
       });
 
       // Delay retries using an exponential backoff
-      const delayMs = this.config.retryDelayMs * Math.pow(2, (tx.retryCount ?? 0) - 1);
+      const delayMs =
+        this.config.retryDelayMs * Math.pow(2, (tx.retryCount ?? 0) - 1);
       setTimeout(() => {
         // Reset status to QUEUED for retry
         tx.status = TransactionStatus.QUEUED;
@@ -710,25 +719,28 @@ export class RelayerExecutor implements IExecutor {
         this.processQueue();
       }, delayMs);
     } else {
-      this.logger.error('Transaction failed permanently', {
+      this.logger.error("Transaction failed permanently", {
         id: tx.id,
         error: error instanceof Error ? error.message : String(error),
       });
-      
+
       // Update database if needed
       this.updateFailedTransactionInDb(tx, error);
     }
   }
-  
+
   /**
    * Update failed transaction in database
    */
-  private async updateFailedTransactionInDb(tx: QueuedTransaction, error: unknown): Promise<void> {
+  private async updateFailedTransactionInDb(
+    tx: QueuedTransaction,
+    error: unknown,
+  ): Promise<void> {
     if (!this.db) return;
-    
+
     try {
       let queueItemId: string | undefined;
-      
+
       if (tx.tx_data) {
         try {
           const txData = JSON.parse(tx.tx_data);
@@ -736,26 +748,29 @@ export class RelayerExecutor implements IExecutor {
             queueItemId = txData.id;
           }
         } catch (e) {
-          this.logger.debug('Failed to parse tx_data for queue ID', {
+          this.logger.debug("Failed to parse tx_data for queue ID", {
             error: e instanceof Error ? e.message : String(e),
           });
         }
       }
-      
+
       if (queueItemId) {
         await this.db.updateTransactionQueueItem(queueItemId, {
           status: TransactionQueueStatus.FAILED,
           error: error instanceof Error ? error.message : String(error),
         });
-        this.logger.info('Updated transaction queue item to FAILED', {
+        this.logger.info("Updated transaction queue item to FAILED", {
           queueItemId,
         });
       }
     } catch (dbError) {
-      this.logger.error('Failed to update transaction queue with failure status', {
-        error: dbError instanceof Error ? dbError.message : String(dbError),
-        txId: tx.id,
-      });
+      this.logger.error(
+        "Failed to update transaction queue with failure status",
+        {
+          error: dbError instanceof Error ? dbError.message : String(dbError),
+          txId: tx.id,
+        },
+      );
     }
   }
 
@@ -764,9 +779,9 @@ export class RelayerExecutor implements IExecutor {
    */
   private async waitForTransaction(
     hash: string,
-    confirmations: number
+    confirmations: number,
   ): Promise<TransactionReceipt | null> {
-    this.logger.info('Waiting for transaction:', { hash, confirmations });
+    this.logger.info("Waiting for transaction:", { hash, confirmations });
 
     // Maximum wait time in milliseconds
     const maxWaitTimeMs = confirmations * 15000; // ~15 sec/block
@@ -792,14 +807,14 @@ export class RelayerExecutor implements IExecutor {
             };
           }
 
-          this.logger.info('Transaction mined but waiting for confirmations:', {
+          this.logger.info("Transaction mined but waiting for confirmations:", {
             hash,
             currentConfirmations,
             required: confirmations,
           });
         }
       } catch (error) {
-        this.logger.warn('Error checking transaction receipt:', {
+        this.logger.warn("Error checking transaction receipt:", {
           hash,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -809,7 +824,7 @@ export class RelayerExecutor implements IExecutor {
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
 
-    this.logger.warn('Timeout waiting for transaction confirmation:', { hash });
+    this.logger.warn("Timeout waiting for transaction confirmation:", { hash });
     return null;
   }
 
@@ -824,14 +839,14 @@ export class RelayerExecutor implements IExecutor {
     try {
       // Get queued transactions from database
       const queueItems = await this.db.getTransactionQueueItemsByStatus(
-        TransactionQueueStatus.PENDING
+        TransactionQueueStatus.PENDING,
       );
 
       if (queueItems.length === 0) {
         return;
       }
 
-      this.logger.info('Found database queue items:', {
+      this.logger.info("Found database queue items:", {
         count: queueItems.length,
       });
 
@@ -849,7 +864,7 @@ export class RelayerExecutor implements IExecutor {
         );
 
         if (existingTx) {
-          this.logger.info('Transaction already in local queue:', {
+          this.logger.info("Transaction already in local queue:", {
             depositId: item.deposit_id,
           });
           continue;
@@ -869,9 +884,9 @@ export class RelayerExecutor implements IExecutor {
               isProfitable: true,
             },
             estimates: {
-              optimalTip: BigInt(metadata.tipAmount || '0'),
-              gasEstimate: BigInt(metadata.gasEstimate || '100000'),
-              expectedProfit: BigInt(metadata.profit || '0'),
+              optimalTip: BigInt(metadata.tipAmount || "0"),
+              gasEstimate: BigInt(metadata.gasEstimate || "100000"),
+              expectedProfit: BigInt(metadata.profit || "0"),
               tipReceiver: metadata.tipReceiver || ethers.ZeroAddress,
             },
           };
@@ -887,41 +902,34 @@ export class RelayerExecutor implements IExecutor {
           const tx = await this.queueTransaction(
             BigInt(item.deposit_id),
             profitability,
-            enrichedTxData
+            enrichedTxData,
           );
 
-          this.logger.info('Queued transaction from database:', {
+          this.logger.info("Queued transaction from database:", {
             id: tx.id,
             depositId: item.deposit_id,
             queueItemId: item.id,
           });
 
           // Update database status to acknowledge processing
-          await this.db.updateTransactionQueueItem(
-            item.id,
-            {
-              status: TransactionQueueStatus.SUBMITTED,
-            }
-          );
-
+          await this.db.updateTransactionQueueItem(item.id, {
+            status: TransactionQueueStatus.SUBMITTED,
+          });
         } catch (error) {
-          this.logger.error('Failed to process database queue item:', {
+          this.logger.error("Failed to process database queue item:", {
             id: item.id,
             error: error instanceof Error ? error.message : String(error),
           });
 
           // Mark as failed in database
-          await this.db.updateTransactionQueueItem(
-            item.id,
-            {
-              status: TransactionQueueStatus.FAILED,
-              error: error instanceof Error ? error.message : String(error),
-            }
-          );
+          await this.db.updateTransactionQueueItem(item.id, {
+            status: TransactionQueueStatus.FAILED,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
     } catch (error) {
-      this.logger.error('Failed to check database transaction queue:', {
+      this.logger.error("Failed to check database transaction queue:", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -937,7 +945,7 @@ export class RelayerExecutor implements IExecutor {
     tipReceiver?: string;
   } {
     if (!txData) return {};
-    
+
     try {
       // Try to parse as JSON
       return JSON.parse(txData);
@@ -953,90 +961,88 @@ export class RelayerExecutor implements IExecutor {
    * @returns Result of the simulation with success flag and earning power or error
    */
   protected async simulateTransaction(
-    depositId: bigint
+    depositId: bigint,
   ): Promise<{ success: boolean; result?: bigint; error?: string }> {
     try {
-      this.logger.info('Simulating transaction', {
-        depositId: depositId.toString()
+      this.logger.info("Simulating transaction", {
+        depositId: depositId.toString(),
       });
-      
+
       // Create transaction simulator instance
       const simulator = new TransactionSimulator(this.provider, this.logger);
-      
+
       // Simulate the transaction
       const simulation = await simulator.simulateContractFunction<bigint>(
         this.stakerContract,
-        'bumpEarningPower',
+        "bumpEarningPower",
         [depositId],
         {
-          context: `depositId:${depositId.toString()}`
-        }
+          context: `depositId:${depositId.toString()}`,
+        },
       );
-      
+
       return simulation;
     } catch (error) {
       // Log the error and return failure
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      this.logger.error('Transaction simulation failed outside of simulator', {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      this.logger.error("Transaction simulation failed outside of simulator", {
         depositId: depositId.toString(),
-        error: errorMessage
+        error: errorMessage,
       });
-      
+
       return { success: false, error: errorMessage };
     }
   }
-  
+
   /**
    * Estimate gas parameters for a transaction
    * @param depositId The deposit ID
    * @returns Gas parameters with gasLimit and gasPrice
    */
   protected async estimateGasParams(
-    depositId: bigint
+    depositId: bigint,
   ): Promise<{ gasLimit: bigint; gasPrice: bigint }> {
     try {
       // Create transaction simulator instance
-      const simulator = new TransactionSimulator(
-        this.provider, 
-        this.logger, 
-        {
-          gasBoostPercentage: this.config.gasBoostPercentage,
-          gasLimitBufferPercentage: 20 // 20% buffer by default
-        }
-      );
-      
+      const simulator = new TransactionSimulator(this.provider, this.logger, {
+        gasBoostPercentage: this.config.gasBoostPercentage,
+        gasLimitBufferPercentage: 20, // 20% buffer by default
+      });
+
       // Estimate gas parameters
       const gasEstimate = await simulator.estimateGasParameters(
         this.stakerContract,
-        'bumpEarningPower',
+        "bumpEarningPower",
         [depositId],
         {
           fallbackGasLimit: BigInt(300000),
-          context: `depositId:${depositId.toString()}`
-        }
+          context: `depositId:${depositId.toString()}`,
+        },
       );
-      
-      this.logger.info('Gas parameters estimated', {
+
+      this.logger.info("Gas parameters estimated", {
         depositId: depositId.toString(),
         gasLimit: gasEstimate.gasLimit.toString(),
-        gasPrice: gasEstimate.gasPrice.toString()
+        gasPrice: gasEstimate.gasPrice.toString(),
       });
-      
+
       return gasEstimate;
     } catch (error) {
       // Log the error and use fallback values
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      this.logger.error('Gas estimation failed completely', {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      this.logger.error("Gas estimation failed completely", {
         depositId: depositId.toString(),
-        error: errorMessage
+        error: errorMessage,
       });
-      
+
       // Use fallback values
-      return { 
-        gasLimit: BigInt(300000), 
-        gasPrice: BigInt(0) // This will be set by the relayer
+      return {
+        gasLimit: BigInt(300000),
+        gasPrice: BigInt(0), // This will be set by the relayer
       };
     }
   }

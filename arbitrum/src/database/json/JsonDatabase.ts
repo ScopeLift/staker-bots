@@ -1,7 +1,7 @@
-import fs from 'fs/promises';
-import { readFileSync, writeFileSync } from 'fs';
-import path from 'path';
-import { IDatabase } from '../interfaces/IDatabase';
+import fs from "fs/promises";
+import { readFileSync, writeFileSync } from "fs";
+import path from "path";
+import { IDatabase } from "../interfaces/IDatabase";
 import {
   Deposit,
   ProcessingCheckpoint,
@@ -10,9 +10,9 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
-} from '../interfaces/types';
-import { ConsoleLogger, Logger } from '@/monitor/logging';
-import { v4 as uuidv4 } from 'uuid';
+} from "../interfaces/types";
+import { ConsoleLogger, Logger } from "@/monitor/logging";
+import { v4 as uuidv4 } from "uuid";
 
 export class JsonDatabase implements IDatabase {
   private dbPath: string;
@@ -25,9 +25,9 @@ export class JsonDatabase implements IDatabase {
     transaction_queue: Record<string, TransactionQueueItem>;
   };
 
-  constructor(dbPath = 'staker-monitor-db.json') {
+  constructor(dbPath = "staker-monitor-db.json") {
     this.dbPath = path.resolve(process.cwd(), dbPath);
-    this.logger = new ConsoleLogger('info');
+    this.logger = new ConsoleLogger("info");
     this.data = {
       deposits: {},
       checkpoints: {},
@@ -35,14 +35,14 @@ export class JsonDatabase implements IDatabase {
       processing_queue: {},
       transaction_queue: {},
     };
-    this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
+    this.logger.info("JsonDatabase initializing at:", { path: this.dbPath });
     // Initialize synchronously
     this.initializeDbSync();
   }
 
   private initializeDbSync() {
     try {
-      const fileContent = readFileSync(this.dbPath, 'utf-8');
+      const fileContent = readFileSync(this.dbPath, "utf-8");
       const loadedData = JSON.parse(fileContent);
 
       // Ensure all required sections exist
@@ -54,17 +54,17 @@ export class JsonDatabase implements IDatabase {
         transaction_queue: loadedData.transaction_queue || {},
       };
 
-      this.logger.info('Loaded existing database');
+      this.logger.info("Loaded existing database");
     } catch (error) {
       // If file doesn't exist, create it with empty data
       writeFileSync(this.dbPath, JSON.stringify(this.data, null, 2));
-      this.logger.info('Created new database file');
+      this.logger.info("Created new database file");
     }
   }
 
   private async saveToFile() {
     await fs.writeFile(this.dbPath, JSON.stringify(this.data, null, 2));
-    this.logger.debug('Saved database to file');
+    this.logger.debug("Saved database to file");
   }
 
   // Deposits
@@ -89,7 +89,7 @@ export class JsonDatabase implements IDatabase {
 
   async updateDeposit(
     depositId: string,
-    update: Partial<Omit<Deposit, 'deposit_id'>>,
+    update: Partial<Omit<Deposit, "deposit_id">>,
   ): Promise<void> {
     const deposit = this.data.deposits[depositId];
     if (!deposit) {
@@ -123,15 +123,15 @@ export class JsonDatabase implements IDatabase {
       last_update: new Date().toISOString(),
     };
     await this.saveToFile();
-    this.logger.debug('Updated checkpoint:', { checkpoint });
+    this.logger.debug("Updated checkpoint:", { checkpoint });
   }
 
   async getCheckpoint(
     componentType: string,
   ): Promise<ProcessingCheckpoint | null> {
-    this.logger.debug('Fetching checkpoint for component:', { componentType });
+    this.logger.debug("Fetching checkpoint for component:", { componentType });
     const checkpoint = this.data.checkpoints[componentType] || null;
-    this.logger.debug('Retrieved checkpoint:', { checkpoint });
+    this.logger.debug("Retrieved checkpoint:", { checkpoint });
     return checkpoint;
   }
 
@@ -249,7 +249,7 @@ export class JsonDatabase implements IDatabase {
   async createProcessingQueueItem(
     item: Omit<
       ProcessingQueueItem,
-      'id' | 'created_at' | 'updated_at' | 'attempts'
+      "id" | "created_at" | "updated_at" | "attempts"
     >,
   ): Promise<ProcessingQueueItem> {
     const now = new Date().toISOString();
@@ -272,7 +272,7 @@ export class JsonDatabase implements IDatabase {
   async updateProcessingQueueItem(
     id: string,
     update: Partial<
-      Omit<ProcessingQueueItem, 'id' | 'created_at' | 'updated_at'>
+      Omit<ProcessingQueueItem, "id" | "created_at" | "updated_at">
     >,
   ): Promise<void> {
     const item = this.data.processing_queue[id];
@@ -343,7 +343,7 @@ export class JsonDatabase implements IDatabase {
   async createTransactionQueueItem(
     item: Omit<
       TransactionQueueItem,
-      'id' | 'created_at' | 'updated_at' | 'attempts'
+      "id" | "created_at" | "updated_at" | "attempts"
     >,
   ): Promise<TransactionQueueItem> {
     const now = new Date().toISOString();
@@ -366,7 +366,7 @@ export class JsonDatabase implements IDatabase {
   async updateTransactionQueueItem(
     id: string,
     update: Partial<
-      Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at'>
+      Omit<TransactionQueueItem, "id" | "created_at" | "updated_at">
     >,
   ): Promise<void> {
     const item = this.data.transaction_queue[id];

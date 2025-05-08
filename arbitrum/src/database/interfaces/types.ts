@@ -23,10 +23,10 @@ export type ProcessingCheckpoint = {
 };
 
 export enum ProcessingQueueStatus {
-  PENDING = 'pending',
-  PROCESSING = 'processing',
-  COMPLETED = 'completed',
-  FAILED = 'failed',
+  PENDING = "pending",
+  PROCESSING = "processing",
+  COMPLETED = "completed",
+  FAILED = "failed",
 }
 
 export type ProcessingQueueItem = {
@@ -42,10 +42,10 @@ export type ProcessingQueueItem = {
 };
 
 export enum TransactionQueueStatus {
-  PENDING = 'pending',
-  SUBMITTED = 'submitted',
-  CONFIRMED = 'confirmed',
-  FAILED = 'failed',
+  PENDING = "pending",
+  SUBMITTED = "submitted",
+  CONFIRMED = "confirmed",
+  FAILED = "failed",
 }
 
 export type TransactionQueueItem = {

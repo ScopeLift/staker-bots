@@ -6,14 +6,14 @@ import {
   TransactionQueueItem,
   ProcessingQueueStatus,
   TransactionQueueStatus,
-} from './types';
+} from "./types";
 
 export interface IDatabase {
   // Deposits
   createDeposit(deposit: Deposit): Promise<void>;
   updateDeposit(
     depositId: string,
-    update: Partial<Omit<Deposit, 'deposit_id'>>,
+    update: Partial<Omit<Deposit, "deposit_id">>,
   ): Promise<void>;
   getDeposit(depositId: string): Promise<Deposit | null>;
   getDepositsByDelegatee(delegateeAddress: string): Promise<Deposit[]>;
@@ -46,13 +46,13 @@ export interface IDatabase {
   createProcessingQueueItem(
     item: Omit<
       ProcessingQueueItem,
-      'id' | 'created_at' | 'updated_at' | 'attempts'
+      "id" | "created_at" | "updated_at" | "attempts"
     >,
   ): Promise<ProcessingQueueItem>;
   updateProcessingQueueItem(
     id: string,
     update: Partial<
-      Omit<ProcessingQueueItem, 'id' | 'created_at' | 'updated_at'>
+      Omit<ProcessingQueueItem, "id" | "created_at" | "updated_at">
     >,
   ): Promise<void>;
   getProcessingQueueItem(id: string): Promise<ProcessingQueueItem | null>;
@@ -70,13 +70,13 @@ export interface IDatabase {
   createTransactionQueueItem(
     item: Omit<
       TransactionQueueItem,
-      'id' | 'created_at' | 'updated_at' | 'attempts'
+      "id" | "created_at" | "updated_at" | "attempts"
     >,
   ): Promise<TransactionQueueItem>;
   updateTransactionQueueItem(
     id: string,
     update: Partial<
-      Omit<TransactionQueueItem, 'id' | 'created_at' | 'updated_at'>
+      Omit<TransactionQueueItem, "id" | "created_at" | "updated_at">
     >,
   ): Promise<void>;
   getTransactionQueueItem(id: string): Promise<TransactionQueueItem | null>;

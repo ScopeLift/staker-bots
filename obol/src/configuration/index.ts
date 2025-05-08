@@ -67,7 +67,7 @@ export const CONFIG = {
     relayer: {
       minBalance: process.env.DEFENDER_MIN_BALANCE
         ? BigInt(process.env.DEFENDER_MIN_BALANCE)
-        : ethers.parseEther('0.01'),
+        : ethers.parseEther('0.0000001'),
       maxPendingTransactions: parseInt(
         process.env.DEFENDER_MAX_PENDING_TXS || '5',
       ),
@@ -83,6 +83,7 @@ export const CONFIG = {
   },
   priceFeed: {
     coinmarketcap: {
+      rewardTokenAddress: process.env.REWARD_TOKEN_ADDRESS || '',
       apiKey: process.env.COINMARKETCAP_API_KEY || '',
       baseUrl: 'https://pro-api.coinmarketcap.com/v2',
       timeout: 5000,

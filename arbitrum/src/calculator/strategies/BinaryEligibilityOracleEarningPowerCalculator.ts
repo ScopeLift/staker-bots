@@ -1,11 +1,11 @@
-import { ICalculatorStrategy } from '../interfaces/ICalculatorStrategy';
-import { ScoreEvent, IRewardCalculator } from '../interfaces/types';
-import { IDatabase } from '@/database';
-import { ConsoleLogger, Logger } from '@/monitor/logging';
-import { ethers } from 'ethers';
-import { CONFIG } from '@/configuration/constants';
-import { REWARD_CALCULATOR_ABI } from '../constants';
-import { ProfitabilityEngineWrapper } from '@/profitability/ProfitabilityEngineWrapper';
+import { ICalculatorStrategy } from "../interfaces/ICalculatorStrategy";
+import { ScoreEvent, IRewardCalculator } from "../interfaces/types";
+import { IDatabase } from "@/database";
+import { ConsoleLogger, Logger } from "@/monitor/logging";
+import { ethers } from "ethers";
+import { CONFIG } from "@/configuration/constants";
+import { REWARD_CALCULATOR_ABI } from "../constants";
+import { ProfitabilityEngineWrapper } from "@/profitability/ProfitabilityEngineWrapper";
 
 export class BinaryEligibilityOracleEarningPowerCalculator
   implements ICalculatorStrategy
@@ -20,12 +20,12 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   constructor(db: IDatabase, provider: ethers.Provider) {
     this.db = db;
     this.provider = provider;
-    this.logger = new ConsoleLogger('info');
+    this.logger = new ConsoleLogger("info");
     this.scoreCache = new Map();
 
     // Initialize contract
     if (!CONFIG.monitor.rewardCalculatorAddress) {
-      throw new Error('REWARD_CALCULATOR_ADDRESS is not configured');
+      throw new Error("REWARD_CALCULATOR_ADDRESS is not configured");
     }
     this.contract = new ethers.Contract(
       CONFIG.monitor.rewardCalculatorAddress,
@@ -40,7 +40,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
   setProfitabilityEngine(engine: ProfitabilityEngineWrapper): void {
     this.profitabilityEngine = engine;
     this.logger.info(
-      'Profitability engine registered for score event notifications',
+      "Profitability engine registered for score event notifications",
     );
   }
 
@@ -57,7 +57,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
       );
       return BigInt(earningPower.toString());
     } catch (error) {
-      this.logger.error('Error getting earning power from contract:', {
+      this.logger.error("Error getting earning power from contract:", {
         error,
         staker,
         delegatee,
@@ -76,27 +76,33 @@ export class BinaryEligibilityOracleEarningPowerCalculator
     try {
       // First try to get the latest score event from the database for this delegatee
       let latestScoreEvent = null;
-      
+
       try {
         latestScoreEvent = await this.db.getLatestScoreEvent(delegatee);
         if (latestScoreEvent) {
-          this.logger.info('Using latest score event from database for getNewEarningPower', {
-            delegatee,
-            score: latestScoreEvent.score,
-            blockNumber: latestScoreEvent.block_number,
-          });
+          this.logger.info(
+            "Using latest score event from database for getNewEarningPower",
+            {
+              delegatee,
+              score: latestScoreEvent.score,
+              blockNumber: latestScoreEvent.block_number,
+            },
+          );
         } else {
-          this.logger.info('No latest score event found in database for delegatee', {
-            delegatee
-          });
+          this.logger.info(
+            "No latest score event found in database for delegatee",
+            {
+              delegatee,
+            },
+          );
         }
       } catch (dbError) {
-        this.logger.warn('Error getting latest score event from database', {
+        this.logger.warn("Error getting latest score event from database", {
           error: dbError,
-          delegatee
+          delegatee,
         });
       }
-      
+
       // Call the contract's getNewEarningPower method
       const [newEarningPower, isBumpable] =
         await this.contract.getNewEarningPower(
@@ -105,40 +111,43 @@ export class BinaryEligibilityOracleEarningPowerCalculator
           delegatee,
           oldEarningPower,
         );
-        
-      this.logger.info('Contract getNewEarningPower results', {
+
+      this.logger.info("Contract getNewEarningPower results", {
         delegatee,
         newEarningPower: newEarningPower.toString(),
         isBumpable,
         oldEarningPower: oldEarningPower.toString(),
-        hasLatestScoreEvent: !!latestScoreEvent
+        hasLatestScoreEvent: !!latestScoreEvent,
       });
-      
+
       // If we have a latest score event from the database, use it to make the final decision
       if (latestScoreEvent) {
         // Convert the score from string to bigint
         const latestScore = BigInt(latestScoreEvent.score);
-        
+
         // A deposit is bumpable if the contract's newEarningPower matches the latest score in the database
         // This means the earning power would be updated to the latest score
         const updatedBumpable = newEarningPower === latestScore;
-        
+
         if (updatedBumpable !== isBumpable) {
-          this.logger.info('Overriding bumpable decision based on latest score event', {
-            delegatee,
-            contractNewEarningPower: newEarningPower.toString(),
-            latestScore: latestScore.toString(),
-            contractIsBumpable: isBumpable,
-            updatedIsBumpable: updatedBumpable
-          });
+          this.logger.info(
+            "Overriding bumpable decision based on latest score event",
+            {
+              delegatee,
+              contractNewEarningPower: newEarningPower.toString(),
+              latestScore: latestScore.toString(),
+              contractIsBumpable: isBumpable,
+              updatedIsBumpable: updatedBumpable,
+            },
+          );
         }
-        
+
         return [BigInt(latestScore.toString()), updatedBumpable];
       }
-      
+
       return [BigInt(newEarningPower.toString()), isBumpable];
     } catch (error) {
-      this.logger.error('Error getting new earning power from contract:', {
+      this.logger.error("Error getting new earning power from contract:", {
         error,
         staker,
         delegatee,
@@ -151,7 +160,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
   async processScoreEvents(fromBlock: number, toBlock: number): Promise<void> {
     try {
-      this.logger.info('Querying score events from contract', {
+      this.logger.info("Querying score events from contract", {
         fromBlock,
         toBlock,
         contractAddress: CONFIG.monitor.rewardCalculatorAddress,
@@ -186,22 +195,22 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
       // Update processing checkpoint
       await this.db.updateCheckpoint({
-        component_type: 'calculator',
+        component_type: "calculator",
         last_block_number: toBlock,
         block_hash:
           block.hash ??
-          '0x0000000000000000000000000000000000000000000000000000000000000000',
+          "0x0000000000000000000000000000000000000000000000000000000000000000",
         last_update: new Date().toISOString(),
       });
 
-      this.logger.info('Score events processed successfully', {
+      this.logger.info("Score events processed successfully", {
         processedEvents: events.length,
         fromBlock,
         toBlock,
         blockHash: block.hash,
       });
     } catch (error) {
-      this.logger.error('Error processing score events:', {
+      this.logger.error("Error processing score events:", {
         error,
         fromBlock,
         toBlock,
@@ -225,7 +234,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
       // Notify profitability engine about the score event if it's set
       if (this.profitabilityEngine) {
         try {
-          this.logger.info('Forwarding score event to profitability engine', {
+          this.logger.info("Forwarding score event to profitability engine", {
             delegatee: event.delegatee,
             score: event.score.toString(),
             blockNumber: event.block_number,
@@ -237,14 +246,14 @@ export class BinaryEligibilityOracleEarningPowerCalculator
           );
 
           this.logger.info(
-            'Successfully forwarded score event to profitability engine',
+            "Successfully forwarded score event to profitability engine",
             {
               delegatee: event.delegatee,
             },
           );
         } catch (error) {
           this.logger.error(
-            'Error notifying profitability engine of score event:',
+            "Error notifying profitability engine of score event:",
             {
               error,
               event,
@@ -253,7 +262,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         }
       } else {
         this.logger.warn(
-          'No profitability engine set, score event not forwarded',
+          "No profitability engine set, score event not forwarded",
           {
             delegatee: event.delegatee,
             score: event.score.toString(),
@@ -261,13 +270,13 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         );
       }
 
-      this.logger.debug('Score event processed', {
+      this.logger.debug("Score event processed", {
         delegatee: event.delegatee,
         score: event.score.toString(),
         blockNumber: event.block_number,
       });
     } catch (error) {
-      this.logger.error('Error processing score event:', {
+      this.logger.error("Error processing score event:", {
         error,
         event,
       });

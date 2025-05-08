@@ -1,23 +1,23 @@
-import { ethers } from 'ethers';
-import { IDatabase } from '@/database';
-import { BinaryEligibilityOracleEarningPowerCalculator } from '@/calculator';
-import { IProfitabilityEngine } from './interfaces/IProfitabilityEngine';
-import { BaseProfitabilityEngine } from './strategies/BaseProfitabilityEngine';
+import { ethers } from "ethers";
+import { IDatabase } from "@/database";
+import { BinaryEligibilityOracleEarningPowerCalculator } from "@/calculator";
+import { IProfitabilityEngine } from "./interfaces/IProfitabilityEngine";
+import { BaseProfitabilityEngine } from "./strategies/BaseProfitabilityEngine";
 import {
   BatchAnalysis,
   Deposit as ProfitabilityDeposit,
   ProfitabilityCheck,
   ProfitabilityConfig,
-} from './interfaces/types';
-import { STAKER_ABI } from './constants';
-import { CONFIG } from '@/configuration/constants';
-import { CoinMarketCapFeed } from '@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed';
-import { Logger } from '@/monitor/logging';
+} from "./interfaces/types";
+import { STAKER_ABI } from "./constants";
+import { CONFIG } from "@/configuration/constants";
+import { CoinMarketCapFeed } from "@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed";
+import { Logger } from "@/monitor/logging";
 import {
   ProcessingQueueStatus,
   TransactionQueueStatus,
   Deposit as DatabaseDeposit,
-} from '@/database/interfaces/types';
+} from "@/database/interfaces/types";
 
 // Define interface for executor to fix type error with queueTransaction
 interface IExecutor {
@@ -40,8 +40,12 @@ interface BaseProfitabilityEngineType {
     lastGasPrice: bigint;
     lastUpdateTimestamp: number;
   }>;
-  checkProfitability(deposit: ProfitabilityDeposit): Promise<ProfitabilityCheck>;
-  analyzeBatchProfitability(deposits: ProfitabilityDeposit[]): Promise<BatchAnalysis>;
+  checkProfitability(
+    deposit: ProfitabilityDeposit,
+  ): Promise<ProfitabilityCheck>;
+  analyzeBatchProfitability(
+    deposits: ProfitabilityDeposit[],
+  ): Promise<BatchAnalysis>;
 }
 
 /**
@@ -53,15 +57,15 @@ function serializeBigInts(obj: unknown): unknown {
     return obj;
   }
 
-  if (typeof obj === 'bigint') {
-    return { type: 'bigint', value: obj.toString() };
+  if (typeof obj === "bigint") {
+    return { type: "bigint", value: obj.toString() };
   }
 
   if (Array.isArray(obj)) {
     return obj.map((item) => serializeBigInts(item));
   }
 
-  if (typeof obj === 'object') {
+  if (typeof obj === "object") {
     const result: Record<string, unknown> = {};
     for (const key in obj as Record<string, unknown>) {
       result[key] = serializeBigInts((obj as Record<string, unknown>)[key]);
@@ -182,7 +186,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
    */
   setExecutor(executor: IExecutor): void {
     this.executor = executor;
-    this.logger.info('Executor set for profitability engine');
+    this.logger.info("Executor set for profitability engine");
   }
 
   /**
@@ -200,7 +204,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
     // Requeue any pending items from the database
     await this.requeuePendingItems();
 
-    this.logger.info('Profitability engine started with queue processor');
+    this.logger.info("Profitability engine started with queue processor");
   }
 
   /**
@@ -215,7 +219,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
     // Stop queue processor
     this.stopQueueProcessor();
 
-    this.logger.info('Profitability engine stopped');
+    this.logger.info("Profitability engine stopped");
   }
 
   /**
@@ -234,7 +238,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
       const allItems = [...pendingItems, ...processingItems];
 
       if (allItems.length === 0) {
-        this.logger.debug('No pending items to requeue');
+        this.logger.debug("No pending items to requeue");
         return;
       }
 
@@ -261,7 +265,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
       this.logger.info(`Requeued ${allItems.length} items`);
     } catch (error) {
-      this.logger.error('Error requeuing pending items', { error });
+      this.logger.error("Error requeuing pending items", { error });
     }
   }
 
@@ -273,11 +277,11 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
     this.queueProcessorInterval = setInterval(() => {
       this.processQueue().catch((error) => {
-        this.logger.error('Error in queue processor', { error });
+        this.logger.error("Error in queue processor", { error });
       });
     }, 30000); // Process queue every 30 seconds
 
-    this.logger.info('Queue processor started');
+    this.logger.info("Queue processor started");
   }
 
   /**
@@ -287,7 +291,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
     if (this.queueProcessorInterval) {
       clearInterval(this.queueProcessorInterval);
       this.queueProcessorInterval = null;
-      this.logger.info('Queue processor stopped');
+      this.logger.info("Queue processor stopped");
     }
   }
 
@@ -298,7 +302,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
    */
   async onScoreEvent(delegatee: string, newScore: bigint): Promise<void> {
     try {
-      this.logger.info('Received score event:', {
+      this.logger.info("Received score event:", {
         delegatee,
         newScore: newScore.toString(),
       });
@@ -306,14 +310,14 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
       // Find all deposits with this delegatee
       const deposits = await this.db.getDepositsByDelegatee(delegatee);
 
-      this.logger.info('Found deposits for delegatee:', {
+      this.logger.info("Found deposits for delegatee:", {
         delegateeAddress: delegatee,
         depositCount: deposits.length,
-        depositIds: deposits.map((d) => d.deposit_id?.toString()).join(', '),
+        depositIds: deposits.map((d) => d.deposit_id?.toString()).join(", "),
       });
 
       if (deposits.length === 0) {
-        this.logger.info('No deposits found for delegatee', { delegatee });
+        this.logger.info("No deposits found for delegatee", { delegatee });
         return;
       }
 
@@ -330,11 +334,11 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
           .map((item) => item.deposit_id),
       );
 
-      this.logger.info('Found existing queue items:', {
+      this.logger.info("Found existing queue items:", {
         delegatee,
         existingCount: existingQueueItems.length,
         pendingOrProcessingCount: existingDepositIds.size,
-        existingIds: Array.from(existingDepositIds).join(', '),
+        existingIds: Array.from(existingDepositIds).join(", "),
       });
 
       // Convert deposits to match Deposit type as expected by the profitability engine
@@ -426,7 +430,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
         this.processingQueue.add(depositIdStr);
       }
 
-      this.logger.info('Deposits queue update complete', {
+      this.logger.info("Deposits queue update complete", {
         delegatee,
         added: addedCount,
         updated: updatedCount,
@@ -436,17 +440,17 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
       // Process queue immediately if there are new or updated items
       if (addedCount > 0 || updatedCount > 0) {
-        this.logger.info('Processing queue due to new/updated items');
+        this.logger.info("Processing queue due to new/updated items");
         await this.processQueue().catch((error) => {
-          this.logger.error('Error processing queue after score event', {
+          this.logger.error("Error processing queue after score event", {
             error,
           });
         });
       } else {
-        this.logger.info('No new items to process, skipping queue processing');
+        this.logger.info("No new items to process, skipping queue processing");
       }
     } catch (error) {
-      this.logger.error('Error handling score event:', {
+      this.logger.error("Error handling score event:", {
         error,
         delegatee,
         newScore: newScore.toString(),
@@ -459,19 +463,19 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
    */
   async processQueue(): Promise<void> {
     if (this.processingQueue.size === 0) {
-      this.logger.debug('Processing queue is empty');
+      this.logger.debug("Processing queue is empty");
       return;
     }
 
     if (!this.executor) {
-      this.logger.warn('No executor set, skipping queue processing');
+      this.logger.warn("No executor set, skipping queue processing");
       return;
     }
 
     const queueCopy = Array.from(this.processingQueue);
-    this.logger.info('Processing profitability queue', {
+    this.logger.info("Processing profitability queue", {
       queueSize: queueCopy.length,
-      queueItems: queueCopy.join(', '),
+      queueItems: queueCopy.join(", "),
     });
 
     // Process in batches of 10 to avoid overloading
@@ -497,7 +501,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
           const queueItem =
             await this.db.getProcessingQueueItemByDepositId(depositId);
           if (!queueItem) {
-            this.logger.warn('Queue item not found for deposit', { depositId });
+            this.logger.warn("Queue item not found for deposit", { depositId });
             this.processingQueue.delete(depositId);
             continue;
           }
@@ -511,12 +515,12 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
           // Get the deposit
           const deposit = await this.db.getDeposit(depositId);
           if (!deposit) {
-            this.logger.warn('Deposit not found', { depositId });
+            this.logger.warn("Deposit not found", { depositId });
 
             // Mark as failed
             await this.db.updateProcessingQueueItem(queueItem.id, {
               status: ProcessingQueueStatus.FAILED,
-              error: 'Deposit not found in database',
+              error: "Deposit not found in database",
             });
 
             this.processingQueue.delete(depositId);
@@ -530,13 +534,13 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
           deposits.push({
             deposit_id: BigInt(deposit.deposit_id),
             owner_address: deposit.owner_address,
-            delegatee_address: deposit.delegatee_address || '',
+            delegatee_address: deposit.delegatee_address || "",
             amount: BigInt(deposit.amount),
             created_at: deposit.created_at,
             updated_at: deposit.updated_at,
           });
         } catch (error) {
-          this.logger.error('Error preparing deposit for processing', {
+          this.logger.error("Error preparing deposit for processing", {
             depositId,
             error,
           });
@@ -547,7 +551,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
       }
 
       if (deposits.length === 0) {
-        this.logger.debug('No valid deposits in batch, skipping');
+        this.logger.debug("No valid deposits in batch, skipping");
         continue;
       }
 
@@ -561,7 +565,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
           const queueItemId = queueItems.get(depositId);
 
           if (!queueItemId) {
-            this.logger.warn('Queue item ID not found for deposit result', {
+            this.logger.warn("Queue item ID not found for deposit result", {
               depositId,
             });
             continue;
@@ -602,7 +606,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
               const txDataJson = JSON.stringify(txData);
 
-              this.logger.info('Transaction data prepared:', {
+              this.logger.info("Transaction data prepared:", {
                 depositId: result.depositId.toString(),
                 txData,
               });
@@ -613,7 +617,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
               if (existingTx) {
                 // Update existing transaction queue item
-                this.logger.info('Updating existing transaction queue item:', {
+                this.logger.info("Updating existing transaction queue item:", {
                   id: existingTx.id,
                   depositId,
                 });
@@ -631,7 +635,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
                   status: ProcessingQueueStatus.COMPLETED,
                 });
 
-                this.logger.info('Updated existing transaction queue item:', {
+                this.logger.info("Updated existing transaction queue item:", {
                   id: existingTx.id,
                   depositId,
                 });
@@ -658,7 +662,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
                   status: ProcessingQueueStatus.COMPLETED,
                 });
 
-                this.logger.info('Transaction queued for deposit:', {
+                this.logger.info("Transaction queued for deposit:", {
                   depositId,
                   txId: txResult.id,
                   expectedProfit: ethers.formatEther(
@@ -670,7 +674,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
                 });
               }
             } catch (error) {
-              this.logger.error('Error queueing transaction:', {
+              this.logger.error("Error queueing transaction:", {
                 depositId,
                 error,
               });
@@ -717,14 +721,14 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
                         })
                         .catch((error) => {
                           this.logger.error(
-                            'Error getting deposit info for requeue',
+                            "Error getting deposit info for requeue",
                             { depositId, error },
                           );
                         });
                     }
 
                     this.logger.debug(
-                      'Deposit is profitable but not yet eligible/enough rewards, kept as pending',
+                      "Deposit is profitable but not yet eligible/enough rewards, kept as pending",
                       {
                         depositId,
                         canBump: result.profitability.canBump,
@@ -747,7 +751,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
                 ),
               });
 
-              this.logger.debug('Deposit not profitable, marked as completed', {
+              this.logger.debug("Deposit not profitable, marked as completed", {
                 depositId,
                 canBump: result.profitability.canBump,
                 constraints: result.profitability.constraints,
@@ -756,7 +760,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
           }
         }
       } catch (error) {
-        this.logger.error('Error processing batch', {
+        this.logger.error("Error processing batch", {
           error,
           batchSize: deposits.length,
         });
@@ -774,7 +778,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
       }
     }
 
-    this.logger.info('Queue processing completed', {
+    this.logger.info("Queue processing completed", {
       remainingItems: this.processingQueue.size,
     });
   }
@@ -856,7 +860,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
   async queueForExecution(deposit: ProfitabilityDeposit): Promise<boolean> {
     if (!this.executor) {
-      this.logger.warn('No executor available for queuing transactions');
+      this.logger.warn("No executor available for queuing transactions");
       return false;
     }
 
@@ -902,7 +906,7 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
 
       return true;
     } catch (error) {
-      this.logger.error('Error queuing transaction for execution:', {
+      this.logger.error("Error queuing transaction for execution:", {
         error,
         depositId: deposit.deposit_id.toString(),
       });

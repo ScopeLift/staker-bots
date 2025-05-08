@@ -7,40 +7,52 @@ A service that monitors staking deposits, calculates profitability, and executes
 The Arbitrum staker bot follows a modular, component-based architecture designed for flexibility, reliability, and maintainability. The system consists of the following core components:
 
 ### Monitor Component
+
 Tracks on-chain events related to staking activities.
+
 - Polls the blockchain for new events at configurable intervals
 - Processes stake deposits/withdrawals and delegatee changes
 - Maintains processing checkpoints for resilience against restarts
 - Handles network reorgs and disruptions
 
 ### Calculator Component
+
 Processes delegate scores and triggers profitability checks.
+
 - Analyzes delegatee scores from on-chain events
 - Identifies deposits eligible for earning power bumps
 - Uses a queue-based system for reliable processing
 
 ### Profitability Engine
+
 Analyzes deposits to determine if actions would be profitable.
+
 - Calculates gas costs and potential profits
 - Applies configurable profitability thresholds
 - Uses price feeds for token valuations
 - Queues profitable transactions for execution
 
 ### Executor Component
+
 Executes on-chain transactions.
+
 - Supports both direct wallet and OpenZeppelin Defender relayer execution
 - Manages a transaction queue with retry logic
 - Handles gas optimization
 - Reports transaction outcomes
 
 ### Database Component
+
 Provides persistent storage for system state.
+
 - Stores deposits, events, checkpoints
 - Manages processing and transaction queues
 - Supports both JSON and Supabase backends
 
 ### Configuration Component
+
 Manages application settings with a focus on type safety and validation.
+
 - Environment variable handling
 - Default configuration values with validation
 - Component-specific configuration options
@@ -85,6 +97,7 @@ pnpm dev
 ```
 
 The service will:
+
 - Monitor deposits in the database
 - Analyze profitability of earning power bumps
 - Execute profitable transactions automatically
@@ -97,15 +110,18 @@ To stop the service gracefully, press Ctrl+C.
 The service can be configured through environment variables or by modifying the configuration files in `src/configuration/`:
 
 ### General Settings
+
 - `POLL_INTERVAL_MS`: How often to check for profitable opportunities (default: 15000ms)
 - `LOG_LEVEL`: Logging verbosity (default: 'info')
 
 ### Profitability Settings
+
 - `MIN_PROFIT_MARGIN`: Minimum expected profit to execute a transaction (in wei)
 - `GAS_PRICE_BUFFER`: Additional buffer on gas price estimates (percentage)
 - `GAS_BOOST_PERCENTAGE`: Percentage to boost gas price by for faster confirmations
 
 ### Executor Settings
+
 - `EXECUTOR_TYPE`: Type of executor to use ('wallet' or 'relayer')
 - `MAX_PENDING_TXS`: Maximum number of pending transactions
 - `CONCURRENT_TXS`: Number of transactions to execute concurrently
@@ -114,6 +130,7 @@ The service can be configured through environment variables or by modifying the 
 - `MAX_RETRIES`: Maximum number of retry attempts for failed transactions
 
 ### Database Settings
+
 - `DATABASE_TYPE`: Type of database to use ('json' or 'supabase')
 - `JSON_DB_PATH`: Path to JSON database file (if using JSON database)
 
@@ -122,23 +139,27 @@ The service can be configured through environment variables or by modifying the 
 The system uses the following database tables/collections:
 
 1. **deposits**: Stores deposit information
+
    - `deposit_id`: Unique identifier
    - `owner_address`: Address of the deposit owner
    - `delegatee_address`: Address of the delegatee
    - `amount`: Amount staked
 
 2. **processing_checkpoints**: Tracks component processing state
+
    - `component_type`: Type of component
    - `last_block_number`: Last processed block
    - `block_hash`: Hash of the last block
    - `last_update`: Timestamp of last update
 
 3. **score_events**: Stores delegatee score events
+
    - `delegatee`: Delegatee address
    - `score`: Score value
    - `block_number`: Block number of the event
 
 4. **processing_queue**: Manages processing queue items
+
    - Tracks deposit processing status
    - Stores profitability check results
 
@@ -151,10 +172,12 @@ The system uses the following database tables/collections:
 The service exposes the following methods for health checking:
 
 1. **Component Status**
+
    - Provides status information for each active component
    - Shows processing statistics and error counts
 
 2. **Database Health**
+
    - Verifies database connectivity
    - Provides counts of records in key tables
 
@@ -167,11 +190,13 @@ The service exposes the following methods for health checking:
 Common issues and their solutions:
 
 1. **Service fails to start**
+
    - Check environment variables are correctly set
    - Verify RPC endpoint is accessible
    - Ensure database connection is valid
 
 2. **No transactions being executed**
+
    - Check profitability thresholds in configuration
    - Verify gas price settings
    - Ensure wallet has sufficient balance for transactions

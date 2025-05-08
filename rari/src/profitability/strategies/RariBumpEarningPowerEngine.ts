@@ -74,7 +74,7 @@ export class RariBumpEarningPowerEngine
     this.database = params.database;
     this.executor = params.executor;
     this.lastUpdateTimestamp = Date.now();
-    
+
     logger.info('🔧 RariBumpEarningPowerEngine initialized with:', {
       stakerContractAddress: params.stakerContract.target,
       executorType: params.executor.constructor.name,
@@ -89,7 +89,7 @@ export class RariBumpEarningPowerEngine
     item: ProcessingQueueItem;
   }): Promise<ProfitabilityQueueResult> {
     logger.info(`🔍 Processing item ${item.id} for deposit ${item.deposit_id}`);
-    
+
     try {
       const deposit = await this.database.getDeposit(item.deposit_id);
 
@@ -102,16 +102,21 @@ export class RariBumpEarningPowerEngine
         depositId: deposit.deposit_id,
         ownerAddress: deposit.owner_address,
         amount: ethers.formatEther(deposit.amount),
-        earningPower: deposit.earning_power ? ethers.formatEther(deposit.earning_power) : '0',
+        earningPower: deposit.earning_power
+          ? ethers.formatEther(deposit.earning_power)
+          : '0',
         delegatee: deposit.delegatee_address,
       });
 
       const isBumpProfitable = await this.isBumpProfitable({ deposit });
 
       if (!isBumpProfitable.profitable) {
-        logger.info(`❌ Bump not profitable for deposit ${deposit.deposit_id}:`, {
-          reason: isBumpProfitable.reason,
-        });
+        logger.info(
+          `❌ Bump not profitable for deposit ${deposit.deposit_id}:`,
+          {
+            reason: isBumpProfitable.reason,
+          },
+        );
         return {
           success: true,
           result: 'not_profitable',
@@ -134,11 +139,7 @@ export class RariBumpEarningPowerEngine
 
       const data = bumpEarningPowerInterface.encodeFunctionData(
         'bumpEarningPower',
-        [
-          deposit.deposit_id,
-          tipReceiver,
-          isBumpProfitable.tipAmount!,
-        ],
+        [deposit.deposit_id, tipReceiver, isBumpProfitable.tipAmount!],
       );
 
       const tx = {
@@ -183,7 +184,9 @@ export class RariBumpEarningPowerEngine
         tx.data,
       );
 
-      logger.info(`✅ Transaction successfully queued for deposit ${deposit.deposit_id}`);
+      logger.info(
+        `✅ Transaction successfully queued for deposit ${deposit.deposit_id}`,
+      );
 
       return {
         success: true,
@@ -194,12 +197,15 @@ export class RariBumpEarningPowerEngine
         },
       };
     } catch (error) {
-      logger.error(`❌ Error processing bump earning power for item ${item.id}:`, {
-        itemId: item.id,
-        depositId: item.deposit_id,
-        error: (error as Error).message,
-        stack: (error as Error).stack,
-      });
+      logger.error(
+        `❌ Error processing bump earning power for item ${item.id}:`,
+        {
+          itemId: item.id,
+          depositId: item.deposit_id,
+          error: (error as Error).message,
+          stack: (error as Error).stack,
+        },
+      );
       return {
         success: false,
         result: 'error',
@@ -213,12 +219,16 @@ export class RariBumpEarningPowerEngine
   }: {
     deposits: Deposit[];
   }): Promise<ProfitabilityQueueBatchResult> {
-    logger.info(`🔄 Processing deposits batch with ${deposits.length} deposits`, {
-      timestamp: Date.now(),
-      depositIds: deposits.slice(0, 5).map(d => d.deposit_id.toString()) + 
-                 (deposits.length > 5 ? `...and ${deposits.length - 5} more` : ''),
-    });
-    
+    logger.info(
+      `🔄 Processing deposits batch with ${deposits.length} deposits`,
+      {
+        timestamp: Date.now(),
+        depositIds:
+          deposits.slice(0, 5).map((d) => d.deposit_id.toString()) +
+          (deposits.length > 5 ? `...and ${deposits.length - 5} more` : ''),
+      },
+    );
+
     const results: ProfitabilityQueueBatchResult = {
       success: true,
       total: deposits.length,
@@ -233,22 +243,31 @@ export class RariBumpEarningPowerEngine
 
     for (const deposit of deposits) {
       processedCount++;
-      
+
       if (processedCount % 10 === 0) {
-        logger.info(`⏳ Batch progress: ${processedCount}/${deposits.length} deposits processed`);
+        logger.info(
+          `⏳ Batch progress: ${processedCount}/${deposits.length} deposits processed`,
+        );
       }
-      
+
       try {
-        logger.info(`🔍 Checking profitability for deposit ${deposit.deposit_id}`, {
-          owner: deposit.owner_address,
-          amount: ethers.formatEther(deposit.amount),
-          earningPower: deposit.earning_power ? ethers.formatEther(deposit.earning_power) : '0',
-        });
-        
+        logger.info(
+          `🔍 Checking profitability for deposit ${deposit.deposit_id}`,
+          {
+            owner: deposit.owner_address,
+            amount: ethers.formatEther(deposit.amount),
+            earningPower: deposit.earning_power
+              ? ethers.formatEther(deposit.earning_power)
+              : '0',
+          },
+        );
+
         const isBumpProfitable = await this.isBumpProfitable({ deposit });
 
         if (!isBumpProfitable.profitable) {
-          logger.info(`❌ Deposit ${deposit.deposit_id} not profitable: ${isBumpProfitable.reason}`);
+          logger.info(
+            `❌ Deposit ${deposit.deposit_id} not profitable: ${isBumpProfitable.reason}`,
+          );
           results.notProfitable++;
           results.details.push({
             depositId: deposit.deposit_id,
@@ -258,7 +277,9 @@ export class RariBumpEarningPowerEngine
           continue;
         }
 
-        logger.info(`✅ Deposit ${deposit.deposit_id} IS profitable, preparing transaction`);
+        logger.info(
+          `✅ Deposit ${deposit.deposit_id} IS profitable, preparing transaction`,
+        );
 
         // Queue the transaction using ethers instead of web3
         const bumpEarningPowerInterface = new ethers.Interface([
@@ -266,14 +287,10 @@ export class RariBumpEarningPowerEngine
         ]);
 
         const tipReceiver = CONFIG.executor.tipReceiver || ethers.ZeroAddress;
-        
+
         const data = bumpEarningPowerInterface.encodeFunctionData(
           'bumpEarningPower',
-          [
-            deposit.deposit_id,
-            tipReceiver,
-            isBumpProfitable.tipAmount!,
-          ],
+          [deposit.deposit_id, tipReceiver, isBumpProfitable.tipAmount!],
         );
 
         const tx = {
@@ -282,10 +299,13 @@ export class RariBumpEarningPowerEngine
           gasLimit: CONFIG.BUMP_GAS_LIMIT || '300000',
         };
 
-        logger.info(`🔄 Queueing transaction for deposit ${deposit.deposit_id}`, {
-          tipAmount: ethers.formatEther(isBumpProfitable.tipAmount!),
-          tipReceiver,
-        });
+        logger.info(
+          `🔄 Queueing transaction for deposit ${deposit.deposit_id}`,
+          {
+            tipAmount: ethers.formatEther(isBumpProfitable.tipAmount!),
+            tipReceiver,
+          },
+        );
 
         await this.executor.queueTransaction(
           [BigInt(deposit.deposit_id)],
@@ -358,7 +378,7 @@ export class RariBumpEarningPowerEngine
       newScore: score.toString(),
       timestamp: Date.now(),
     });
-    
+
     try {
       // Get all deposits for this delegatee
       logger.info(`🔍 Fetching deposits for delegatee ${delegatee}`);
@@ -369,21 +389,30 @@ export class RariBumpEarningPowerEngine
         return;
       }
 
-      logger.info(`✅ Found ${deposits.length} deposits for delegatee ${delegatee}`, {
-        depositIds: deposits.slice(0, 5).map(d => d.deposit_id.toString()) + 
-                   (deposits.length > 5 ? `...and ${deposits.length - 5} more` : ''),
-      });
+      logger.info(
+        `✅ Found ${deposits.length} deposits for delegatee ${delegatee}`,
+        {
+          depositIds:
+            deposits.slice(0, 5).map((d) => d.deposit_id.toString()) +
+            (deposits.length > 5 ? `...and ${deposits.length - 5} more` : ''),
+        },
+      );
 
       // Process the deposits batch
-      logger.info(`🔄 Processing deposits after score event for delegatee ${delegatee}`);
+      logger.info(
+        `🔄 Processing deposits after score event for delegatee ${delegatee}`,
+      );
       await this.processDepositsBatch({ deposits });
     } catch (error) {
-      logger.error(`❌ Error processing score event for delegatee ${delegatee}:`, {
-        delegatee,
-        score: score.toString(),
-        error: (error as Error).message,
-        stack: (error as Error).stack,
-      });
+      logger.error(
+        `❌ Error processing score event for delegatee ${delegatee}:`,
+        {
+          delegatee,
+          score: score.toString(),
+          error: (error as Error).message,
+          stack: (error as Error).stack,
+        },
+      );
       throw error;
     }
   }
@@ -393,22 +422,35 @@ export class RariBumpEarningPowerEngine
     reason?: string;
     tipAmount?: bigint;
   }> {
-    logger.info(`📊 Analyzing profitability for deposit ${deposit.deposit_id}`, {
-      depositId: deposit.deposit_id,
-      ownerAddress: deposit.owner_address,
-      delegateeAddress: deposit.delegatee_address,
-      amount: deposit.amount,
-    });
-    
+    logger.info(
+      `📊 Analyzing profitability for deposit ${deposit.deposit_id}`,
+      {
+        depositId: deposit.deposit_id,
+        ownerAddress: deposit.owner_address,
+        delegateeAddress: deposit.delegatee_address,
+        amount: deposit.amount,
+      },
+    );
+
     try {
       // Get the current deposit state from the contract to ensure we have latest data
-      const depositState = await this.stakerContract.deposits(BigInt(deposit.deposit_id));
-      
+      const depositState = await this.stakerContract.deposits(
+        BigInt(deposit.deposit_id),
+      );
+
       // Validate deposit state
-      if (!depositState || !depositState.owner || !depositState.delegatee || !depositState.balance) {
-        logger.error(`Invalid deposit state for deposit ${deposit.deposit_id}`, {
-          depositState,
-        });
+      if (
+        !depositState ||
+        !depositState.owner ||
+        !depositState.delegatee ||
+        !depositState.balance
+      ) {
+        logger.error(
+          `Invalid deposit state for deposit ${deposit.deposit_id}`,
+          {
+            depositState,
+          },
+        );
         return {
           profitable: false,
           reason: 'Invalid deposit state from contract',
@@ -416,11 +458,17 @@ export class RariBumpEarningPowerEngine
       }
 
       // Validate addresses are proper Ethereum addresses
-      if (!ethers.isAddress(depositState.owner) || !ethers.isAddress(depositState.delegatee)) {
-        logger.error(`Invalid addresses in deposit state for deposit ${deposit.deposit_id}`, {
-          owner: depositState.owner,
-          delegatee: depositState.delegatee,
-        });
+      if (
+        !ethers.isAddress(depositState.owner) ||
+        !ethers.isAddress(depositState.delegatee)
+      ) {
+        logger.error(
+          `Invalid addresses in deposit state for deposit ${deposit.deposit_id}`,
+          {
+            owner: depositState.owner,
+            delegatee: depositState.delegatee,
+          },
+        );
         return {
           profitable: false,
           reason: 'Invalid addresses in deposit state',
@@ -428,11 +476,14 @@ export class RariBumpEarningPowerEngine
       }
 
       // Calculate current earning power using the correct addresses
-      logger.info(`🔍 Getting current earning power for deposit ${deposit.deposit_id}`, {
-        amount: depositState.balance.toString(),
-        staker: depositState.owner,
-        delegatee: depositState.delegatee,
-      });
+      logger.info(
+        `🔍 Getting current earning power for deposit ${deposit.deposit_id}`,
+        {
+          amount: depositState.balance.toString(),
+          staker: depositState.owner,
+          delegatee: depositState.delegatee,
+        },
+      );
 
       const currentScore = await this.calculatorWrapper.getEarningPower(
         depositState.balance,
@@ -441,25 +492,32 @@ export class RariBumpEarningPowerEngine
       );
 
       if (!currentScore) {
-        logger.warn(`❌ Could not calculate current earning power for deposit ${deposit.deposit_id}`);
+        logger.warn(
+          `❌ Could not calculate current earning power for deposit ${deposit.deposit_id}`,
+        );
         return {
           profitable: false,
           reason: 'Could not calculate current earning power',
         };
       }
 
-      logger.info(`📈 Current earning power for deposit ${deposit.deposit_id}: ${ethers.formatEther(currentScore)}`);
-
-      // Calculate new earning power to check if it would actually change
-      const [newScore, isBumpable] = await this.calculatorWrapper.getNewEarningPower(
-        depositState.balance,
-        depositState.owner,
-        depositState.delegatee,
-        currentScore,
+      logger.info(
+        `📈 Current earning power for deposit ${deposit.deposit_id}: ${ethers.formatEther(currentScore)}`,
       );
 
+      // Calculate new earning power to check if it would actually change
+      const [newScore, isBumpable] =
+        await this.calculatorWrapper.getNewEarningPower(
+          depositState.balance,
+          depositState.owner,
+          depositState.delegatee,
+          currentScore,
+        );
+
       if (!isBumpable) {
-        logger.info(`❌ Deposit ${deposit.deposit_id} is not bumpable according to contract`);
+        logger.info(
+          `❌ Deposit ${deposit.deposit_id} is not bumpable according to contract`,
+        );
         return {
           profitable: false,
           reason: 'Deposit is not bumpable',
@@ -468,7 +526,9 @@ export class RariBumpEarningPowerEngine
 
       // Check if earning power would actually change
       if (newScore === currentScore) {
-        logger.info(`No earning power change for deposit ${deposit.deposit_id}`);
+        logger.info(
+          `No earning power change for deposit ${deposit.deposit_id}`,
+        );
         return {
           profitable: false,
           reason: 'No earning power change',
@@ -479,21 +539,27 @@ export class RariBumpEarningPowerEngine
       const ELIGIBILITY_THRESHOLD = BigInt('15000000000000000000'); // 15 with 18 decimals
       const currentAboveThreshold = currentScore >= ELIGIBILITY_THRESHOLD;
       const newAboveThreshold = newScore >= ELIGIBILITY_THRESHOLD;
-      
+
       // Only bumpable if crossing the threshold in either direction
       if (currentAboveThreshold === newAboveThreshold) {
-        logger.info(`Deposit ${deposit.deposit_id} not crossing threshold (${ethers.formatEther(currentScore)} → ${ethers.formatEther(newScore)})`);
+        logger.info(
+          `Deposit ${deposit.deposit_id} not crossing threshold (${ethers.formatEther(currentScore)} → ${ethers.formatEther(newScore)})`,
+        );
         return {
           profitable: false,
           reason: 'Does not cross eligibility threshold',
         };
       }
 
-      logger.info(`Deposit ${deposit.deposit_id} crossing threshold ${currentAboveThreshold ? 'above->below' : 'below->above'} (${ethers.formatEther(currentScore)} → ${ethers.formatEther(newScore)})`);
+      logger.info(
+        `Deposit ${deposit.deposit_id} crossing threshold ${currentAboveThreshold ? 'above->below' : 'below->above'} (${ethers.formatEther(currentScore)} → ${ethers.formatEther(newScore)})`,
+      );
 
       // Get MAX_BUMP_TIP and unclaimed rewards
       const maxBumpTipValue = await this.stakerContract.maxBumpTip();
-      const unclaimedRewards = await this.stakerContract.unclaimedReward(BigInt(deposit.deposit_id));
+      const unclaimedRewards = await this.stakerContract.unclaimedReward(
+        BigInt(deposit.deposit_id),
+      );
 
       // Get gas costs
       const provider = this.stakerContract.runner?.provider || this.provider;
@@ -507,14 +573,16 @@ export class RariBumpEarningPowerEngine
       // 2. Tip amount
       // 3. maxBumpTip leftover for future operations
       const isEarningPowerDecrease = newScore < currentScore;
-      
+
       if (isEarningPowerDecrease) {
         // Calculate minimum required rewards
         const minRequiredRewards = gasCost + maxBumpTipValue;
-        
+
         // Check if we have enough unclaimed rewards
         if (unclaimedRewards <= minRequiredRewards) {
-          logger.info(`Insufficient rewards for decrease (${ethers.formatEther(unclaimedRewards)} < ${ethers.formatEther(minRequiredRewards)})`);
+          logger.info(
+            `Insufficient rewards for decrease (${ethers.formatEther(unclaimedRewards)} < ${ethers.formatEther(minRequiredRewards)})`,
+          );
           return {
             profitable: false,
             reason: 'Insufficient rewards for gas and maxBumpTip reserve',
@@ -526,7 +594,9 @@ export class RariBumpEarningPowerEngine
 
         // If we have enough for a tip, proceed with that amount
         if (availableForTip > 0n) {
-          logger.info(`Profitable decrease: tip ${ethers.formatEther(availableForTip)}, reserve ${ethers.formatEther(minRequiredRewards)}`);
+          logger.info(
+            `Profitable decrease: tip ${ethers.formatEther(availableForTip)}, reserve ${ethers.formatEther(minRequiredRewards)}`,
+          );
           return {
             profitable: true,
             tipAmount: availableForTip,
@@ -536,28 +606,39 @@ export class RariBumpEarningPowerEngine
 
       // For increases, calculate profitability
       const scoreIncrease = newScore - currentScore;
-      const rewardRatePerBlock = BigInt(CONFIG.REWARD_RATE_PER_BLOCK || '1000000000000000');
-      const expectedBlocks = BigInt(CONFIG.EXPECTED_BLOCKS_BEFORE_NEXT_BUMP || '40320');
-      const expectedRewards = (scoreIncrease * rewardRatePerBlock * expectedBlocks) / BigInt(1e18);
+      const rewardRatePerBlock = BigInt(
+        CONFIG.REWARD_RATE_PER_BLOCK || '1000000000000000',
+      );
+      const expectedBlocks = BigInt(
+        CONFIG.EXPECTED_BLOCKS_BEFORE_NEXT_BUMP || '40320',
+      );
+      const expectedRewards =
+        (scoreIncrease * rewardRatePerBlock * expectedBlocks) / BigInt(1e18);
       const totalCost = gasCost;
 
       // Check if profitable
       if (expectedRewards > totalCost) {
         const profit = expectedRewards - totalCost;
-        logger.info(`Profitable increase: expected profit ${ethers.formatEther(profit)}`);
+        logger.info(
+          `Profitable increase: expected profit ${ethers.formatEther(profit)}`,
+        );
         return {
           profitable: true,
           tipAmount: 0n,
         };
       }
 
-      logger.info(`Not profitable: rewards ${ethers.formatEther(expectedRewards)} < cost ${ethers.formatEther(totalCost)}`);
+      logger.info(
+        `Not profitable: rewards ${ethers.formatEther(expectedRewards)} < cost ${ethers.formatEther(totalCost)}`,
+      );
       return {
         profitable: false,
         reason: 'Not profitable',
       };
     } catch (error) {
-      logger.error(`Error calculating profitability for deposit ${deposit.deposit_id}: ${(error as Error).message}`);
+      logger.error(
+        `Error calculating profitability for deposit ${deposit.deposit_id}: ${(error as Error).message}`,
+      );
       return {
         profitable: false,
         reason: `Error: ${(error as Error).message}`,
@@ -586,7 +667,9 @@ export class RariBumpEarningPowerEngine
         await this.processDepositsBatch({ deposits });
       }
     } catch (error) {
-      logger.error(`Error during initial bump check: ${(error as Error).message}`);
+      logger.error(
+        `Error during initial bump check: ${(error as Error).message}`,
+      );
     }
   }
 
@@ -615,11 +698,15 @@ export class RariBumpEarningPowerEngine
       try {
         const deposits = await this.database.getAllDeposits();
         if (deposits.length > 0) {
-          logger.info(`Processing periodic batch of ${deposits.length} deposits`);
+          logger.info(
+            `Processing periodic batch of ${deposits.length} deposits`,
+          );
           await this.processDepositsBatch({ deposits });
         }
       } catch (error) {
-        logger.error(`Error during periodic bump check: ${(error as Error).message}`);
+        logger.error(
+          `Error during periodic bump check: ${(error as Error).message}`,
+        );
       }
     }, this.PERIODIC_CHECK_INTERVAL);
   }

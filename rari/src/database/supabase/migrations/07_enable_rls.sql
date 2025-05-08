@@ -5,7 +5,7 @@ ALTER TABLE processing_queue ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transaction_queue ENABLE ROW LEVEL SECURITY;
 ALTER TABLE score_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE errors ENABLE ROW LEVEL SECURITY;
-ALTER TABLE govlst_rewards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE govlst_claim_history ENABLE ROW LEVEL SECURITY;
 
 -- Create policies that allow service_role full access
 CREATE POLICY "service_role_access_deposits" ON deposits 
@@ -26,7 +26,7 @@ CREATE POLICY "service_role_access_score_events" ON score_events
 CREATE POLICY "service_role_access_errors" ON errors 
     FOR ALL USING (auth.role() = 'service_role');
 
-CREATE POLICY "service_role_access_govlst_rewards" ON govlst_rewards 
+CREATE POLICY "service_role_access_govlst_claim_history" ON govlst_claim_history 
     FOR ALL USING (auth.role() = 'service_role');
 
 -- Grant necessary permissions to service_role
@@ -52,5 +52,5 @@ SELECT * FROM score_events;
 CREATE OR REPLACE VIEW public.errors WITH (security_invoker = on) AS
 SELECT * FROM errors;
 
-CREATE OR REPLACE VIEW public.govlst_rewards WITH (security_invoker = on) AS
-SELECT * FROM govlst_rewards; 
+CREATE OR REPLACE VIEW public.govlst_claim_history WITH (security_invoker = on) AS
+SELECT * FROM govlst_claim_history; 

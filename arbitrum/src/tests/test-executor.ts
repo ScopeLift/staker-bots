@@ -1,36 +1,36 @@
-import { ethers } from 'ethers';
-import { ExecutorWrapper, ExecutorType } from '../executor';
-import { ConsoleLogger, Logger } from '../monitor/logging';
-import { TransactionStatus } from '../executor/interfaces/types';
-import fs from 'fs';
-import { CONFIG } from '../config';
+import { ethers } from "ethers";
+import { ExecutorWrapper, ExecutorType } from "../executor";
+import { ConsoleLogger, Logger } from "../monitor/logging";
+import { TransactionStatus } from "../executor/interfaces/types";
+import fs from "fs";
+import { CONFIG } from "../config";
 
-const logger: Logger = new ConsoleLogger('info');
+const logger: Logger = new ConsoleLogger("info");
 
 async function main() {
-  logger.info('Starting executor test...');
+  logger.info("Starting executor test...");
 
   // Initialize provider
-  logger.info('Initializing provider...');
+  logger.info("Initializing provider...");
   const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
   const network = await provider.getNetwork();
-  logger.info('Connected to network:', {
+  logger.info("Connected to network:", {
     chainId: network.chainId,
     name: network.name,
   });
 
   // Initialize staker contract
-  logger.info('Initializing staker contract...');
+  logger.info("Initializing staker contract...");
   const stakerAddress = CONFIG.monitor.stakerAddress;
   const stakerAbi = JSON.parse(
-    fs.readFileSync('./src/tests/abis/staker.json', 'utf-8'),
+    fs.readFileSync("./src/tests/abis/staker.json", "utf-8"),
   );
   const stakerContract = new ethers.Contract(
     stakerAddress!,
     stakerAbi,
     provider,
   );
-  logger.info('Staker contract initialized at:', { address: stakerAddress });
+  logger.info("Staker contract initialized at:", { address: stakerAddress });
 
   const executor = new ExecutorWrapper(
     stakerContract,
@@ -39,14 +39,14 @@ async function main() {
     {
       wallet: {
         privateKey: CONFIG.executor.privateKey,
-        minBalance: ethers.parseEther('0.0000001'), // 0.1 ETH
+        minBalance: ethers.parseEther("0.0000001"), // 0.1 ETH
         maxPendingTransactions: 2,
       },
       maxQueueSize: 5,
       minConfirmations: 1,
       maxRetries: 2,
       retryDelayMs: 2000,
-      transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
+      transferOutThreshold: ethers.parseEther("0.5"), // 0.5 ETH
       gasBoostPercentage: 5,
       concurrentTransactions: 2,
     },
@@ -54,12 +54,12 @@ async function main() {
 
   // Start executor
   await executor.start();
-  logger.info('Executor started');
+  logger.info("Executor started");
 
   // Test 1: Check initial status
-  logger.info('\nTest 1: Checking initial status...');
+  logger.info("\nTest 1: Checking initial status...");
   const initialStatus = await executor.getStatus();
-  logger.info('Initial status:', {
+  logger.info("Initial status:", {
     isRunning: initialStatus.isRunning,
     walletBalance: ethers.formatEther(initialStatus.walletBalance),
     pendingTransactions: initialStatus.pendingTransactions,
@@ -67,7 +67,7 @@ async function main() {
   });
 
   // Test 2: Queue a transaction
-  logger.info('\nTest 2: Queueing a transaction...');
+  logger.info("\nTest 2: Queueing a transaction...");
   const mockProfitability = {
     canBump: true,
     constraints: {
@@ -76,9 +76,9 @@ async function main() {
       isProfitable: true,
     },
     estimates: {
-      optimalTip: ethers.parseEther('0.01'), // 0.01 ETH
+      optimalTip: ethers.parseEther("0.01"), // 0.01 ETH
       gasEstimate: BigInt(100000),
-      expectedProfit: ethers.parseEther('0.005'), // 0.005 ETH
+      expectedProfit: ethers.parseEther("0.005"), // 0.005 ETH
       tipReceiver: process.env.TIP_RECEIVER || ethers.ZeroAddress,
     },
   };
@@ -87,15 +87,15 @@ async function main() {
     BigInt(1),
     mockProfitability,
   );
-  logger.info('Transaction queued:', {
+  logger.info("Transaction queued:", {
     id: queuedTx.id,
     status: queuedTx.status,
   });
 
   // Test 3: Check queue stats
-  logger.info('\nTest 3: Checking queue stats...');
+  logger.info("\nTest 3: Checking queue stats...");
   const queueStats = await executor.getQueueStats();
-  logger.info('Queue stats:', {
+  logger.info("Queue stats:", {
     totalQueued: queueStats.totalQueued,
     totalPending: queueStats.totalPending,
     totalConfirmed: queueStats.totalConfirmed,
@@ -103,7 +103,7 @@ async function main() {
   });
 
   // Test 4: Monitor transaction status
-  logger.info('\nTest 4: Monitoring transaction status...');
+  logger.info("\nTest 4: Monitoring transaction status...");
   let tx = await executor.getTransaction(queuedTx.id);
   let attempts = 0;
   const maxAttempts = 30;
@@ -114,7 +114,7 @@ async function main() {
     tx.status !== TransactionStatus.FAILED &&
     attempts < maxAttempts
   ) {
-    logger.info('Current transaction status:', {
+    logger.info("Current transaction status:", {
       id: tx.id,
       status: tx.status,
       hash: tx.hash,
@@ -123,7 +123,7 @@ async function main() {
     if (tx.hash) {
       const receipt = await executor.getTransactionReceipt(tx.hash);
       if (receipt) {
-        logger.info('Transaction receipt:', {
+        logger.info("Transaction receipt:", {
           status: receipt.status,
           gasUsed: receipt.gasUsed.toString(),
           effectiveGasPrice: ethers.formatEther(receipt.effectiveGasPrice),
@@ -137,14 +137,14 @@ async function main() {
   }
 
   if (attempts >= maxAttempts) {
-    logger.warn('Transaction monitoring timed out');
+    logger.warn("Transaction monitoring timed out");
   }
 
   // Test 5: Check final transaction state
-  logger.info('\nTest 5: Checking final transaction state...');
+  logger.info("\nTest 5: Checking final transaction state...");
   const finalTx = await executor.getTransaction(queuedTx.id);
   if (finalTx) {
-    logger.info('Final transaction state:', {
+    logger.info("Final transaction state:", {
       id: finalTx.id,
       status: finalTx.status,
       hash: finalTx.hash,
@@ -153,22 +153,22 @@ async function main() {
   }
 
   // Test 6: Test queue limits
-  logger.info('\nTest 6: Testing queue limits...');
+  logger.info("\nTest 6: Testing queue limits...");
   try {
     for (let i = 0; i < 10; i++) {
       await executor.queueTransaction(BigInt(i + 2), mockProfitability);
     }
   } catch (error) {
-    logger.info('Queue limit reached as expected:', {
+    logger.info("Queue limit reached as expected:", {
       error: (error as Error).message,
     });
   }
 
   // Test 7: Clear queue
-  logger.info('\nTest 7: Clearing queue...');
+  logger.info("\nTest 7: Clearing queue...");
   await executor.clearQueue();
   const finalStats = await executor.getQueueStats();
-  logger.info('Final queue stats:', {
+  logger.info("Final queue stats:", {
     totalQueued: finalStats.totalQueued,
     totalPending: finalStats.totalPending,
     totalConfirmed: finalStats.totalConfirmed,
@@ -177,12 +177,12 @@ async function main() {
 
   // Stop executor
   await executor.stop();
-  logger.info('\nExecutor stopped');
+  logger.info("\nExecutor stopped");
 }
 
 main()
   .then(() => process.exit(0))
   .catch((error) => {
-    logger.error('Error:', { error: error as Error });
+    logger.error("Error:", { error: error as Error });
     process.exit(1);
   });

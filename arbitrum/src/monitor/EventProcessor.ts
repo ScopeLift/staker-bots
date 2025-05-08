@@ -1,18 +1,15 @@
-import { IDatabase } from '@/database';
+import { IDatabase } from "@/database";
 import {
   ProcessingResult,
   StakeDepositedEvent,
   StakeWithdrawnEvent,
   DelegateeAlteredEvent,
   EarningPowerBumpedEvent,
-} from './types';
-import { Logger } from './logging';
-import { EVENT_TYPES } from './constants';
-import {
-  EventProcessingError,
-  DepositNotFoundError,
-} from './errors';
-import { ErrorLogger } from '@/configuration/errorLogger';
+} from "./types";
+import { Logger } from "./logging";
+import { EVENT_TYPES } from "./constants";
+import { EventProcessingError, DepositNotFoundError } from "./errors";
+import { ErrorLogger } from "@/configuration/errorLogger";
 
 /**
  * Processes blockchain events related to staking operations.
@@ -42,7 +39,7 @@ export class EventProcessor {
         updated_at: new Date().toISOString(),
       });
 
-      this.logger.info('Created new deposit', {
+      this.logger.info("Created new deposit", {
         depositId: event.depositId,
         owner: event.ownerAddress,
         amount: event.amount.toString(),
@@ -57,7 +54,7 @@ export class EventProcessor {
 
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
-          context: 'process-stake-deposited',
+          context: "process-stake-deposited",
           ...context,
         });
       }
@@ -84,12 +81,12 @@ export class EventProcessor {
       const remainingAmount = BigInt(deposit.amount) - withdrawnAmount;
       const depositData =
         remainingAmount <= 0n
-          ? { amount: '0', delegatee_address: deposit.owner_address }
+          ? { amount: "0", delegatee_address: deposit.owner_address }
           : { amount: remainingAmount.toString() };
 
       await this.db.updateDeposit(event.depositId, depositData);
 
-      this.logger.info('Processed withdrawal', {
+      this.logger.info("Processed withdrawal", {
         depositId: event.depositId,
         remainingAmount: depositData.amount,
       });
@@ -103,7 +100,7 @@ export class EventProcessor {
 
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
-          context: 'process-stake-withdrawn',
+          context: "process-stake-withdrawn",
           ...context,
         });
       }
@@ -130,7 +127,7 @@ export class EventProcessor {
         delegatee_address: event.newDelegatee,
       });
 
-      this.logger.info('Updated delegatee', {
+      this.logger.info("Updated delegatee", {
         depositId: event.depositId,
         newDelegatee: event.newDelegatee,
       });
@@ -145,7 +142,7 @@ export class EventProcessor {
 
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
-          context: 'process-delegatee-altered',
+          context: "process-delegatee-altered",
           ...context,
         });
       }
@@ -164,20 +161,20 @@ export class EventProcessor {
   async processEarningPowerBumped(
     event: EarningPowerBumpedEvent,
   ): Promise<ProcessingResult> {
-    this.logger.info('Processing EarningPowerBumped event', {
+    this.logger.info("Processing EarningPowerBumped event", {
       depositId: event.depositId,
       oldEarningPower: event.oldEarningPower.toString(),
       newEarningPower: event.newEarningPower.toString(),
-      blockNumber: event.blockNumber
+      blockNumber: event.blockNumber,
     });
 
     try {
       const deposit = await this.db.getDeposit(event.depositId);
       if (!deposit) {
         const error = new DepositNotFoundError(event.depositId);
-        this.logger.error('Deposit not found for EarningPowerBumped event', {
+        this.logger.error("Deposit not found for EarningPowerBumped event", {
           depositId: event.depositId,
-          error: error.message
+          error: error.message,
         });
         throw error;
       }
@@ -185,40 +182,48 @@ export class EventProcessor {
       // Update or create a score event for the delegatee
       const delegatee = deposit.delegatee_address || deposit.owner_address;
       const newScore = event.newEarningPower.toString();
-      
-      this.logger.info('Updating score for delegatee from EarningPowerBumped event', {
-        depositId: event.depositId,
-        delegatee,
-        isOwnerDelegatee: delegatee === deposit.owner_address,
-        oldEarningPower: event.oldEarningPower.toString(),
-        newEarningPower: newScore,
-        blockNumber: event.blockNumber
-      });
-      
+
+      this.logger.info(
+        "Updating score for delegatee from EarningPowerBumped event",
+        {
+          depositId: event.depositId,
+          delegatee,
+          isOwnerDelegatee: delegatee === deposit.owner_address,
+          oldEarningPower: event.oldEarningPower.toString(),
+          newEarningPower: newScore,
+          blockNumber: event.blockNumber,
+        },
+      );
+
       // Check if a score event already exists for this block
-      const existingEvent = await this.db.getScoreEvent(delegatee, event.blockNumber);
-      
+      const existingEvent = await this.db.getScoreEvent(
+        delegatee,
+        event.blockNumber,
+      );
+
       if (existingEvent) {
-        this.logger.info('Updating existing score event', {
+        this.logger.info("Updating existing score event", {
           delegatee,
           blockNumber: event.blockNumber,
           oldScore: existingEvent.score,
           newScore,
-          scoreDifference: (BigInt(newScore) - BigInt(existingEvent.score)).toString()
+          scoreDifference: (
+            BigInt(newScore) - BigInt(existingEvent.score)
+          ).toString(),
         });
-        
+
         // Update the existing score event with the earning power from this event
         await this.db.updateScoreEvent(delegatee, event.blockNumber, {
           score: newScore,
           updated_at: new Date().toISOString(),
         });
       } else {
-        this.logger.info('Creating new score event from earning power', {
+        this.logger.info("Creating new score event from earning power", {
           delegatee,
           blockNumber: event.blockNumber,
-          score: newScore
+          score: newScore,
         });
-        
+
         // Create a new score event with the earning power from this event
         await this.db.createScoreEvent({
           delegatee,
@@ -231,19 +236,24 @@ export class EventProcessor {
 
       // Try to get the latest score event after update to verify
       const latestScoreEvent = await this.db.getLatestScoreEvent(delegatee);
-      
-      this.logger.info('Latest score event after update from EarningPowerBumped', {
-        depositId: event.depositId,
-        delegatee,
-        latestScoreEvent: latestScoreEvent ? {
-          blockNumber: latestScoreEvent.block_number,
-          score: latestScoreEvent.score,
-          created_at: latestScoreEvent.created_at,
-          updated_at: latestScoreEvent.updated_at
-        } : 'No score event found'
-      });
 
-      this.logger.info('Successfully processed earning power for delegatee', {
+      this.logger.info(
+        "Latest score event after update from EarningPowerBumped",
+        {
+          depositId: event.depositId,
+          delegatee,
+          latestScoreEvent: latestScoreEvent
+            ? {
+                blockNumber: latestScoreEvent.block_number,
+                score: latestScoreEvent.score,
+                created_at: latestScoreEvent.created_at,
+                updated_at: latestScoreEvent.updated_at,
+              }
+            : "No score event found",
+        },
+      );
+
+      this.logger.info("Successfully processed earning power for delegatee", {
         depositId: event.depositId,
         delegatee,
         oldEarningPower: event.oldEarningPower.toString(),
@@ -253,7 +263,7 @@ export class EventProcessor {
 
       return this.createSuccessResult(event);
     } catch (error) {
-      this.logger.error('Failed to process EarningPowerBumped event', {
+      this.logger.error("Failed to process EarningPowerBumped event", {
         error,
         depositId: event.depositId,
         oldEarningPower: event.oldEarningPower.toString(),
@@ -262,7 +272,7 @@ export class EventProcessor {
 
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
-          context: 'process-earning-power-bumped',
+          context: "process-earning-power-bumped",
           depositId: event.depositId,
         });
       }

@@ -1,5 +1,5 @@
-import { BigNumberish, ethers } from 'ethers';
-import { IDatabase, ProcessingCheckpoint } from '@/database';
+import { BigNumberish, ethers } from "ethers";
+import { IDatabase, ProcessingCheckpoint } from "@/database";
 
 /**
  * Configuration for the monitor component
@@ -20,8 +20,8 @@ export interface MonitorConfig {
   reorgDepth: number;
   confirmations: number;
   healthCheckInterval: number;
-  logLevel: 'debug' | 'info' | 'warn' | 'error';
-  databaseType: 'json' | 'supabase';
+  logLevel: "debug" | "info" | "warn" | "error";
+  databaseType: "json" | "supabase";
 }
 
 /**

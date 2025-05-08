@@ -1,4 +1,4 @@
-import { ethers } from 'ethers';
+import { ethers } from "ethers";
 
 export interface ScoreEvent {
   delegatee: string;
@@ -9,7 +9,7 @@ export interface ScoreEvent {
 }
 
 export interface CalculatorConfig {
-  type: 'binary' | string; // Extensible for future calculator types
+  type: "binary" | string; // Extensible for future calculator types
 }
 
 export interface CalculatorStatus {

@@ -1,7 +1,7 @@
-import axios, { AxiosInstance } from 'axios';
-import { BigNumberish, ethers } from 'ethers';
-import { IPriceFeed, PriceFeedConfig, TokenPrice } from '../interfaces';
-import { Logger } from '@/monitor/logging';
+import axios, { AxiosInstance } from "axios";
+import { BigNumberish, ethers } from "ethers";
+import { IPriceFeed, PriceFeedConfig, TokenPrice } from "../interfaces";
+import { Logger } from "@/monitor/logging";
 
 interface CoinMarketCapQuote {
   USD: {
@@ -52,23 +52,23 @@ export class CoinMarketCapFeed implements IPriceFeed {
 
   constructor(config: PriceFeedConfig, logger: Logger) {
     this.client = axios.create({
-      baseURL: config.baseUrl || 'https://pro-api.coinmarketcap.com',
+      baseURL: config.baseUrl || "https://pro-api.coinmarketcap.com",
       timeout: config.timeout || 5000,
       headers: {
-        'X-CMC_PRO_API_KEY': config.apiKey,
+        "X-CMC_PRO_API_KEY": config.apiKey,
       },
     });
     this.logger = logger;
     this.cache = new Map();
     this.idCache = new Map();
     this.symbolCache = new Map();
-    this.arbTestTokenAddress = config.arbTestTokenAddress || '';
-    this.arbRealTokenAddress = config.arbRealTokenAddress || '';
+    this.arbTestTokenAddress = config.arbTestTokenAddress || "";
+    this.arbRealTokenAddress = config.arbRealTokenAddress || "";
 
     // Default ARB token ID for fallback - Arbitrum (ARB) ID on CoinMarketCap
     if (this.arbRealTokenAddress) {
       this.idCache.set(this.arbRealTokenAddress.toLowerCase(), 11841);
-      this.symbolCache.set(this.arbRealTokenAddress.toLowerCase(), 'ARB');
+      this.symbolCache.set(this.arbRealTokenAddress.toLowerCase(), "ARB");
     }
   }
 
@@ -93,13 +93,13 @@ export class CoinMarketCapFeed implements IPriceFeed {
       }
 
       // Get token info by address using v2 endpoint
-      this.logger.info('Fetching token info from CoinMarketCap', {
+      this.logger.info("Fetching token info from CoinMarketCap", {
         tokenAddress,
       });
 
       // Step 1: Use the v2 cryptocurrency/info endpoint to get the CMC ID by address
       const infoResponse = await this.client.get<CoinMarketCapInfoResponse>(
-        '/cryptocurrency/info',
+        "/cryptocurrency/info",
         {
           params: {
             address: tokenAddress,
@@ -145,7 +145,7 @@ export class CoinMarketCapFeed implements IPriceFeed {
         );
       }
 
-      this.logger.info('Successfully got CoinMarketCap ID for token', {
+      this.logger.info("Successfully got CoinMarketCap ID for token", {
         tokenAddress,
         cmcId: tokenId,
         tokenName: tokenInfo.name,
@@ -158,21 +158,21 @@ export class CoinMarketCapFeed implements IPriceFeed {
 
       return tokenId;
     } catch (error) {
-      this.logger.error('Failed to get CoinMarketCap ID for token address', {
+      this.logger.error("Failed to get CoinMarketCap ID for token address", {
         error,
         tokenAddress,
       });
 
       // TEMPORARY FALLBACK SOLUTION FOR TESTING:
       // If we can't get the token ID by address, use ARB token ID as a fallback
-      this.logger.warn('Using ARB token ID as fallback for testing', {
+      this.logger.warn("Using ARB token ID as fallback for testing", {
         tokenAddress,
         fallbackId: 11841,
       });
 
       // Cache the fallback ID to avoid repeated failures
       this.idCache.set(tokenAddress.toLowerCase(), 11841);
-      this.symbolCache.set(tokenAddress.toLowerCase(), 'ARB');
+      this.symbolCache.set(tokenAddress.toLowerCase(), "ARB");
 
       return 11841; // ARB token ID
     }
@@ -188,7 +188,7 @@ export class CoinMarketCapFeed implements IPriceFeed {
       tokenAddress.toLowerCase() === this.arbTestTokenAddress.toLowerCase()
     ) {
       this.logger.info(
-        'Using real ARB token address for price lookup instead of test token',
+        "Using real ARB token address for price lookup instead of test token",
         {
           testToken: this.arbTestTokenAddress,
           realToken: this.arbRealTokenAddress,
@@ -209,18 +209,18 @@ export class CoinMarketCapFeed implements IPriceFeed {
       // Step 1: Get the CoinMarketCap ID for the token
       const tokenId = await this.getTokenId(lookupAddress);
 
-      this.logger.info('Fetching token price from CoinMarketCap', {
+      this.logger.info("Fetching token price from CoinMarketCap", {
         tokenAddress: lookupAddress,
         tokenId,
       });
 
       // Step 2: Fetch token quotes using the ID
       const response = await this.client.get<CoinMarketCapResponse>(
-        '/cryptocurrency/quotes/latest',
+        "/cryptocurrency/quotes/latest",
         {
           params: {
             id: tokenId,
-            convert: 'USD',
+            convert: "USD",
           },
         },
       );
@@ -245,7 +245,7 @@ export class CoinMarketCapFeed implements IPriceFeed {
       const price = tokenData.quote.USD.price;
       const lastUpdated = new Date(tokenData.quote.USD.last_updated);
 
-      this.logger.info('Successfully got token price', {
+      this.logger.info("Successfully got token price", {
         tokenAddress: lookupAddress,
         tokenId,
         price,
@@ -266,14 +266,14 @@ export class CoinMarketCapFeed implements IPriceFeed {
 
       return tokenPrice;
     } catch (error) {
-      this.logger.error('Failed to fetch token price from CoinMarketCap', {
+      this.logger.error("Failed to fetch token price from CoinMarketCap", {
         error,
         tokenAddress: lookupAddress,
       });
 
       // TEMPORARY FALLBACK FOR TESTING:
       // Return a mock price to allow tests to continue
-      this.logger.warn('Using mock price data for testing', {
+      this.logger.warn("Using mock price data for testing", {
         tokenAddress: lookupAddress,
       });
 
@@ -300,6 +300,6 @@ export class CoinMarketCapFeed implements IPriceFeed {
     const price = await this.getTokenPrice(tokenAddress);
     const amountInWei = ethers.parseEther(amount.toString());
     const priceInWei = ethers.parseEther(price.usd.toString());
-    return (amountInWei * priceInWei) / ethers.parseEther('1');
+    return (amountInWei * priceInWei) / ethers.parseEther("1");
   }
 }

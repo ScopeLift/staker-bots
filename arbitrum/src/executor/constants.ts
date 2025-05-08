@@ -1,5 +1,5 @@
-import { ExecutorConfig, RelayerExecutorConfig } from './interfaces/types';
-import { ethers } from 'ethers';
+import { ExecutorConfig, RelayerExecutorConfig } from "./interfaces/types";
+import { ethers } from "ethers";
 
 /**
  * Default configuration values for executor components
@@ -10,18 +10,18 @@ export const EXECUTOR = {
    */
   DEFAULT_CONFIG: {
     wallet: {
-      privateKey: '',
-      minBalance: ethers.parseEther('0.000001'), // 0.1 ETH
+      privateKey: "",
+      minBalance: ethers.parseEther("0.000001"), // 0.1 ETH
       maxPendingTransactions: 5,
     },
     maxQueueSize: 100,
     minConfirmations: 2,
     maxRetries: 3,
     retryDelayMs: 5000,
-    transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
+    transferOutThreshold: ethers.parseEther("0.5"), // 0.5 ETH
     gasBoostPercentage: 30, // 30%
     concurrentTransactions: 3,
-    defaultTipReceiver: '',
+    defaultTipReceiver: "",
   } as ExecutorConfig,
 
   /**
@@ -29,21 +29,21 @@ export const EXECUTOR = {
    */
   DEFAULT_RELAYER_CONFIG: {
     relayer: {
-      apiKey: '',
-      apiSecret: '',
-      minBalance: ethers.parseEther('0.000001'), // 0.1 ETH
+      apiKey: "",
+      apiSecret: "",
+      minBalance: ethers.parseEther("0.000001"), // 0.1 ETH
       maxPendingTransactions: 5,
     },
     maxQueueSize: 100,
     minConfirmations: 2,
     maxRetries: 3,
     retryDelayMs: 5000,
-    transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
+    transferOutThreshold: ethers.parseEther("0.5"), // 0.5 ETH
     gasBoostPercentage: 30, // 30%
     concurrentTransactions: 3,
-    defaultTipReceiver: '',
+    defaultTipReceiver: "",
   } as RelayerExecutorConfig,
-}
+};
 
 // For backward compatibility
 export const DEFAULT_EXECUTOR_CONFIG = EXECUTOR.DEFAULT_CONFIG;

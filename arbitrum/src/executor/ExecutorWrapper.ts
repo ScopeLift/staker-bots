@@ -1,38 +1,36 @@
-import { ethers } from 'ethers';
-import { BaseExecutor } from './strategies/BaseExecutor';
-import { RelayerExecutor } from './strategies/RelayerExecutor';
-import { ConsoleLogger, Logger } from '@/monitor/logging';
+import { ethers } from "ethers";
+import { BaseExecutor } from "./strategies/BaseExecutor";
+import { RelayerExecutor } from "./strategies/RelayerExecutor";
+import { ConsoleLogger } from "@/monitor/logging";
 import {
   ExecutorConfig,
   QueuedTransaction,
   QueueStats,
   TransactionReceipt,
   RelayerExecutorConfig,
-} from './interfaces/types';
-import {
-  EXECUTOR
-} from './constants';
-import { ProfitabilityCheck } from '@/profitability/interfaces/types';
-import { IExecutor } from './interfaces/IExecutor';
-import { DatabaseWrapper } from '@/database';
+} from "./interfaces/types";
+import { EXECUTOR } from "./constants";
+import { ProfitabilityCheck } from "@/profitability/interfaces/types";
+import { IExecutor } from "./interfaces/IExecutor";
+import { DatabaseWrapper } from "@/database";
 
 /**
  * Supported executor types
  */
 export enum ExecutorType {
-  WALLET = 'wallet',
-  RELAYER = 'relayer',
+  WALLET = "wallet",
+  RELAYER = "relayer",
 }
 
 /**
  * Extended configs with error handling
  */
 export interface ExtendedExecutorConfig extends ExecutorConfig {
-  errorLogger?: any;
+  errorLogger?: (message: string, context?: Record<string, unknown>) => void;
 }
 
 export interface ExtendedRelayerExecutorConfig extends RelayerExecutorConfig {
-  errorLogger?: any;
+  errorLogger?: (message: string, context?: Record<string, unknown>) => void;
 }
 
 /**
@@ -71,15 +69,15 @@ export function ExecutorWrapper({
   transferOutTips: () => Promise<TransactionReceipt | null>;
   clearQueue: () => Promise<void>;
 } {
-  const logger = new ConsoleLogger('info');
+  const logger = new ConsoleLogger("info");
 
   // Validate inputs
   if (!provider) {
-    throw new Error('Provider is required');
+    throw new Error("Provider is required");
   }
 
   if (!stakerContract?.target || !stakerContract?.interface) {
-    throw new Error('Invalid staker contract provided');
+    throw new Error("Invalid staker contract provided");
   }
 
   // Initialize executor based on type
@@ -115,7 +113,9 @@ export function ExecutorWrapper({
 
     executor = new RelayerExecutor(stakerContract, provider, fullConfig);
   } else {
-    throw new Error(`Invalid executor type: ${type}. Must be 'wallet' or 'relayer'`);
+    throw new Error(
+      `Invalid executor type: ${type}. Must be 'wallet' or 'relayer'`,
+    );
   }
 
   // Set database if provided
@@ -129,9 +129,9 @@ export function ExecutorWrapper({
   async function start(): Promise<void> {
     try {
       await executor.start();
-      logger.info('Executor started');
+      logger.info("Executor started");
     } catch (error) {
-      logger.error('Failed to start executor', {
+      logger.error("Failed to start executor", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -144,9 +144,9 @@ export function ExecutorWrapper({
   async function stop(): Promise<void> {
     try {
       await executor.stop();
-      logger.info('Executor stopped');
+      logger.info("Executor stopped");
     } catch (error) {
-      logger.error('Failed to stop executor', {
+      logger.error("Failed to stop executor", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -165,7 +165,7 @@ export function ExecutorWrapper({
     try {
       return await executor.getStatus();
     } catch (error) {
-      logger.error('Failed to get executor status', {
+      logger.error("Failed to get executor status", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -183,7 +183,7 @@ export function ExecutorWrapper({
     try {
       return await executor.queueTransaction(depositId, profitability, txData);
     } catch (error) {
-      logger.error('Failed to queue transaction', {
+      logger.error("Failed to queue transaction", {
         error: error instanceof Error ? error.message : String(error),
         depositId: depositId.toString(),
       });
@@ -198,7 +198,7 @@ export function ExecutorWrapper({
     try {
       return await executor.getQueueStats();
     } catch (error) {
-      logger.error('Failed to get queue stats', {
+      logger.error("Failed to get queue stats", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -212,7 +212,7 @@ export function ExecutorWrapper({
     try {
       return await executor.getTransaction(id);
     } catch (error) {
-      logger.error('Failed to get transaction', {
+      logger.error("Failed to get transaction", {
         error: error instanceof Error ? error.message : String(error),
         id,
       });
@@ -229,7 +229,7 @@ export function ExecutorWrapper({
     try {
       return await executor.getTransactionReceipt(hash);
     } catch (error) {
-      logger.error('Failed to get transaction receipt', {
+      logger.error("Failed to get transaction receipt", {
         error: error instanceof Error ? error.message : String(error),
         hash,
       });
@@ -244,7 +244,7 @@ export function ExecutorWrapper({
     try {
       return await executor.transferOutTips();
     } catch (error) {
-      logger.error('Failed to transfer out tips', {
+      logger.error("Failed to transfer out tips", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;
@@ -258,7 +258,7 @@ export function ExecutorWrapper({
     try {
       await executor.clearQueue();
     } catch (error) {
-      logger.error('Failed to clear queue', {
+      logger.error("Failed to clear queue", {
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;

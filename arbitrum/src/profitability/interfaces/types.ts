@@ -93,7 +93,7 @@ export interface ProfitabilityConfig {
 export interface DepositQueueItem {
   depositId: bigint;
   delegateeAddress: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: "pending" | "processing" | "completed" | "failed";
   attempts: number;
   lastAttempt: number | null;
   error: string | null;
@@ -108,7 +108,7 @@ export interface TransactionQueueItem {
   depositId: bigint;
   tipReceiver: string;
   tip: bigint;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: "pending" | "processing" | "completed" | "failed";
   attempts: number;
   lastAttempt: number | null;
   error: string | null;
