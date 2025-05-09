@@ -705,45 +705,52 @@ export class RelayerExecutor implements IExecutor {
           });
         }
 
-        // Convert profit margin to basis points first
-        const profitMargin = CONFIG.profitability.minProfitMargin;
-        this.logger.info('Raw profit margin value:', {
-          value: profitMargin,
-          type: typeof profitMargin,
-          source: 'CONFIG.profitability.minProfitMargin',
-        });
-
-        if (typeof profitMargin !== 'number' || isNaN(profitMargin)) {
+        // Get profit margin directly from CONFIG to ensure we use the environment variable value
+        const profitMargin = +CONFIG.profitability.minProfitMargin;
+ 
+        if (typeof profitMargin !== 'number' || isNaN(profitMargin) || profitMargin <= 0) {
           const error = new Error(
-            `Invalid profit margin value: ${profitMargin}`,
+            `Invalid profit margin value: ${profitMargin}. Must be a positive number.`,
           );
           this.errorLogger.error(error, {
             stage: 'executeTransaction_profitMargin',
             txId: tx.id,
             profitMargin,
+            envValue: process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT
           });
           throw error;
         }
 
-        // Scale profit margin based on deposit count for complex transactions, but less aggressively
-        // Base rate + smaller increase per deposit, with a lower cap
+        // Log the actual profit margin being used
+        this.logger.info('Profit margin configuration:', {
+          configuredValue: profitMargin,
+          asPercentage: `${profitMargin}%`,
+          envVariable: 'PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT',
+          actualValue: process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT
+        });
+
+        // Scale profit margin based on deposit count, but NEVER go below configured minimum
+        // Base rate is the configured minimum profit margin
         const depositScalingFactor = Math.min(0.2, depositIds.length * 0.05); // 0.05% per deposit, max 0.2%
-        const scaledProfitMargin = Math.min(15, profitMargin + depositScalingFactor);
+        const scaledProfitMargin = Math.max(profitMargin, Math.min(15, profitMargin + depositScalingFactor));
         
         this.logger.info('Scaled profit margin for transaction complexity:', {
-          baseProfitMargin: profitMargin,
+          configuredMinProfitMargin: profitMargin,
           depositCount: depositIds.length,
           depositScalingFactor,
           scaledProfitMargin,
-          cap: '15%'
+          cap: '15%',
+          floor: `${profitMargin}%`
         });
 
+        // Convert to basis points, ensuring we maintain precision
         const profitMarginBasisPoints = BigInt(Math.floor(scaledProfitMargin * 100));
         this.logger.info('Profit margin basis points:', {
           value: profitMarginBasisPoints.toString(),
           type: typeof profitMarginBasisPoints,
           originalValue: scaledProfitMargin,
           calculation: `${scaledProfitMargin} * 100 = ${scaledProfitMargin * 100}`,
+          effectivePercentage: `${Number(profitMarginBasisPoints) / 100}%`
         });
 
         this.logger.info('Pre-calculation values:', {
@@ -753,86 +760,79 @@ export class RelayerExecutor implements IExecutor {
           gasCostType: typeof gasCost,
           profitMarginBasisPoints: profitMarginBasisPoints.toString(),
           profitMarginBasisPointsType: typeof profitMarginBasisPoints,
+          minimumProfitMarginBasisPoints: BigInt(Math.floor(profitMargin * 100)).toString()
         });
 
-        // Calculate profit margin amount using basis points
-        const baseAmount = payoutAmount + gasCost;
-        const profitMarginAmount =
-          (baseAmount * profitMarginBasisPoints) / 10000n;
+        // Calculate base amount including gas cost if enabled
+        const baseAmount = payoutAmount + (CONFIG.profitability.includeGasCost ? gasCost : 0n);
+        
+        // Calculate minimum required profit
+        const minProfitAmount = (baseAmount * BigInt(Math.floor(profitMargin * 100))) / 10000n;
+        
+        // Calculate scaled profit margin amount (may be higher than minimum)
+        const scaledProfitAmount = (baseAmount * profitMarginBasisPoints) / 10000n;
+        
+        // Use the larger of minimum or scaled profit
+        const profitMarginAmount = scaledProfitAmount > minProfitAmount ? scaledProfitAmount : minProfitAmount;
 
         // Calculate optimal threshold including gas cost and profit margin
         const optimalThreshold = payoutAmount + gasCost + profitMarginAmount;
         
-        // CRITICAL: Final safety check - ensure threshold is at most 90% of expected profit
+        // CRITICAL: Final safety check - ensure threshold is at most 85% of expected profit
         const expectedProfit = tx.profitability.estimates.expected_profit;
         
-        // Base threshold - must be greater than payout amount
-        // Start with a minimum of payout amount + 0.1% to ensure it's always greater than payout
-        const minThreshold = payoutAmount + (payoutAmount / 1000n);
+        // Base threshold - must be greater than payout amount plus minimum profit
+        const minThreshold = payoutAmount + (payoutAmount * BigInt(Math.floor(profitMargin * 100))) / 10000n;
         
-        // Calculate maximum allowed threshold (85% of expected profit - more conservative than 90%)
-        const maxAllowedThreshold = (expectedProfit * 85n) / 100n;  // 85% of expected profit
+        // Calculate maximum allowed threshold (85% of expected profit)
+        const maxAllowedThreshold = (expectedProfit * 85n) / 100n;
         
         // Determine final threshold:
-        // 1. If optimal threshold is below payout, use minimum threshold
-        // 2. If optimal threshold is above max allowed, use max allowed
-        // 3. Otherwise use optimal threshold
         let finalThreshold: bigint;
         
-        if (optimalThreshold <= payoutAmount) {
-          this.logger.info('Optimal threshold below payout, using minimum threshold', {
+        if (optimalThreshold <= minThreshold) {
+          this.logger.info('Optimal threshold below minimum, using minimum threshold', {
             optimalThreshold: optimalThreshold.toString(),
-            payoutAmount: payoutAmount.toString(),
             minThreshold: minThreshold.toString(),
+            minimumProfitMargin: `${profitMargin}%`
           });
           finalThreshold = minThreshold;
         } else if (optimalThreshold > maxAllowedThreshold) {
-          this.logger.info('Capping threshold to prevent excessive value', {
-            originalThreshold: optimalThreshold.toString(),
-            cappedThreshold: maxAllowedThreshold.toString(),
-            expectedProfit: expectedProfit.toString(),
-          });
-          finalThreshold = maxAllowedThreshold;
+          // Before using maxAllowedThreshold, verify it provides minimum profit margin
+          const maxAllowedProfit = maxAllowedThreshold - payoutAmount - gasCost;
+          const maxAllowedProfitMargin = (maxAllowedProfit * 10000n) / baseAmount;
+          
+          if (maxAllowedProfitMargin < BigInt(Math.floor(profitMargin * 100))) {
+            this.logger.info('Max allowed threshold does not meet minimum profit margin, using minimum threshold', {
+              maxAllowedThreshold: maxAllowedThreshold.toString(),
+              maxAllowedProfitMargin: `${Number(maxAllowedProfitMargin) / 100}%`,
+              requiredMinimum: `${profitMargin}%`,
+              usingThreshold: minThreshold.toString()
+            });
+            finalThreshold = minThreshold;
+          } else {
+            this.logger.info('Using maximum allowed threshold', {
+              originalThreshold: optimalThreshold.toString(),
+              maxAllowedThreshold: maxAllowedThreshold.toString(),
+              effectiveProfitMargin: `${Number(maxAllowedProfitMargin) / 100}%`
+            });
+            finalThreshold = maxAllowedThreshold;
+          }
         } else {
           finalThreshold = optimalThreshold;
         }
         
-        // If the threshold is more than 50% of the expected profit, reduce it
-        // This is a safety measure to ensure we don't set the threshold too high
-        if (finalThreshold > (expectedProfit * 50n) / 100n) {
-          const reducedThreshold = (expectedProfit * 50n) / 100n;
-          this.logger.info('Further reducing threshold to increase claim success rate', {
-            originalThreshold: finalThreshold.toString(),
-            reducedThreshold: reducedThreshold.toString(),
-            expectedProfit: expectedProfit.toString(),
-            percentage: '50%'
-          });
-          finalThreshold = reducedThreshold;
-        }
-        
-        this.logger.info('Final optimal threshold calculation:', {
+        this.logger.info('Final threshold calculation details:', {
           value: finalThreshold.toString(),
-          type: typeof finalThreshold,
           components: {
             payoutAmount: payoutAmount.toString(),
             gasCost: gasCost.toString(),
             profitMarginAmount: profitMarginAmount.toString(),
             expectedProfit: expectedProfit.toString(),
-            uncappedThreshold: optimalThreshold.toString(),
-            minThreshold: minThreshold.toString(),
-            maxAllowedThreshold: maxAllowedThreshold.toString(),
+            effectiveProfitMargin: `${Number((finalThreshold - payoutAmount - gasCost) * 10000n / baseAmount) / 100}%`,
+            minimumRequiredProfitMargin: `${profitMargin}%`
           },
         });
-        this.logger.info(
-          `Calculated optimal threshold: ${finalThreshold.toString()}`,
-          {
-            txId: tx.id,
-            payoutAmount: payoutAmount.toString(),
-            gasCost: gasCost.toString(),
-            profitMarginAmount: profitMarginAmount.toString(),
-            expectedProfit: expectedProfit.toString(),
-          },
-        );
 
         this.logger.info('Calculated optimal threshold:', {
           payoutAmount: ethers.formatEther(payoutAmount),

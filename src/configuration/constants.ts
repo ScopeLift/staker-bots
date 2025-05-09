@@ -167,9 +167,13 @@ export const EXECUTOR = {
   GAS: {
     GAS_PRICE_UPDATE_INTERVAL: 60_000, // 1 minute
     GAS_PRICE_BUFFER_PERCENT: 30, // 30%
+    BASE_GAS_PER_DEPOSIT: 43_333n, // Based on real tx data: 1.3M/30 deposits
+    ADDITIONAL_GAS_PER_DEPOSIT: 20_303n, // Additional gas per deposit based on tx2: (3.5M/55 - 43,333)
     MIN_GAS_LIMIT: 300_000n, // Minimum gas limit for reward claims
-    MAX_GAS_LIMIT: 5_000_000n, // Maximum gas limit for reward claims - increased for complex transactions with reentrancy protection
-    GAS_LIMIT_BUFFER: 1.5, // 50% buffer on gas estimates
+    MAX_GAS_LIMIT: 5_000_000n, // Maximum gas limit for reward claims
+    GAS_LIMIT_BUFFER: 1.2, // 20% buffer on gas estimates (reduced from 50%)
+    REENTRANCY_THRESHOLD: 20, // Number of deposits where we start adding reentrancy protection buffer
+    REENTRANCY_BUFFER: 1.3, // 30% additional buffer for reentrancy protection
   },
 
   QUEUE: {
