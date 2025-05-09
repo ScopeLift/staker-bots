@@ -168,7 +168,7 @@ export const EXECUTOR = {
     GAS_PRICE_UPDATE_INTERVAL: 60_000, // 1 minute
     GAS_PRICE_BUFFER_PERCENT: 30, // 30%
     MIN_GAS_LIMIT: 300_000n, // Minimum gas limit for reward claims
-    MAX_GAS_LIMIT: 1_000_000n, // Maximum gas limit for reward claims
+    MAX_GAS_LIMIT: 5_000_000n, // Maximum gas limit for reward claims - increased for complex transactions with reentrancy protection
     GAS_LIMIT_BUFFER: 1.5, // 50% buffer on gas estimates
   },
 

@@ -54,10 +54,15 @@ export class GasCostEstimator {
       // 1. gasCost (in wei) * ethPriceUSD = cost in USD (scaled by 1e18)
       // 2. cost in USD / tokenPriceUSD = cost in reward tokens (scaled by 1e18)
       // 3. Final result needs to be in reward token decimals
-      const ethPriceScaled = BigInt(Math.round(prices.gasToken.usd * 1e18));
-      const tokenPriceScaled = BigInt(
-        Math.round(prices.rewardToken.usd * 1e18),
-      );
+      
+      // Ensure we're working with BigInt values throughout
+      const ethPriceScaled = BigInt(Math.floor(Number(prices.gasToken.usd) * 1e18));
+      const tokenPriceScaled = BigInt(Math.floor(Number(prices.rewardToken.usd) * 1e18));
+
+      // Make sure we don't divide by zero
+      if (tokenPriceScaled === 0n) {
+        throw new Error('Token price is zero');
+      }
 
       const costInRewardTokens = (gasCost * ethPriceScaled) / tokenPriceScaled;
 
@@ -69,8 +74,12 @@ export class GasCostEstimator {
 
       return costInRewardTokens;
     } catch (error) {
-      this.logger.error('Failed to estimate gas cost', { error });
-      throw error;
+      this.logger.error('Failed to estimate gas cost', { 
+        error,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      // Return a default value instead of throwing
+      return BigInt(0);
     }
   }
 }

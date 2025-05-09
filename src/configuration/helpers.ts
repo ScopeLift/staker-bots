@@ -31,22 +31,32 @@ export function calculateGasLimit(
     // Base calculation
     const baseGas = Number(gasEstimate);
 
-    // Calculate additional gas per deposit with progressive scaling
-    // Start with 50k gas per deposit and increase by 10k for each additional deposit
-    const basePerDeposit = 50000;
-    const progressiveIncrease = 10000;
+    // Enhanced calculation with higher gas allocation for reentrancy protection
+    // Use more moderate values while still accounting for reentrancy protection
+    const basePerDeposit = 65000; // More moderate increase from 50,000
+    const progressiveIncrease = 12000; // More moderate increase from 10,000
+    
+    // Adding exponential scaling for large deposit counts to account for reentrancy costs
+    // Use a smaller multiplier (1.05 instead of 1.1) for more controlled scaling
+    const exponentialFactor = Math.pow(1.05, Math.min(depositCount, 20)); // Cap at 20 to avoid overflow
+    
     let totalAdditionalGas = 0;
-
     for (let i = 0; i < depositCount; i++) {
-      totalAdditionalGas += basePerDeposit + i * progressiveIncrease;
+      // Use exponential scaling for deposit counts over 15 (instead of 10)
+      const scaleFactor = i >= 15 ? exponentialFactor : 1;
+      totalAdditionalGas += Math.floor((basePerDeposit + i * progressiveIncrease) * scaleFactor);
     }
 
     // Apply dynamic buffer based on deposit count
-    // Increase buffer percentage as deposit count grows
-    const baseBuffer = EXECUTOR.GAS.GAS_LIMIT_BUFFER; // e.g. 1.3 for 30%
-    const extraBufferPerDeposit = 0.1; // Add 10% per deposit
+    // Use higher buffer percentages for larger deposit counts, but with more moderate scaling
+    const baseBuffer = EXECUTOR.GAS.GAS_LIMIT_BUFFER; // e.g. 1.5 for 50%
+    const extraBufferPerDeposit = 0.1; // Keep at 10% per deposit
+    
+    // For very large transaction batches (>20), add extra buffer for reentrancy checks
+    // Use a more moderate reentrancy buffer factor (1.2 instead of 1.5)
+    const reentrancyBufferFactor = depositCount > 20 ? 1.2 : 1.0;
     const dynamicBuffer =
-      baseBuffer + (depositCount - 1) * extraBufferPerDeposit;
+      (baseBuffer + (depositCount - 1) * extraBufferPerDeposit) * reentrancyBufferFactor;
 
     // Calculate final gas limit with all factors
     const bufferedBaseGas = Math.ceil(baseGas * dynamicBuffer);
@@ -69,7 +79,8 @@ export function calculateGasLimit(
 
     // Safe default calculation with progressive scaling
     const safeBaseGas = Number(EXECUTOR.GAS.MIN_GAS_LIMIT) * 2;
-    const safeAdditionalGas = depositCount * 75000; // 75k gas per deposit for safety
+    // Higher per-deposit gas to account for reentrancy protection, but more moderate
+    const safeAdditionalGas = depositCount * 100000; // More moderate value (from 150k to 100k)
     gasLimit = BigInt(safeBaseGas + safeAdditionalGas);
   }
 

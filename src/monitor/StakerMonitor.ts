@@ -111,13 +111,9 @@ export class StakerMonitor extends EventEmitter {
 
       this.processingPromise = this.processLoop();
       
-      // Schedule the deposit discovery to run after a short delay to make sure monitor is fully initialized
-      setTimeout(() => {
-        this.logger.info('Starting initial deposit discovery scan');
-        this.discoverMissingDeposits().catch(error => {
-          this.logger.error('Error in initial deposit discovery:', { error });
-        });
-      }, 10000); // Run after 10 seconds to let the monitor initialize fully
+      // Don't automatically run the deposit discovery scan - it's resource intensive
+      // Only run it when explicitly called via discoverMissingDeposits()
+      this.logger.info('Monitor started successfully. Deposit discovery scan can be run manually if needed.');
     } catch (error) {
       this.logger.error('Failed to start monitor:', { error });
       if (this.errorLogger) {

@@ -1120,23 +1120,34 @@ export async function cleanupStaleTransactions(
 ): Promise<{ staleCount: number; cleanedIds: string[] }> {
   const staleIds: string[] = [];
   const now = new Date();
-  const staleThresholdMs = staleThresholdMinutes * 60 * 1000;
+  
+  // Increase the minimum stale threshold to 10 minutes
+  const effectiveStaleThreshold = Math.max(10, staleThresholdMinutes); 
+  const staleThresholdMs = effectiveStaleThreshold * 60 * 1000;
   let databaseStaleCount = 0;
 
   if (logger) {
     logger.info('Starting stale transaction cleanup', {
       queueSize: queue.size,
-      staleThresholdMinutes,
+      staleThresholdMinutes: effectiveStaleThreshold,
       timestamp: now.toISOString(),
     });
   }
 
-  // First, clean up in-memory queue
+  // First, clean up in-memory queue - but only clear failed or truly stale transactions
   for (const [txId, tx] of queue.entries()) {
     const txTime = tx.createdAt || new Date(0);
     const elapsedMs = now.getTime() - txTime.getTime();
 
-    if (elapsedMs > staleThresholdMs) {
+    // Only remove queued transactions if they're very stale (> staleThresholdMs)
+    // For pending transactions, be more conservative and double the threshold
+    const isStale = tx.status === TransactionStatus.QUEUED 
+      ? elapsedMs > staleThresholdMs
+      : (tx.status === TransactionStatus.PENDING 
+          ? elapsedMs > (staleThresholdMs * 2) // Double threshold for pending transactions
+          : elapsedMs > staleThresholdMs); 
+    
+    if (isStale) {
       staleIds.push(txId);
 
       if (logger) {
@@ -1146,6 +1157,9 @@ export async function cleanupStaleTransactions(
           createdAt: txTime.toISOString(),
           ageMinutes: Math.floor(elapsedMs / 60000),
           depositIds: tx.depositIds.map(String),
+          threshold: tx.status === TransactionStatus.PENDING 
+            ? `${effectiveStaleThreshold * 2} minutes (doubled for pending tx)`
+            : `${effectiveStaleThreshold} minutes`,
         });
       }
 
@@ -1196,7 +1210,7 @@ export async function cleanupStaleTransactions(
         }
       }
 
-      // 1. Clean up transaction queue
+      // 1. Clean up transaction queue - only if stale
       const allTxItems = await db.getTransactionQueueItemsByStatus(
         TransactionQueueStatus.PENDING,
       );
@@ -1212,11 +1226,12 @@ export async function cleanupStaleTransactions(
           const createdAt = new Date(item.created_at);
           const elapsedMs = now.getTime() - createdAt.getTime();
 
-          if (elapsedMs > staleThresholdMs) {
+          // Make sure it's actually stale (2x threshold for pending items)
+          if (elapsedMs > staleThresholdMs * 2) {
             // This is a stale item, mark it as failed and then delete it
             await db.updateTransactionQueueItem(item.id, {
               status: TransactionQueueStatus.FAILED,
-              error: `Transaction timed out after ${staleThresholdMinutes} minutes`,
+              error: `Transaction timed out after ${effectiveStaleThreshold * 2} minutes`,
             });
 
             await db.deleteTransactionQueueItem(item.id);
@@ -1228,6 +1243,7 @@ export async function cleanupStaleTransactions(
                 depositId: item.deposit_id,
                 createdAt: item.created_at,
                 ageMinutes: Math.floor(elapsedMs / 60000),
+                threshold: `${effectiveStaleThreshold * 2} minutes (doubled for pending tx)`,
               });
             }
           }
@@ -1260,7 +1276,7 @@ export async function cleanupStaleTransactions(
         }
       }
 
-      // 2. Clean up processing queue
+      // 2. Clean up processing queue - only if truly stale
       const allProcessingItems = await db.getProcessingQueueItemsByStatus(
         ProcessingQueueStatus.PENDING,
       );
@@ -1276,11 +1292,12 @@ export async function cleanupStaleTransactions(
           const createdAt = new Date(item.created_at);
           const elapsedMs = now.getTime() - createdAt.getTime();
 
-          if (elapsedMs > staleThresholdMs) {
+          // Use 2x threshold for processing items too
+          if (elapsedMs > staleThresholdMs * 2) {
             // This is a stale item, mark it as failed and then delete it
             await db.updateProcessingQueueItem(item.id, {
               status: ProcessingQueueStatus.FAILED,
-              error: `Processing timed out after ${staleThresholdMinutes} minutes`,
+              error: `Processing timed out after ${effectiveStaleThreshold * 2} minutes`,
             });
 
             await db.deleteProcessingQueueItem(item.id);
@@ -1292,6 +1309,7 @@ export async function cleanupStaleTransactions(
                 depositId: item.deposit_id,
                 createdAt: item.created_at,
                 ageMinutes: Math.floor(elapsedMs / 60000),
+                threshold: `${effectiveStaleThreshold * 2} minutes (doubled for processing items)`,
               });
             }
           }
