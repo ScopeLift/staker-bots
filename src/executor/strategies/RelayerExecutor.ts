@@ -756,7 +756,7 @@ export class RelayerExecutor implements IExecutor {
         });
 
         // Calculate profit margin amount using basis points
-        const baseAmount = payoutAmount + gasCost; // Always include gas cost
+        const baseAmount = payoutAmount + gasCost;
         const profitMarginAmount =
           (baseAmount * profitMarginBasisPoints) / 10000n;
 
