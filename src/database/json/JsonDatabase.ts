@@ -129,7 +129,7 @@ export class JsonDatabase implements IDatabase {
    * Helper function to serialize data with BigInt support
    * Recursively converts any BigInt values to strings to prevent JSON serialization errors
    */
-  private serializeBigInt(obj: any): any {
+  private serializeBigInt(obj: unknown): unknown {
     if (obj === null || obj === undefined) {
       return obj;
     }
@@ -141,12 +141,12 @@ export class JsonDatabase implements IDatabase {
 
     // Handle arrays
     if (Array.isArray(obj)) {
-      return obj.map(item => this.serializeBigInt(item));
+      return obj.map((item) => this.serializeBigInt(item));
     }
 
     // Handle objects
     if (typeof obj === 'object') {
-      const result: Record<string, any> = {};
+      const result: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(obj)) {
         result[key] = this.serializeBigInt(value);
       }
@@ -165,10 +165,10 @@ export class JsonDatabase implements IDatabase {
       try {
         // Create a temporary file first
         const tempPath = `${this.dbPath}.tmp`;
-        
+
         // Serialize the data with BigInt support
         const serializedData = this.serializeBigInt(this.data);
-        
+
         // Use standard JSON.stringify without custom replacer
         await fs.writeFile(tempPath, JSON.stringify(serializedData, null, 2));
 

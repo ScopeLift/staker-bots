@@ -1,4 +1,4 @@
-import { ethers, BigNumberish } from 'ethers';
+import { ethers } from 'ethers';
 import { EventEmitter } from 'events';
 import { IDatabase } from '@/database';
 import { EventProcessor } from './EventProcessor';
@@ -16,7 +16,7 @@ import {
   DepositInitializedEvent,
   DepositUpdatedEvent,
   ClaimerAlteredEvent,
-  RewardClaimedEvent, 
+  RewardClaimedEvent,
   DepositSubsidizedEvent,
   EarningPowerBumpedEvent,
 } from './types';
@@ -29,6 +29,7 @@ import {
 import { EventProcessingError, MonitorError } from '@/configuration/errors';
 import { stakerAbi } from '@/configuration/abis';
 import { ErrorLogger } from '@/configuration/errorLogger';
+import { Deposit } from '@/database/interfaces/types';
 
 /**
  * Extended MonitorConfig that includes the error logger
@@ -110,10 +111,12 @@ export class StakerMonitor extends EventEmitter {
       }
 
       this.processingPromise = this.processLoop();
-      
+
       // Don't automatically run the deposit discovery scan - it's resource intensive
       // Only run it when explicitly called via discoverMissingDeposits()
-      this.logger.info('Monitor started successfully. Deposit discovery scan can be run manually if needed.');
+      this.logger.info(
+        'Monitor started successfully. Deposit discovery scan can be run manually if needed.',
+      );
     } catch (error) {
       this.logger.error('Failed to start monitor:', { error });
       if (this.errorLogger) {
@@ -270,7 +273,7 @@ export class StakerMonitor extends EventEmitter {
         contract: ethers.Contract,
         eventName: string,
         fromBlock: number,
-        toBlock: number
+        toBlock: number,
       ) => {
         try {
           const filter = contract.filters[eventName];
@@ -279,7 +282,9 @@ export class StakerMonitor extends EventEmitter {
           }
           return [];
         } catch (error) {
-          this.logger.warn(`Failed to query ${eventName} events: ${error instanceof Error ? error.message : String(error)}`);
+          this.logger.warn(
+            `Failed to query ${eventName} events: ${error instanceof Error ? error.message : String(error)}`,
+          );
           return [];
         }
       };
@@ -304,14 +309,34 @@ export class StakerMonitor extends EventEmitter {
         safeQueryFilter(this.contract, 'StakeDeposited', fromBlock, toBlock),
         safeQueryFilter(this.contract, 'StakeWithdrawn', fromBlock, toBlock),
         safeQueryFilter(this.contract, 'DelegateeAltered', fromBlock, toBlock),
-        safeQueryFilter(this.lstContract, 'StakedWithAttribution', fromBlock, toBlock),
+        safeQueryFilter(
+          this.lstContract,
+          'StakedWithAttribution',
+          fromBlock,
+          toBlock,
+        ),
         safeQueryFilter(this.lstContract, 'Unstaked', fromBlock, toBlock),
-        safeQueryFilter(this.lstContract, 'DepositInitialized', fromBlock, toBlock),
+        safeQueryFilter(
+          this.lstContract,
+          'DepositInitialized',
+          fromBlock,
+          toBlock,
+        ),
         safeQueryFilter(this.lstContract, 'DepositUpdated', fromBlock, toBlock),
         safeQueryFilter(this.contract, 'ClaimerAltered', fromBlock, toBlock),
         safeQueryFilter(this.contract, 'RewardClaimed', fromBlock, toBlock),
-        safeQueryFilter(this.lstContract, 'DepositSubsidized', fromBlock, toBlock),
-        safeQueryFilter(this.contract, 'EarningPowerBumped', fromBlock, toBlock),
+        safeQueryFilter(
+          this.lstContract,
+          'DepositSubsidized',
+          fromBlock,
+          toBlock,
+        ),
+        safeQueryFilter(
+          this.contract,
+          'EarningPowerBumped',
+          fromBlock,
+          toBlock,
+        ),
         safeQueryFilter(this.contract, 'RewardNotified', fromBlock, toBlock),
       ]);
 
@@ -540,7 +565,14 @@ export class StakerMonitor extends EventEmitter {
       // Process earning power bumped events
       if (events.earningPowerBumped) {
         const event = events.earningPowerBumped;
-        const { depositId, 1: oldEarningPower, 2: newEarningPower, 3: bumper, 4: tipReceiver, 5: tipAmount } = event.args;
+        const {
+          depositId,
+          1: oldEarningPower,
+          2: newEarningPower,
+          3: bumper,
+          4: tipReceiver,
+          5: tipAmount,
+        } = event.args;
         await this.handleEarningPowerBumped({
           depositId: depositId.toString(),
           oldEarningPower,
@@ -607,10 +639,13 @@ export class StakerMonitor extends EventEmitter {
               // Use the owner from the contract if available
               const contractOwner = contractData[0];
               if (contractOwner !== ownerAddress) {
-                this.logger.info(`Correcting owner address for deposit ${depositIdString}`, {
-                  eventOwner: ownerAddress,
-                  contractOwner
-                });
+                this.logger.info(
+                  `Correcting owner address for deposit ${depositIdString}`,
+                  {
+                    eventOwner: ownerAddress,
+                    contractOwner,
+                  },
+                );
                 await this.handleStakeDeposited({
                   depositId: depositIdString,
                   ownerAddress: contractOwner,
@@ -625,7 +660,10 @@ export class StakerMonitor extends EventEmitter {
             }
           }
         } catch (error) {
-          this.logger.warn(`Could not verify owner for deposit ${depositIdString}`, { error });
+          this.logger.warn(
+            `Could not verify owner for deposit ${depositIdString}`,
+            { error },
+          );
           // Continue with event data if contract check fails
         }
 
@@ -724,14 +762,18 @@ export class StakerMonitor extends EventEmitter {
   /**
    * Fetches deposit data from the contract and syncs it to the database.
    * Returns the deposit data if successful.
-   * 
+   *
    * @param depositId - The ID of the deposit to fetch and sync
    * @returns The deposit data from the database after syncing
    */
-  private async fetchAndSyncDeposit(depositId: string): Promise<any> {
+  private async fetchAndSyncDeposit(
+    depositId: string,
+  ): Promise<Deposit | null> {
     try {
       if (!this.contract || typeof this.contract.deposits !== 'function') {
-        throw new Error('Contract not properly initialized or missing deposits method');
+        throw new Error(
+          'Contract not properly initialized or missing deposits method',
+        );
       }
 
       // Get deposit data from contract
@@ -740,7 +782,7 @@ export class StakerMonitor extends EventEmitter {
         throw new Error(`No deposit found on-chain for ID ${depositId}`);
       }
 
-      const [owner, balance, earningPower, delegatee, claimer] = depositData;
+      const { owner, amount, earningPower, delegatee } = depositData;
 
       // Create or update the deposit in the database
       const depositRecord = {
@@ -748,7 +790,7 @@ export class StakerMonitor extends EventEmitter {
         owner_address: owner,
         depositor_address: owner, // Use owner as depositor since we don't have the original
         delegatee_address: delegatee || DEFAULT_DELEGATEE_ADDRESS,
-        amount: balance?.toString() || '0',
+        amount: amount?.toString() || '0',
         earning_power: earningPower?.toString() || '0',
         updated_at: new Date().toISOString(),
       };
@@ -759,7 +801,7 @@ export class StakerMonitor extends EventEmitter {
         this.logger.info('Updated deposit from contract data', {
           depositId,
           owner,
-          balance: balance?.toString(),
+          balance: amount?.toString(),
         });
       } else {
         await this.db.createDeposit({
@@ -769,7 +811,7 @@ export class StakerMonitor extends EventEmitter {
         this.logger.info('Created new deposit from contract data', {
           depositId,
           owner,
-          balance: balance?.toString(),
+          balance: amount?.toString(),
         });
       }
 
@@ -795,19 +837,24 @@ export class StakerMonitor extends EventEmitter {
     await this.withRetry(async () => {
       try {
         let deposit = await this.db.getDeposit(event.depositId);
-        
+
         // If deposit not found, try to fetch from contract
         if (!deposit) {
-          this.logger.info('Deposit not found in database, fetching from contract', {
-            depositId: event.depositId,
-          });
+          this.logger.info(
+            'Deposit not found in database, fetching from contract',
+            {
+              depositId: event.depositId,
+            },
+          );
           deposit = await this.fetchAndSyncDeposit(event.depositId);
         }
 
         if (!deposit) {
           throw new EventProcessingError(
             EVENT_TYPES.STAKE_WITHDRAWN,
-            new Error(`Failed to process StakeWithdrawn event - deposit ${event.depositId} not found`),
+            new Error(
+              `Failed to process StakeWithdrawn event - deposit ${event.depositId} not found`,
+            ),
             { event },
           );
         }
@@ -848,19 +895,24 @@ export class StakerMonitor extends EventEmitter {
         }
 
         let deposit = await this.db.getDeposit(event.depositId);
-        
+
         // If deposit not found, try to fetch from contract
         if (!deposit) {
-          this.logger.info('Deposit not found in database, fetching from contract', {
-            depositId: event.depositId,
-          });
+          this.logger.info(
+            'Deposit not found in database, fetching from contract',
+            {
+              depositId: event.depositId,
+            },
+          );
           deposit = await this.fetchAndSyncDeposit(event.depositId);
         }
 
         if (!deposit) {
           throw new EventProcessingError(
             EVENT_TYPES.DELEGATEE_ALTERED,
-            new Error(`Failed to process DelegateeAltered event - deposit ${event.depositId} not found`),
+            new Error(
+              `Failed to process DelegateeAltered event - deposit ${event.depositId} not found`,
+            ),
             { event },
           );
         }
@@ -996,29 +1048,37 @@ export class StakerMonitor extends EventEmitter {
    * Handles a DepositSubsidized event.
    * Creates or updates a deposit record for subsidized deposits.
    */
-  private async handleDepositSubsidized(event: DepositSubsidizedEvent): Promise<void> {
+  private async handleDepositSubsidized(
+    event: DepositSubsidizedEvent,
+  ): Promise<void> {
     await this.withRetry(async () => {
       try {
         let deposit = await this.db.getDeposit(event.depositId);
 
         // If deposit not found, try to fetch from contract
         if (!deposit) {
-          this.logger.info('Deposit not found in database, fetching from contract', {
-            depositId: event.depositId,
-          });
+          this.logger.info(
+            'Deposit not found in database, fetching from contract',
+            {
+              depositId: event.depositId,
+            },
+          );
           deposit = await this.fetchAndSyncDeposit(event.depositId);
         }
 
         if (!deposit) {
           throw new EventProcessingError(
             EVENT_TYPES.DEPOSIT_SUBSIDIZED,
-            new Error(`Failed to process DepositSubsidized event - deposit ${event.depositId} not found`),
+            new Error(
+              `Failed to process DepositSubsidized event - deposit ${event.depositId} not found`,
+            ),
             { event },
           );
         }
 
         // Update existing deposit with new amount
-        const newAmount = BigInt(deposit.amount) + BigInt(event.amount.toString());
+        const newAmount =
+          BigInt(deposit.amount) + BigInt(event.amount.toString());
         await this.db.updateDeposit(event.depositId, {
           amount: newAmount.toString(),
           updated_at: new Date().toISOString(),
@@ -1051,23 +1111,30 @@ export class StakerMonitor extends EventEmitter {
    * Handles a ClaimerAltered event.
    * Updates the deposit record with new claimer information.
    */
-  private async handleClaimerAltered(event: ClaimerAlteredEvent): Promise<void> {
+  private async handleClaimerAltered(
+    event: ClaimerAlteredEvent,
+  ): Promise<void> {
     await this.withRetry(async () => {
       try {
         let deposit = await this.db.getDeposit(event.depositId);
 
         // If deposit not found, try to fetch from contract
         if (!deposit) {
-          this.logger.info('Deposit not found in database, fetching from contract', {
-            depositId: event.depositId,
-          });
+          this.logger.info(
+            'Deposit not found in database, fetching from contract',
+            {
+              depositId: event.depositId,
+            },
+          );
           deposit = await this.fetchAndSyncDeposit(event.depositId);
         }
 
         if (!deposit) {
           throw new EventProcessingError(
             EVENT_TYPES.CLAIMER_ALTERED,
-            new Error(`Failed to process ClaimerAltered event - deposit ${event.depositId} not found`),
+            new Error(
+              `Failed to process ClaimerAltered event - deposit ${event.depositId} not found`,
+            ),
             { event },
           );
         }
@@ -1113,16 +1180,21 @@ export class StakerMonitor extends EventEmitter {
 
         // If deposit not found, try to fetch from contract
         if (!deposit) {
-          this.logger.info('Deposit not found in database, fetching from contract', {
-            depositId: event.depositId,
-          });
+          this.logger.info(
+            'Deposit not found in database, fetching from contract',
+            {
+              depositId: event.depositId,
+            },
+          );
           deposit = await this.fetchAndSyncDeposit(event.depositId);
         }
 
         if (!deposit) {
           throw new EventProcessingError(
             EVENT_TYPES.REWARD_CLAIMED,
-            new Error(`Failed to process RewardClaimed event - deposit ${event.depositId} not found`),
+            new Error(
+              `Failed to process RewardClaimed event - deposit ${event.depositId} not found`,
+            ),
             { event },
           );
         }
@@ -1161,23 +1233,30 @@ export class StakerMonitor extends EventEmitter {
    * Handles an EarningPowerBumped event.
    * Updates the deposit record with the new earning power.
    */
-  private async handleEarningPowerBumped(event: EarningPowerBumpedEvent): Promise<void> {
+  private async handleEarningPowerBumped(
+    event: EarningPowerBumpedEvent,
+  ): Promise<void> {
     await this.withRetry(async () => {
       try {
         let deposit = await this.db.getDeposit(event.depositId);
 
         // If deposit not found, try to fetch from contract
         if (!deposit) {
-          this.logger.info('Deposit not found in database, fetching from contract', {
-            depositId: event.depositId,
-          });
+          this.logger.info(
+            'Deposit not found in database, fetching from contract',
+            {
+              depositId: event.depositId,
+            },
+          );
           deposit = await this.fetchAndSyncDeposit(event.depositId);
         }
 
         if (!deposit) {
           throw new EventProcessingError(
             EVENT_TYPES.EARNING_POWER_BUMPED,
-            new Error(`Failed to process EarningPowerBumped event - deposit ${event.depositId} not found`),
+            new Error(
+              `Failed to process EarningPowerBumped event - deposit ${event.depositId} not found`,
+            ),
             { event },
           );
         }
@@ -1199,7 +1278,7 @@ export class StakerMonitor extends EventEmitter {
 
         // Emit the event for other components to handle
         this.emit(MONITOR_EVENTS.EARNING_POWER_BUMPED, event);
-        
+
         return {
           success: true,
           blockNumber: event.blockNumber,
@@ -1267,7 +1346,7 @@ export class StakerMonitor extends EventEmitter {
       // Get existing deposits from database
       const existingDepositIds = new Set<string>();
       const deposits = await this.db.getAllDeposits();
-      deposits.forEach(deposit => existingDepositIds.add(deposit.deposit_id));
+      deposits.forEach((deposit) => existingDepositIds.add(deposit.deposit_id));
 
       this.logger.info(`Found ${existingDepositIds.size} deposits in database`);
 
@@ -1275,60 +1354,66 @@ export class StakerMonitor extends EventEmitter {
       let currentId = 1;
       let emptyCounter = 0;
       const MAX_EMPTY_TO_STOP = 10; // Very conservative - only stop after many empty deposits
-      
+
       this.logger.info(`Starting sequential deposit scan from ID ${currentId}`);
-      
+
       // Keep scanning until we find many consecutive completely empty deposits
       while (emptyCounter < MAX_EMPTY_TO_STOP) {
         try {
           if (!this.contract || typeof this.contract.deposits !== 'function') {
-            throw new Error('Contract not properly initialized or missing deposits method');
+            throw new Error(
+              'Contract not properly initialized or missing deposits method',
+            );
           }
-          
+
           // Get deposit data from contract
           const deposit = await this.contract.deposits(currentId);
-          
+
           // Extract all fields from the deposit data, always using fallbacks
-          let owner = deposit[0] || ethers.ZeroAddress;
-          let amount = deposit[1] || BigInt(0);
-          let earningPower = deposit[2] || BigInt(0);
-          let delegatee = deposit[3] || ethers.ZeroAddress;
-          let claimer = deposit[4] || owner;
-          
+          const owner = deposit[0] || ethers.ZeroAddress;
+          const amount = deposit[1] || BigInt(0);
+          const earningPower = deposit[2] || BigInt(0);
+          const delegatee = deposit[3] || ethers.ZeroAddress;
+          const claimer = deposit[4] || owner;
+
           // Convert to strings for logging and storage
           const amountStr = amount.toString();
           const earningPowerStr = earningPower.toString();
-          
+
           // Log the deposit data for debugging
           this.logger.info(`Deposit ${currentId} data:`, {
             owner,
             amount: amountStr,
             earningPower: earningPowerStr,
             delegatee,
-            claimer
+            claimer,
           });
-          
+
           // Check if this is a completely empty deposit or has zero addresses for important fields
-          const isCompletelyEmpty = 
-            owner === ethers.ZeroAddress && 
-            amountStr === '0' && 
+          const isCompletelyEmpty =
+            owner === ethers.ZeroAddress &&
+            amountStr === '0' &&
             earningPowerStr === '0' &&
             delegatee === ethers.ZeroAddress;
-            
+
           if (isCompletelyEmpty) {
             emptyCounter++;
-            this.logger.info(`Empty deposit at ID ${currentId}, counter: ${emptyCounter}/${MAX_EMPTY_TO_STOP}`);
+            this.logger.info(
+              `Empty deposit at ID ${currentId}, counter: ${emptyCounter}/${MAX_EMPTY_TO_STOP}`,
+            );
           } else {
             // Reset counter when we find a non-empty deposit
             emptyCounter = 0;
-            
+
             // Only add valid deposits - skip deposits with zero owner AND zero delegatee
-            const isValidDeposit = !(owner === ethers.ZeroAddress && delegatee === ethers.ZeroAddress);
-            
+            const isValidDeposit = !(
+              owner === ethers.ZeroAddress && delegatee === ethers.ZeroAddress
+            );
+
             if (isValidDeposit) {
               // ALWAYS save/update the deposit if it's valid
               const depositIdStr = currentId.toString();
-              
+
               if (!existingDepositIds.has(depositIdStr)) {
                 // Create new deposit record
                 await this.db.createDeposit({
@@ -1341,12 +1426,14 @@ export class StakerMonitor extends EventEmitter {
                   created_at: new Date().toISOString(),
                   updated_at: new Date().toISOString(),
                 });
-                
-                this.logger.info(`Added deposit ID ${depositIdStr} to database`);
+
+                this.logger.info(
+                  `Added deposit ID ${depositIdStr} to database`,
+                );
               } else {
                 // Always update existing deposits to ensure we have latest data
                 const existingDeposit = await this.db.getDeposit(depositIdStr);
-                
+
                 if (existingDeposit) {
                   await this.db.updateDeposit(depositIdStr, {
                     owner_address: owner,
@@ -1356,30 +1443,36 @@ export class StakerMonitor extends EventEmitter {
                     earning_power: earningPowerStr,
                     updated_at: new Date().toISOString(),
                   });
-                  
-                  this.logger.info(`Updated deposit ID ${depositIdStr} in database`);
+
+                  this.logger.info(
+                    `Updated deposit ID ${depositIdStr} in database`,
+                  );
                 }
               }
             } else {
-              this.logger.info(`Skipping deposit ID ${currentId} - invalid zero addresses for both owner and delegatee`);
+              this.logger.info(
+                `Skipping deposit ID ${currentId} - invalid zero addresses for both owner and delegatee`,
+              );
             }
           }
-          
         } catch (error) {
-          this.logger.error(`Error processing deposit ID ${currentId}:`, { error });
+          this.logger.error(`Error processing deposit ID ${currentId}:`, {
+            error,
+          });
           // Still increment counter on errors - might be a non-existent deposit
           emptyCounter++;
         }
-        
+
         // Always move to next deposit ID
         currentId++;
-        
+
         // Add a small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      
-      this.logger.info(`Deposit discovery completed, processed IDs 1-${currentId - 1}`);
-      
+
+      this.logger.info(
+        `Deposit discovery completed, processed IDs 1-${currentId - 1}`,
+      );
     } catch (error) {
       this.logger.error('Error in deposit discovery:', { error });
       if (this.errorLogger) {

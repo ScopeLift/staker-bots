@@ -39,7 +39,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
   private gasPriceCache: { price: bigint; timestamp: number } | null = null;
-  private priceCache: { 
+  private priceCache: {
     rewardToken: TokenPrice;
     gasToken: TokenPrice;
     timestamp: number;
@@ -1009,7 +1009,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
     // Fetch fresh prices
     const prices = await this.priceFeed.getTokenPrices();
-    
+
     // Update cache
     this.priceCache = {
       ...prices,

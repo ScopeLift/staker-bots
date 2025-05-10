@@ -1120,9 +1120,9 @@ export async function cleanupStaleTransactions(
 ): Promise<{ staleCount: number; cleanedIds: string[] }> {
   const staleIds: string[] = [];
   const now = new Date();
-  
+
   // Increase the minimum stale threshold to 10 minutes
-  const effectiveStaleThreshold = Math.max(10, staleThresholdMinutes); 
+  const effectiveStaleThreshold = Math.max(10, staleThresholdMinutes);
   const staleThresholdMs = effectiveStaleThreshold * 60 * 1000;
   let databaseStaleCount = 0;
 
@@ -1141,12 +1141,13 @@ export async function cleanupStaleTransactions(
 
     // Only remove queued transactions if they're very stale (> staleThresholdMs)
     // For pending transactions, be more conservative and double the threshold
-    const isStale = tx.status === TransactionStatus.QUEUED 
-      ? elapsedMs > staleThresholdMs
-      : (tx.status === TransactionStatus.PENDING 
-          ? elapsedMs > (staleThresholdMs * 2) // Double threshold for pending transactions
-          : elapsedMs > staleThresholdMs); 
-    
+    const isStale =
+      tx.status === TransactionStatus.QUEUED
+        ? elapsedMs > staleThresholdMs
+        : tx.status === TransactionStatus.PENDING
+          ? elapsedMs > staleThresholdMs * 2 // Double threshold for pending transactions
+          : elapsedMs > staleThresholdMs;
+
     if (isStale) {
       staleIds.push(txId);
 
@@ -1157,9 +1158,10 @@ export async function cleanupStaleTransactions(
           createdAt: txTime.toISOString(),
           ageMinutes: Math.floor(elapsedMs / 60000),
           depositIds: tx.depositIds.map(String),
-          threshold: tx.status === TransactionStatus.PENDING 
-            ? `${effectiveStaleThreshold * 2} minutes (doubled for pending tx)`
-            : `${effectiveStaleThreshold} minutes`,
+          threshold:
+            tx.status === TransactionStatus.PENDING
+              ? `${effectiveStaleThreshold * 2} minutes (doubled for pending tx)`
+              : `${effectiveStaleThreshold} minutes`,
         });
       }
 
