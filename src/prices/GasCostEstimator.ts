@@ -2,11 +2,18 @@ import { ethers } from 'ethers';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { CoinMarketCapFeed } from './CoinmarketcapFeed';
 import { CONFIG } from '../configuration';
-import { EXECUTOR } from '@/configuration/constants';
+
+interface PriceCache {
+  ethPrice: bigint;
+  tokenPrice: bigint;
+  timestamp: number;
+}
 
 export class GasCostEstimator {
   private readonly logger: Logger;
   private readonly priceFeed: CoinMarketCapFeed;
+  private priceCache: PriceCache | null = null;
+  private readonly CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
   
   // Constants for fallback values and minimums
   private static readonly FALLBACK_ETH_PRICE_USD = 2500;
@@ -41,22 +48,68 @@ export class GasCostEstimator {
     }
   }
 
+  private isCacheValid(): boolean {
+    if (!this.priceCache) return false;
+    const now = Date.now();
+    return (now - this.priceCache.timestamp) < this.CACHE_DURATION;
+  }
+
   private async calculateTokenPriceRatio(): Promise<{
     ethPrice: bigint;
     tokenPrice: bigint;
   }> {
+    // Check cache first
+    if (this.isCacheValid() && this.priceCache) {
+      this.logger.info('Using cached price data', {
+        ethPrice: this.priceCache.ethPrice.toString(),
+        tokenPrice: this.priceCache.tokenPrice.toString(),
+        cacheAge: `${(Date.now() - this.priceCache.timestamp) / 1000}s`
+      });
+      return {
+        ethPrice: this.priceCache.ethPrice,
+        tokenPrice: this.priceCache.tokenPrice
+      };
+    }
+
     try {
       const prices = await this.priceFeed.getTokenPrices();
-      return {
+      const priceData = {
         ethPrice: BigInt(Math.floor(prices.gasToken.usd * 1e18)),
         tokenPrice: BigInt(Math.floor(prices.rewardToken.usd * 1e18))
       };
+
+      // Update cache
+      this.priceCache = {
+        ...priceData,
+        timestamp: Date.now()
+      };
+
+      this.logger.info('Updated price cache', {
+        ethPrice: prices.gasToken.usd,
+        tokenPrice: prices.rewardToken.usd,
+        timestamp: new Date().toISOString()
+      });
+
+      return priceData;
     } catch (error) {
-      this.logger.warn('Using fallback prices', {
+      // If we have stale cache, use it as fallback before using hardcoded values
+      if (this.priceCache) {
+        this.logger.warn('API error, using stale cache as fallback', {
+          error: error instanceof Error ? error.message : String(error),
+          cacheAge: `${(Date.now() - this.priceCache.timestamp) / 1000}s`
+        });
+        return {
+          ethPrice: this.priceCache.ethPrice,
+          tokenPrice: this.priceCache.tokenPrice
+        };
+      }
+
+      this.logger.warn('Using fallback prices, no cache available', {
         eth: GasCostEstimator.FALLBACK_ETH_PRICE_USD,
         token: GasCostEstimator.FALLBACK_TOKEN_PRICE_USD,
         error: error instanceof Error ? error.message : String(error)
       });
+      
       return {
         ethPrice: BigInt(Math.floor(GasCostEstimator.FALLBACK_ETH_PRICE_USD * 1e18)),
         tokenPrice: BigInt(Math.floor(GasCostEstimator.FALLBACK_TOKEN_PRICE_USD * 1e18))
@@ -80,7 +133,7 @@ export class GasCostEstimator {
       // Calculate base gas cost using provided gasLimit
       const gasCostWei = gasPriceWei * gasLimit;
       
-      // Get price ratio
+      // Get price ratio with caching
       const { ethPrice, tokenPrice } = await this.calculateTokenPriceRatio();
       
       // Calculate cost in tokens
@@ -95,7 +148,8 @@ export class GasCostEstimator {
         gasPriceGwei: Number(gasPriceWei) / 1e9,
         providedGasLimit: gasLimit.toString(),
         ethPriceUSD: Number(ethPrice) / 1e18,
-        tokenPriceUSD: Number(tokenPrice) / 1e18
+        tokenPriceUSD: Number(tokenPrice) / 1e18,
+        usingCache: this.isCacheValid()
       });
 
       return costInRewardTokens > minimumCost ? costInRewardTokens : minimumCost;
