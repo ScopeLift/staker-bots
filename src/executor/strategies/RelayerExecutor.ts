@@ -473,12 +473,6 @@ export class RelayerExecutor implements IExecutor {
         const signerAddress = await this.relaySigner.getAddress();
         const lstContractAddress = this.lstContract.target.toString();
 
-        this.logger.info('Checking token allowance', {
-          signerAddress,
-          lstContractAddress,
-          rewardToken: rewardTokenAddress,
-        });
-
         const allowance = BigInt(
           await rewardTokenContract.allowance(
             signerAddress,
@@ -508,12 +502,6 @@ export class RelayerExecutor implements IExecutor {
             lstContractAddress,
             approvalAmount,
           );
-
-          this.logger.info('Approval transaction submitted', {
-            hash: approveTx.hash,
-            gasLimit: approveTx.gasLimit.toString(),
-          });
-
           // Wait for the transaction to be mined
           try {
             this.logger.info('Waiting for approval transaction...');
@@ -632,25 +620,16 @@ export class RelayerExecutor implements IExecutor {
           depositIds.length,
           this.logger,
         );
-
-        this.logger.info('Gas limit for transaction', {
-          originalEstimate: gasEstimate.toString(),
-          baseGasLimit: baseGasLimit.toString(),
-          finalGasLimit: calculatedGasLimit.toString(),
-          depositCount: depositIds.length,
-        });
-
         // Calculate real gas cost in reward tokens
         let gasCost: bigint;
         
         // Only estimate gas cost if includeGasCost is enabled
         if (CONFIG.profitability.includeGasCost) {
           try {
-            // Use the GasCostEstimator to get a real gas cost estimate based on MAX_GAS_LIMIT
-            // This ensures we calculate costs based on the worst-case scenario
+            // Use the GasCostEstimator to get a real gas cost estimate based on calculated gas limit
             gasCost = await this.gasCostEstimator.estimateGasCostInRewardToken(
               this.relayProvider as unknown as ethers.Provider,
-              EXECUTOR.GAS.MAX_GAS_LIMIT
+              calculatedGasLimit
             );
             
             // Cap gas cost to prevent excessive thresholds - max 20% of payout (reduced from 25%)
@@ -661,16 +640,14 @@ export class RelayerExecutor implements IExecutor {
                 cappedGasCost: maxGasCost.toString(),
                 payoutAmount: payoutAmount.toString(),
                 ratio: 'Max 20% of payout',
-                worstCaseGasLimit: EXECUTOR.GAS.MAX_GAS_LIMIT.toString(),
-                actualGasLimit: calculatedGasLimit.toString()
+                calculatedGasLimit: calculatedGasLimit.toString()
               });
               gasCost = maxGasCost;
             }
             
             this.logger.info('Calculated gas cost in reward tokens:', {
               gasCost: gasCost.toString(),
-              gasLimit: calculatedGasLimit.toString(),
-              worstCaseGasLimit: EXECUTOR.GAS.MAX_GAS_LIMIT.toString(),
+              gasLimit: calculatedGasLimit.toString()
             });
           } catch (error) {
             this.logger.error('Failed to estimate gas cost in reward tokens', {
@@ -701,13 +678,7 @@ export class RelayerExecutor implements IExecutor {
           }
         } else {
           // If gas cost estimation is disabled, use a minimal amount (0.01% of payout)
-          gasCost = payoutAmount / 10000n;
-          this.logger.info('Gas cost estimation disabled, using minimal value:', {
-            gasCost: gasCost.toString(),
-            payoutAmount: payoutAmount.toString(),
-            percentage: '0.01%',
-            includeGasCostFlag: CONFIG.profitability.includeGasCost
-          });
+          gasCost = payoutAmount / 100n;
         }
 
         // Get profit margin directly from CONFIG to ensure we use the environment variable value
@@ -725,14 +696,6 @@ export class RelayerExecutor implements IExecutor {
           });
           throw error;
         }
-
-        // Log the actual profit margin being used
-        this.logger.info('Profit margin configuration:', {
-          configuredValue: profitMargin,
-          asPercentage: `${profitMargin}%`,
-          envVariable: 'PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT',
-          actualValue: process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT
-        });
 
         // Scale profit margin based on deposit count, but NEVER go below configured minimum
         // Base rate is the configured minimum profit margin
@@ -779,6 +742,8 @@ export class RelayerExecutor implements IExecutor {
         const baseAmount = payoutAmount + (CONFIG.profitability.includeGasCost ? gasCost : 0n);
         
         // Calculate minimum required profit
+        // If profitMargin is 1 (100%), this calculates:
+        // baseAmount * 100 / 10000 = 1% of baseAmount
         const minProfitAmount = (baseAmount * BigInt(Math.floor(profitMargin * 100))) / 10000n;
         
         // Calculate scaled profit margin amount (may be higher than minimum)
