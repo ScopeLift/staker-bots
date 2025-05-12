@@ -59,6 +59,19 @@ export const CONFIG = {
       process.env.EXECUTOR_STALE_TX_THRESHOLD_MINUTES || '5',
       10,
     ),
+    swap: {
+      enabled: process.env.EXECUTOR_SWAP_TO_ETH === 'true',
+      uniswapRouterAddress: process.env.UNISWAP_ROUTER_ADDRESS || '',
+      slippageTolerance: parseFloat(process.env.SWAP_SLIPPAGE_TOLERANCE || '0.5'),
+      deadlineMinutes: parseInt(process.env.SWAP_DEADLINE_MINUTES || '10'),
+      minAmountIn: process.env.SWAP_MIN_AMOUNT_IN 
+        ? BigInt(process.env.SWAP_MIN_AMOUNT_IN)
+        : ethers.parseUnits('1', 18), // Default 1 token
+      maxAmountIn: process.env.SWAP_MAX_AMOUNT_IN
+        ? BigInt(process.env.SWAP_MAX_AMOUNT_IN)
+        : ethers.parseUnits('1000', 18), // Default 1000 tokens
+      tokenDecimals: parseInt(process.env.SWAP_TOKEN_DECIMALS || '18'),
+    },
   },
   defender: {
     apiKey: process.env.DEFENDER_API_KEY || '',
@@ -118,6 +131,13 @@ export const CONFIG = {
     gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer
     minEarningPower: BigInt(process.env.GOVLST_MIN_EARNING_POWER || 10000), // Minimum earning power threshold
     rewardTokenDecimals: parseInt(process.env.GOVLST_REWARD_TOKEN_DECIMALS || '18', 10), // Default to 18 decimals
+  },
+  tenderly: {
+    useSimulation: process.env.TENDERLY_USE_SIMULATE === 'true',
+    accessKey: process.env.TENDERLY_ACCESS_KEY || '',
+    accountName: process.env.TENDERLY_ACCOUNT_NAME || '',
+    projectName: process.env.TENDERLY_PROJECT_NAME || '',
+    networkId: process.env.TENDERLY_NETWORK_ID || '1', // Default to mainnet (1)
   },
 } as const;
 

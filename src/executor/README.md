@@ -387,3 +387,59 @@ await executor.queueTransaction(depositIds, profitability)
 - Batch processing is optimized for the Defender infrastructure
 
 ## See root README for system-level diagrams and configuration.
+
+# Executor Module
+
+The executor module is responsible for executing transactions in the staker-bots system.
+
+## Strategies
+
+### Swap Strategy
+
+The swap strategy allows automatic conversion of tokens to ETH using Uniswap V2. This is useful for converting accumulated reward tokens into ETH.
+
+#### Configuration
+
+Copy the environment variables from `strategies/swap.env.example` to your `.env` file and adjust as needed:
+
+```env
+# Enable/disable automatic token swapping to ETH
+EXECUTOR_SWAP_TO_ETH=false
+
+# Uniswap V2 Router address (mainnet)
+UNISWAP_ROUTER_ADDRESS=0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+
+# Maximum allowed slippage in percentage (e.g., 0.5 for 0.5%)
+SWAP_SLIPPAGE_TOLERANCE=0.5
+
+# Number of minutes until the swap transaction expires
+SWAP_DEADLINE_MINUTES=10
+
+# Minimum amount of tokens required to trigger a swap (in wei)
+SWAP_MIN_AMOUNT_IN=1000000000000000000 # 1 token
+
+# Maximum amount of tokens to swap in a single transaction (in wei)
+SWAP_MAX_AMOUNT_IN=1000000000000000000000 # 1000 tokens
+
+# Number of decimals for the token being swapped
+SWAP_TOKEN_DECIMALS=18
+```
+
+#### Features
+
+- Automatic token to ETH swaps via Uniswap V2
+- Configurable slippage tolerance
+- Minimum and maximum swap amounts
+- Transaction deadline protection
+- Uses OpenZeppelin Defender Relayer for secure transaction execution
+- Automatic approval handling
+
+#### Usage
+
+The swap strategy will automatically:
+
+1. Check if token balance exceeds minimum amount
+2. Get optimal swap path and quote from Uniswap
+3. Apply slippage tolerance to protect against price movement
+4. Execute swap with deadline protection
+5. Handle token approvals if needed

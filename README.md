@@ -438,6 +438,25 @@ LOG_LEVEL=debug
 
 ## Configuration Guide
 
+### Tenderly Transaction Simulation
+
+The system supports transaction simulation using Tenderly's API before sending transactions to the blockchain. This helps prevent wasted gas on transactions that would fail and provides more accurate gas estimates.
+
+```env
+# Tenderly Configuration
+TENDERLY_USE_SIMULATE=true
+TENDERLY_ACCESS_KEY=your_tenderly_access_key
+TENDERLY_ACCOUNT_NAME=your_tenderly_account_name
+TENDERLY_PROJECT_NAME=your_tenderly_project_name
+TENDERLY_NETWORK_ID=1  # Default is 1 for mainnet, use appropriate ID for other networks
+```
+
+Benefits of transaction simulation:
+- Prevents failed transactions by simulating them before sending
+- Provides more accurate gas estimates for profitability calculations
+- Offers detailed transaction execution traces for debugging
+- Falls back gracefully to standard estimation if simulation is unavailable
+
 ### Detailed Configuration Examples
 
 #### 1. Development Environment (Local Testing)
