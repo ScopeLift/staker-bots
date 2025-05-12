@@ -1,17 +1,17 @@
-import { ethers } from 'ethers'
-import { DatabaseWrapper } from '@/database'
-import { ConsoleLogger } from '@/monitor/logging'
-import { GovLstProfitabilityEngineWrapper } from '@/profitability'
-import { ExecutorWrapper } from '@/executor'
-import { ExecutorType } from '@/executor/interfaces/types'
-import { CONFIG } from '@/configuration'
-import { IExecutor } from '@/executor/interfaces/IExecutor'
-import { govlstAbi, stakerAbi } from '@/configuration/abis'
+import { ethers } from 'ethers';
+import { DatabaseWrapper } from '@/database';
+import { ConsoleLogger } from '@/monitor/logging';
+import { GovLstProfitabilityEngineWrapper } from '@/profitability';
+import { ExecutorWrapper } from '@/executor';
+import { ExecutorType } from '@/executor/interfaces/types';
+import { CONFIG } from '@/configuration';
+import { IExecutor } from '@/executor/interfaces/IExecutor';
+import { govlstAbi, stakerAbi } from '@/configuration/abis';
 import {
   TransactionQueueStatus,
   ProcessingQueueStatus,
-} from '@/database/interfaces/types'
-import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types'
+} from '@/database/interfaces/types';
+import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 
 // Test constants
 const TEST_DEPOSITS = [
@@ -42,85 +42,88 @@ const TEST_DEPOSITS = [
     block_number: 7876306,
     transaction_hash: '0x789',
   },
-]
+];
 
 describe('GovLst Profitability Executor Integration', () => {
-  let database: DatabaseWrapper
-  let provider: ethers.JsonRpcProvider
-  let stakerContract: ethers.Contract & { unclaimedReward(depositId: string): Promise<bigint> }
-  let govLstContract: ethers.Contract
-  let lstContract: ethers.Contract
-  let executor: ExecutorWrapper
-  let profitabilityEngine: GovLstProfitabilityEngineWrapper
-  let logger: ConsoleLogger
+  let database: DatabaseWrapper;
+  let provider: ethers.JsonRpcProvider;
+  let stakerContract: ethers.Contract & {
+    unclaimedReward(depositId: string): Promise<bigint>;
+  };
+  let govLstContract: ethers.Contract;
+  let lstContract: ethers.Contract;
+  let executor: ExecutorWrapper;
+  let profitabilityEngine: GovLstProfitabilityEngineWrapper;
+  let logger: ConsoleLogger;
 
   beforeAll(async () => {
-    logger = new ConsoleLogger('info')
+    logger = new ConsoleLogger('info');
 
     // Initialize database
-    database = new DatabaseWrapper({ type: 'json' })
-    
+    database = new DatabaseWrapper({ type: 'json' });
+
     // Initialize provider
-    provider = new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl)
-    const network = await provider.getNetwork()
-    expect(network.chainId).toBeGreaterThan(0)
+    provider = new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
+    const network = await provider.getNetwork();
+    expect(network.chainId).toBeGreaterThan(0);
 
     // Initialize contracts
     stakerContract = new ethers.Contract(
       '0xdFAa0c8116bAFc8a9F474DFa6A5a28dB0BbCF556',
       stakerAbi,
-      provider
-    ) as typeof stakerContract
+      provider,
+    ) as typeof stakerContract;
 
     govLstContract = new ethers.Contract(
       '0x6fbb31f8c459d773a8d0f67c8c055a70d943c1f1',
       govlstAbi,
-      provider
-    )
+      provider,
+    );
 
     lstContract = new ethers.Contract(
       CONFIG.monitor.lstAddress,
       govlstAbi,
-      provider
-    )
+      provider,
+    );
 
     // Initialize executor
-    const executorType = CONFIG.executor.executorType || 'wallet'
-    const executorConfig = executorType === 'relayer' 
-      ? {
-          apiKey: process.env.DEFENDER_API_KEY || '',
-          apiSecret: process.env.DEFENDER_SECRET_KEY || '',
-          address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
-          minBalance: BigInt(0),
-          maxPendingTransactions: 5,
-          maxQueueSize: 100,
-          minConfirmations: 2,
-          maxRetries: 3,
-          retryDelayMs: 5000,
-          transferOutThreshold: BigInt(0),
-          gasBoostPercentage: 30,
-          concurrentTransactions: 3,
-          gasPolicy: {
-            maxFeePerGas: BigInt(0),
-            maxPriorityFeePerGas: BigInt(0),
-          },
-        }
-      : {
-          wallet: {
-            privateKey: CONFIG.executor.privateKey,
-            minBalance: ethers.parseEther('0.01'),
+    const executorType = CONFIG.executor.executorType || 'wallet';
+    const executorConfig =
+      executorType === 'relayer'
+        ? {
+            apiKey: process.env.DEFENDER_API_KEY || '',
+            apiSecret: process.env.DEFENDER_SECRET_KEY || '',
+            address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
+            minBalance: BigInt(0),
             maxPendingTransactions: 5,
-          },
-          defaultTipReceiver: CONFIG.executor.tipReceiver,
-        }
+            maxQueueSize: 100,
+            minConfirmations: 2,
+            maxRetries: 3,
+            retryDelayMs: 5000,
+            transferOutThreshold: BigInt(0),
+            gasBoostPercentage: 30,
+            concurrentTransactions: 3,
+            gasPolicy: {
+              maxFeePerGas: BigInt(0),
+              maxPriorityFeePerGas: BigInt(0),
+            },
+          }
+        : {
+            wallet: {
+              privateKey: CONFIG.executor.privateKey,
+              minBalance: ethers.parseEther('0.01'),
+              maxPendingTransactions: 5,
+            },
+            defaultTipReceiver: CONFIG.executor.tipReceiver,
+          };
 
     executor = new ExecutorWrapper(
       lstContract,
       provider,
       executorType === 'relayer' ? ExecutorType.DEFENDER : ExecutorType.WALLET,
       executorConfig,
-      database
-    )
+      database,
+    );
 
     // Initialize profitability engine
     profitabilityEngine = new GovLstProfitabilityEngineWrapper(
@@ -139,34 +142,38 @@ describe('GovLst Profitability Executor Integration', () => {
           cacheDuration: CONFIG.profitability.priceFeed.cacheDuration,
         },
       },
-      executor as IExecutor
-    )
+      executor as IExecutor,
+    );
 
     // Start components
-    await executor.start()
-    await profitabilityEngine.start()
-  })
+    await executor.start();
+    await profitabilityEngine.start();
+  });
 
   afterAll(async () => {
-    await profitabilityEngine.stop()
-    await executor.stop()
-  })
+    await profitabilityEngine.stop();
+    await executor.stop();
+  });
 
   beforeEach(async () => {
     // Reset database state by deleting all items
-    const pendingItems = await database.getProcessingQueueItemsByStatus(ProcessingQueueStatus.PENDING)
+    const pendingItems = await database.getProcessingQueueItemsByStatus(
+      ProcessingQueueStatus.PENDING,
+    );
     for (const item of pendingItems) {
       if (item.id) {
-        await database.deleteProcessingQueueItem(item.id)
+        await database.deleteProcessingQueueItem(item.id);
       }
     }
-    const queuedItems = await database.getTransactionQueueItemsByStatus(TransactionQueueStatus.PENDING)
+    const queuedItems = await database.getTransactionQueueItemsByStatus(
+      TransactionQueueStatus.PENDING,
+    );
     for (const item of queuedItems) {
       if (item.id) {
-        await database.deleteTransactionQueueItem(item.id)
+        await database.deleteTransactionQueueItem(item.id);
       }
     }
-  })
+  });
 
   describe('Deposit Processing', () => {
     it('should process multiple deposits and queue profitable transactions', async () => {
@@ -180,33 +187,41 @@ describe('GovLst Profitability Executor Integration', () => {
           amount: deposit.amount.toString(),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-        })
+        });
       }
 
       // Process deposits and collect profitable ones
-      const profitableDeposits = []
-      const depositDetails = []
+      const profitableDeposits = [];
+      const depositDetails = [];
 
       for (const deposit of TEST_DEPOSITS) {
-        const unclaimedRewards = await stakerContract.unclaimedReward(deposit.deposit_id)
-        
+        const unclaimedRewards = await stakerContract.unclaimedReward(
+          deposit.deposit_id,
+        );
+
         if (unclaimedRewards > 0n) {
-          profitableDeposits.push(deposit)
+          profitableDeposits.push(deposit);
           depositDetails.push({
             depositId: BigInt(deposit.deposit_id),
             rewards: unclaimedRewards,
-          })
+          });
         }
       }
 
       // Verify we found profitable deposits
-      expect(profitableDeposits.length).toBeGreaterThan(0)
+      expect(profitableDeposits.length).toBeGreaterThan(0);
 
       if (profitableDeposits.length > 0) {
         // Calculate totals
-        const totalRewards = depositDetails.reduce((sum, detail) => sum + detail.rewards, 0n)
-        const totalShares = profitableDeposits.reduce((sum, deposit) => sum + BigInt(deposit.amount), 0n)
-        const gasEstimate = BigInt(300000)
+        const totalRewards = depositDetails.reduce(
+          (sum, detail) => sum + detail.rewards,
+          0n,
+        );
+        const totalShares = profitableDeposits.reduce(
+          (sum, deposit) => sum + BigInt(deposit.amount),
+          0n,
+        );
+        const gasEstimate = BigInt(300000);
 
         // Create profitability check
         const profitabilityCheck: GovLstProfitabilityCheck = {
@@ -224,7 +239,7 @@ describe('GovLst Profitability Executor Integration', () => {
             payout_amount: totalRewards,
           },
           deposit_details: depositDetails,
-        }
+        };
 
         // Add deposits to processing queue
         for (const deposit of profitableDeposits) {
@@ -232,59 +247,66 @@ describe('GovLst Profitability Executor Integration', () => {
             deposit_id: deposit.deposit_id,
             status: ProcessingQueueStatus.PENDING,
             delegatee: deposit.delegatee_address || '',
-          })
-          expect(queueItem.status).toBe(ProcessingQueueStatus.PENDING)
+          });
+          expect(queueItem.status).toBe(ProcessingQueueStatus.PENDING);
         }
 
         // Create transaction queue item
         const txQueueItem = await database.createTransactionQueueItem({
-          deposit_id: profitableDeposits.map(d => d.deposit_id).join(','),
+          deposit_id: profitableDeposits.map((d) => d.deposit_id).join(','),
           status: TransactionQueueStatus.PENDING,
           tx_data: JSON.stringify({
-            depositIds: profitableDeposits.map(d => d.deposit_id),
+            depositIds: profitableDeposits.map((d) => d.deposit_id),
             totalRewards: totalRewards.toString(),
             profitability: profitabilityCheck,
           }),
-        })
-        expect(txQueueItem.status).toBe(TransactionQueueStatus.PENDING)
+        });
+        expect(txQueueItem.status).toBe(TransactionQueueStatus.PENDING);
 
         // Queue transaction with executor
         await executor.queueTransaction(
-          profitableDeposits.map(d => BigInt(d.deposit_id)),
+          profitableDeposits.map((d) => BigInt(d.deposit_id)),
           profitabilityCheck,
           JSON.stringify({
-            depositIds: profitableDeposits.map(d => d.deposit_id),
+            depositIds: profitableDeposits.map((d) => d.deposit_id),
             totalRewards: totalRewards.toString(),
             profitability: profitabilityCheck,
             queueItemId: txQueueItem.id,
-          })
-        )
+          }),
+        );
 
         // Wait for processing
-        await new Promise(resolve => setTimeout(resolve, 30000))
+        await new Promise((resolve) => setTimeout(resolve, 30000));
 
         // Verify queue stats
-        const queueStats = await executor.getQueueStats()
-        expect(queueStats.totalQueued).toBeGreaterThan(0)
-        expect(queueStats.totalPending + queueStats.totalConfirmed + queueStats.totalFailed)
-          .toBe(queueStats.totalQueued)
-        
+        const queueStats = await executor.getQueueStats();
+        expect(queueStats.totalQueued).toBeGreaterThan(0);
+        expect(
+          queueStats.totalPending +
+            queueStats.totalConfirmed +
+            queueStats.totalFailed,
+        ).toBe(queueStats.totalQueued);
+
         // Verify database state
-        const processingItems = await database.getProcessingQueueItemsByStatus(ProcessingQueueStatus.PENDING)
-        expect(processingItems.length).toBe(profitableDeposits.length)
-        
-        const txItems = await database.getTransactionQueueItemsByStatus(TransactionQueueStatus.PENDING)
-        expect(txItems.length).toBeGreaterThan(0)
-        expect(txItems[0]?.status).not.toBe(TransactionQueueStatus.PENDING)
+        const processingItems = await database.getProcessingQueueItemsByStatus(
+          ProcessingQueueStatus.PENDING,
+        );
+        expect(processingItems.length).toBe(profitableDeposits.length);
+
+        const txItems = await database.getTransactionQueueItemsByStatus(
+          TransactionQueueStatus.PENDING,
+        );
+        expect(txItems.length).toBeGreaterThan(0);
+        expect(txItems[0]?.status).not.toBe(TransactionQueueStatus.PENDING);
       }
-    }, 120000) // 2 minute timeout
+    }, 120000); // 2 minute timeout
 
     it('should handle deposits with no rewards', async () => {
-      const noRewardDeposit = TEST_DEPOSITS[2]
+      const noRewardDeposit = TEST_DEPOSITS[2];
       if (!noRewardDeposit) {
-        throw new Error('Test deposit not found')
+        throw new Error('Test deposit not found');
       }
-      
+
       await database.createDeposit({
         deposit_id: noRewardDeposit.deposit_id,
         owner_address: noRewardDeposit.owner_address,
@@ -293,16 +315,22 @@ describe('GovLst Profitability Executor Integration', () => {
         amount: noRewardDeposit.amount,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-      })
+      });
 
-      const unclaimedRewards = await stakerContract.unclaimedReward(noRewardDeposit.deposit_id)
-      expect(unclaimedRewards).toBe(0n)
+      const unclaimedRewards = await stakerContract.unclaimedReward(
+        noRewardDeposit.deposit_id,
+      );
+      expect(unclaimedRewards).toBe(0n);
 
-      const processingItems = await database.getProcessingQueueItemsByStatus(ProcessingQueueStatus.PENDING)
-      expect(processingItems.length).toBe(0)
+      const processingItems = await database.getProcessingQueueItemsByStatus(
+        ProcessingQueueStatus.PENDING,
+      );
+      expect(processingItems.length).toBe(0);
 
-      const txItems = await database.getTransactionQueueItemsByStatus(TransactionQueueStatus.PENDING)
-      expect(txItems.length).toBe(0)
-    }, 30000)
-  })
-}) 
+      const txItems = await database.getTransactionQueueItemsByStatus(
+        TransactionQueueStatus.PENDING,
+      );
+      expect(txItems.length).toBe(0);
+    }, 30000);
+  });
+});

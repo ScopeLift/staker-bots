@@ -62,9 +62,11 @@ export const CONFIG = {
     swap: {
       enabled: process.env.EXECUTOR_SWAP_TO_ETH === 'true',
       uniswapRouterAddress: process.env.UNISWAP_ROUTER_ADDRESS || '',
-      slippageTolerance: parseFloat(process.env.SWAP_SLIPPAGE_TOLERANCE || '0.5'),
+      slippageTolerance: parseFloat(
+        process.env.SWAP_SLIPPAGE_TOLERANCE || '0.5',
+      ),
       deadlineMinutes: parseInt(process.env.SWAP_DEADLINE_MINUTES || '10'),
-      minAmountIn: process.env.SWAP_MIN_AMOUNT_IN 
+      minAmountIn: process.env.SWAP_MIN_AMOUNT_IN
         ? BigInt(process.env.SWAP_MIN_AMOUNT_IN)
         : ethers.parseUnits('1', 18), // Default 1 token
       maxAmountIn: process.env.SWAP_MAX_AMOUNT_IN
@@ -109,7 +111,7 @@ export const CONFIG = {
       process.env.PROFITABILITY_REWARD_CHECK_INTERVAL || '60000',
     ), // 1 minute
     minProfitMargin: parseFloat(
-      process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT || '10',
+      process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT || '5',
     ), // 10% minimum profit margin by default
     gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,
@@ -130,7 +132,10 @@ export const CONFIG = {
     claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600', 10), // 1 hour default
     gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer
     minEarningPower: BigInt(process.env.GOVLST_MIN_EARNING_POWER || 10000), // Minimum earning power threshold
-    rewardTokenDecimals: parseInt(process.env.GOVLST_REWARD_TOKEN_DECIMALS || '18', 10), // Default to 18 decimals
+    rewardTokenDecimals: parseInt(
+      process.env.GOVLST_REWARD_TOKEN_DECIMALS || '18',
+      10,
+    ), // Default to 18 decimals
   },
   tenderly: {
     useSimulation: process.env.TENDERLY_USE_SIMULATE === 'true',

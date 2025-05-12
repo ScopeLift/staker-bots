@@ -452,6 +452,7 @@ TENDERLY_NETWORK_ID=1  # Default is 1 for mainnet, use appropriate ID for other 
 ```
 
 Benefits of transaction simulation:
+
 - Prevents failed transactions by simulating them before sending
 - Provides more accurate gas estimates for profitability calculations
 - Offers detailed transaction execution traces for debugging

@@ -81,11 +81,16 @@ export class RelayerExecutor implements IExecutor {
     // Initialize simulation service (with fallback)
     try {
       this.simulationService = new SimulationService();
-      this.logger.info('Initialized simulation service for transaction validation');
+      this.logger.info(
+        'Initialized simulation service for transaction validation',
+      );
     } catch (error) {
-      this.logger.warn('Failed to initialize simulation service, will use fallback gas estimation', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      this.logger.warn(
+        'Failed to initialize simulation service, will use fallback gas estimation',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
       this.simulationService = null;
     }
 
@@ -218,34 +223,41 @@ export class RelayerExecutor implements IExecutor {
       if (this.simulationService) {
         try {
           const signerAddress = await this.relaySigner.getAddress();
-          const payoutAmount = profitability.estimates.payout_amount || BigInt(0);
-          
+          const payoutAmount =
+            profitability.estimates.payout_amount || BigInt(0);
+
           // Use a minimal expected reward for estimation
           const simulatedGas = await this.estimateGasUsingSimulation(
             depositIds,
             signerAddress,
-            payoutAmount
+            payoutAmount,
           );
-          
-          if (simulatedGas !== null && simulatedGas > profitability.estimates.gas_estimate) {
+
+          if (
+            simulatedGas !== null &&
+            simulatedGas > profitability.estimates.gas_estimate
+          ) {
             this.logger.info('Updated gas estimate from simulation', {
               originalEstimate: profitability.estimates.gas_estimate.toString(),
               simulatedEstimate: simulatedGas.toString(),
               depositCount: depositIds.length,
             });
-            
+
             // Update the gas estimate in the profitability object
             profitability.estimates.gas_estimate = simulatedGas;
           }
         } catch (error) {
           // Just log and continue with original estimate if simulation fails
-          this.logger.warn('Simulation-based gas estimation failed during validation', {
-            error: error instanceof Error ? error.message : String(error),
-            depositIds: depositIds.map(String),
-          });
+          this.logger.warn(
+            'Simulation-based gas estimation failed during validation',
+            {
+              error: error instanceof Error ? error.message : String(error),
+              depositIds: depositIds.map(String),
+            },
+          );
         }
       }
-      
+
       return validateRelayerTransaction(
         depositIds,
         profitability,
@@ -256,7 +268,7 @@ export class RelayerExecutor implements IExecutor {
     } catch (error) {
       const validationError = new TransactionValidationError(
         error instanceof Error ? error.message : String(error),
-        { depositIds: depositIds.map(String) }
+        { depositIds: depositIds.map(String) },
       );
       this.errorLogger.error(validationError, {
         stage: 'transaction_validation',
@@ -427,7 +439,8 @@ export class RelayerExecutor implements IExecutor {
             error instanceof Error
               ? error
               : new Error(
-                  `Failed to update queue item status: ${String(error)}`),
+                  `Failed to update queue item status: ${String(error)}`,
+                ),
             {
               stage: 'executeTransaction',
               txId: tx.id,
@@ -672,7 +685,7 @@ export class RelayerExecutor implements IExecutor {
           gasEstimate < 300000n ? 1200000n : gasEstimate * 2n;
 
         // Calculate gas limit with deposit count scaling
-        let calculatedGasLimit = calculateGasLimit(
+        const calculatedGasLimit = calculateGasLimit(
           baseGasLimit,
           depositIds.length,
           this.logger,
@@ -984,13 +997,16 @@ export class RelayerExecutor implements IExecutor {
             maxPriorityFeePerGas = (maxPriorityFeePerGas * 130n) / 100n;
           }
 
-          this.logger.info('Retrieved and moderately boosted network fee data', {
-            txId: tx.id,
-            maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
-            maxPriorityFeePerGas:
-              maxPriorityFeePerGas?.toString() || 'undefined',
-            boostedBy: 'Fee: 20%, Priority: 30%',
-          });
+          this.logger.info(
+            'Retrieved and moderately boosted network fee data',
+            {
+              txId: tx.id,
+              maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
+              maxPriorityFeePerGas:
+                maxPriorityFeePerGas?.toString() || 'undefined',
+              boostedBy: 'Fee: 20%, Priority: 30%',
+            },
+          );
         } catch (error) {
           this.logger.error('Failed to get fee data', {
             error: error instanceof Error ? error.message : String(error),
@@ -1051,25 +1067,30 @@ export class RelayerExecutor implements IExecutor {
 
           if (!simulationResult.success) {
             // If simulation explicitly failed (not due to service error), reject the transaction
-            this.logger.error('Transaction simulation explicitly failed, removing from queue', {
-              txId: tx.id,
-              error: simulationResult.error,
-            });
+            this.logger.error(
+              'Transaction simulation explicitly failed, removing from queue',
+              {
+                txId: tx.id,
+                error: simulationResult.error,
+              },
+            );
             this.errorLogger.error(
               new TransactionValidationError(
                 `Transaction simulation failed: ${simulationResult.error}`,
-                { depositIds: depositIds.map(String) }
+                { depositIds: depositIds.map(String) },
               ),
               {
                 stage: 'executeTransaction_simulation',
                 txId: tx.id,
                 error: simulationResult.error,
-              }
+              },
             );
 
             // Update transaction status to failed
             tx.status = TransactionStatus.FAILED;
-            tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
+            tx.error = new Error(
+              `Simulation failed: ${simulationResult.error}`,
+            );
             this.queue.set(tx.id, tx);
 
             // Cleanup the queue item
@@ -1092,11 +1113,15 @@ export class RelayerExecutor implements IExecutor {
               txId: tx.id,
               originalLimit: calculatedGasLimit.toString(),
               simulationEstimate: simulationResult.gasEstimate.toString(),
-              optimizedLimit: simulationResult.optimizedGasLimit?.toString() || 'N/A',
+              optimizedLimit:
+                simulationResult.optimizedGasLimit?.toString() || 'N/A',
             });
 
             // If optimized gas limit is available and higher than our calculated limit, use it
-            if (simulationResult.optimizedGasLimit && simulationResult.optimizedGasLimit > calculatedGasLimit) {
+            if (
+              simulationResult.optimizedGasLimit &&
+              simulationResult.optimizedGasLimit > calculatedGasLimit
+            ) {
               simulationGasLimit = simulationResult.optimizedGasLimit;
             } else if (simulationResult.gasEstimate) {
               // Otherwise use the gas estimate with buffer
@@ -1105,24 +1130,28 @@ export class RelayerExecutor implements IExecutor {
           }
         } catch (simError) {
           // If simulation fails with an exception, log but continue with original gas parameters
-          this.logger.warn('Transaction simulation error, continuing with standard parameters', {
-            error: simError instanceof Error ? simError.message : String(simError),
-            txId: tx.id,
-          });
+          this.logger.warn(
+            'Transaction simulation error, continuing with standard parameters',
+            {
+              error:
+                simError instanceof Error ? simError.message : String(simError),
+              txId: tx.id,
+            },
+          );
           this.errorLogger.warn(
-            simError instanceof Error 
-              ? simError 
+            simError instanceof Error
+              ? simError
               : new Error(`Simulation error: ${String(simError)}`),
             {
               stage: 'executeTransaction_simulationError',
               txId: tx.id,
-            }
+            },
           );
         }
 
         // Select the final gas limit to use
         const finalSimulatedGasLimit = simulationGasLimit || calculatedGasLimit;
-        
+
         // Use the limit from simulation if available
         if (simulationGasLimit && simulationGasLimit !== calculatedGasLimit) {
           this.logger.info('Using gas limit from simulation', {
@@ -1655,7 +1684,7 @@ export class RelayerExecutor implements IExecutor {
   /**
    * Simulates a transaction to verify it will succeed and estimate gas costs
    * This uses Tenderly simulation API to validate the transaction without submitting to the chain
-   * 
+   *
    * @param tx The transaction to simulate
    * @param depositIds List of deposit IDs
    * @param signerAddress The address that will sign the transaction
@@ -1670,15 +1699,18 @@ export class RelayerExecutor implements IExecutor {
     minExpectedReward: bigint,
     gasLimit: bigint,
   ): Promise<{
-    success: boolean,
-    gasEstimate: bigint | null,
-    error?: string,
-    optimizedGasLimit?: bigint,
+    success: boolean;
+    gasEstimate: bigint | null;
+    error?: string;
+    optimizedGasLimit?: bigint;
   }> {
     if (!this.simulationService) {
-      this.logger.warn('Simulation service not available, skipping simulation', {
-        txId: tx.id,
-      });
+      this.logger.warn(
+        'Simulation service not available, skipping simulation',
+        {
+          txId: tx.id,
+        },
+      );
       return { success: true, gasEstimate: null }; // Default to success if service not available
     }
 
@@ -1699,7 +1731,7 @@ export class RelayerExecutor implements IExecutor {
         gas: Number(gasLimit),
         value: '0',
       };
-      
+
       this.logger.info('Simulating transaction', {
         txId: tx.id,
         depositIds: depositIds.map(String),
@@ -1711,10 +1743,13 @@ export class RelayerExecutor implements IExecutor {
       // First try to get gas estimation (faster)
       let gasEstimate: bigint | null = null;
       try {
-        const gasEstimation = await this.simulationService.estimateGasCosts(simulationTx, {
-          networkId: CONFIG.tenderly.networkId || '1',
-        });
-        
+        const gasEstimation = await this.simulationService.estimateGasCosts(
+          simulationTx,
+          {
+            networkId: CONFIG.tenderly.networkId || '1',
+          },
+        );
+
         gasEstimate = BigInt(Math.ceil(gasEstimation.gasUnits * 1.3)); // Add 30% buffer
         this.logger.info('Transaction gas estimation successful', {
           txId: tx.id,
@@ -1722,49 +1757,66 @@ export class RelayerExecutor implements IExecutor {
           bufferedGas: gasEstimate.toString(),
         });
       } catch (estimateError) {
-        this.logger.warn('Failed to estimate gas via simulation, will fall back to simulation', {
-          error: estimateError instanceof Error ? estimateError.message : String(estimateError),
-          txId: tx.id,
-        });
+        this.logger.warn(
+          'Failed to estimate gas via simulation, will fall back to simulation',
+          {
+            error:
+              estimateError instanceof Error
+                ? estimateError.message
+                : String(estimateError),
+            txId: tx.id,
+          },
+        );
       }
 
       // Then run full simulation to check for other issues
-      const simulationResult = await this.simulationService.simulateTransaction(simulationTx, {
-        networkId: CONFIG.tenderly.networkId || '1',
-      });
+      const simulationResult = await this.simulationService.simulateTransaction(
+        simulationTx,
+        {
+          networkId: CONFIG.tenderly.networkId || '1',
+        },
+      );
 
       // If simulation fails but the error is gas-related, try again with higher gas
-      if (!simulationResult.success && 
-          simulationResult.error?.code === 'GAS_LIMIT_EXCEEDED' && 
-          simulationResult.gasUsed > 0) {
-        
+      if (
+        !simulationResult.success &&
+        simulationResult.error?.code === 'GAS_LIMIT_EXCEEDED' &&
+        simulationResult.gasUsed > 0
+      ) {
         const newGasLimit = BigInt(Math.ceil(simulationResult.gasUsed * 1.5)); // 50% buffer
-        
+
         const retrySimulationTx = {
           ...simulationTx,
           gas: Number(newGasLimit),
         };
-        
+
         this.logger.info('Retrying simulation with higher gas limit', {
           txId: tx.id,
           originalGasLimit: gasLimit.toString(),
           newGasLimit: newGasLimit.toString(),
         });
-        
-        const retryResult = await this.simulationService.simulateTransaction(retrySimulationTx, {
-          networkId: CONFIG.tenderly.networkId || '1',
-        });
-        
+
+        const retryResult = await this.simulationService.simulateTransaction(
+          retrySimulationTx,
+          {
+            networkId: CONFIG.tenderly.networkId || '1',
+          },
+        );
+
         if (retryResult.success) {
-          this.logger.info('Transaction simulation succeeded with higher gas limit', {
-            txId: tx.id,
-            gasUsed: retryResult.gasUsed,
-            optimizedGasLimit: newGasLimit.toString(),
-          });
-          
+          this.logger.info(
+            'Transaction simulation succeeded with higher gas limit',
+            {
+              txId: tx.id,
+              gasUsed: retryResult.gasUsed,
+              optimizedGasLimit: newGasLimit.toString(),
+            },
+          );
+
           return {
             success: true,
-            gasEstimate: gasEstimate || BigInt(Math.ceil(retryResult.gasUsed * 1.2)),
+            gasEstimate:
+              gasEstimate || BigInt(Math.ceil(retryResult.gasUsed * 1.2)),
             optimizedGasLimit: newGasLimit,
           };
         }
@@ -1777,7 +1829,7 @@ export class RelayerExecutor implements IExecutor {
           errorMessage: simulationResult.error?.message,
           errorDetails: simulationResult.error?.details,
         });
-        
+
         return {
           success: false,
           gasEstimate: null,
@@ -1804,17 +1856,16 @@ export class RelayerExecutor implements IExecutor {
         success: true,
         gasEstimate,
       };
-
     } catch (error) {
       this.logger.error('Transaction simulation error', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         txId: tx.id,
       });
-      
+
       // Return success true with null gasEstimate to allow fallback to normal gas estimation
-      return { 
-        success: true, 
+      return {
+        success: true,
         gasEstimate: null,
         error: error instanceof Error ? error.message : String(error),
       };
@@ -1824,7 +1875,7 @@ export class RelayerExecutor implements IExecutor {
   /**
    * Estimates gas for a transaction using simulation
    * This is a lighter-weight method that only calls the gas estimation part of the simulation
-   * 
+   *
    * @param depositIds List of deposit IDs
    * @param recipient The recipient address
    * @param reward The expected reward amount
@@ -1856,9 +1907,12 @@ export class RelayerExecutor implements IExecutor {
       };
 
       // Get gas estimation
-      const gasEstimation = await this.simulationService.estimateGasCosts(simulationTx, {
-        networkId: CONFIG.tenderly.networkId || '1',
-      });
+      const gasEstimation = await this.simulationService.estimateGasCosts(
+        simulationTx,
+        {
+          networkId: CONFIG.tenderly.networkId || '1',
+        },
+      );
 
       // Add 30% buffer to the estimate
       const gasEstimate = BigInt(Math.ceil(gasEstimation.gasUnits * 1.3));
