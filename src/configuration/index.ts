@@ -117,6 +117,7 @@ export const CONFIG = {
     claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600', 10), // 1 hour default
     gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer
     minEarningPower: BigInt(process.env.GOVLST_MIN_EARNING_POWER || 10000), // Minimum earning power threshold
+    rewardTokenDecimals: parseInt(process.env.GOVLST_REWARD_TOKEN_DECIMALS || '18', 10), // Default to 18 decimals
   },
 } as const;
 
