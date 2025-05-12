@@ -988,25 +988,22 @@ export class RelayerExecutor implements IExecutor {
             ? BigInt(feeData.maxPriorityFeePerGas.toString())
             : undefined;
 
-          // Apply moderate boost to gas values for reliable inclusion
+          // Apply slight boost to gas values for reliable inclusion
           if (maxFeePerGas) {
-            maxFeePerGas = (maxFeePerGas * 120n) / 100n;
+            maxFeePerGas = (maxFeePerGas * 125n) / 100n;
           }
 
           if (maxPriorityFeePerGas) {
-            maxPriorityFeePerGas = (maxPriorityFeePerGas * 130n) / 100n;
+            maxPriorityFeePerGas = (maxPriorityFeePerGas * 125n) / 100n;
           }
 
-          this.logger.info(
-            'Retrieved and moderately boosted network fee data',
-            {
-              txId: tx.id,
-              maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
-              maxPriorityFeePerGas:
-                maxPriorityFeePerGas?.toString() || 'undefined',
-              boostedBy: 'Fee: 20%, Priority: 30%',
-            },
-          );
+          this.logger.info('Retrieved and slightly boosted network fee data', {
+            txId: tx.id,
+            maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
+            maxPriorityFeePerGas:
+              maxPriorityFeePerGas?.toString() || 'undefined',
+            boostedBy: 'Fee: 25%, Priority: 25%',
+          });
         } catch (error) {
           this.logger.error('Failed to get fee data', {
             error: error instanceof Error ? error.message : String(error),
@@ -1370,8 +1367,8 @@ export class RelayerExecutor implements IExecutor {
                   networkGasPrice.maxFeePerGas.toString(),
                 );
                 if (networkMaxFee > maxFeePerGas) {
-                  // If network gas price exceeds our configured max, use a 20% buffer on network price
-                  maxFeePerGas = (networkMaxFee * 120n) / 100n;
+                  // If network gas price exceeds our configured max, use a 25% buffer on network price
+                  maxFeePerGas = (networkMaxFee * 125n) / 100n;
                   this.logger.info(
                     'Adjusting maxFeePerGas to current network conditions',
                     {
@@ -1420,7 +1417,7 @@ export class RelayerExecutor implements IExecutor {
                       const suggestedGasLimit = BigInt(
                         String(defenderErrorData.suggestedGasLimit),
                       );
-                      const newGasLimit = (suggestedGasLimit * 130n) / 100n; // Add 30% buffer
+                      const newGasLimit = (suggestedGasLimit * 125n) / 100n; // Add 25% buffer
 
                       this.logger.info(
                         'Adjusting gas limit based on suggested value',

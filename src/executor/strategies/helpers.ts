@@ -111,6 +111,12 @@ export async function calculateGasParameters(
   const gasBoostMultiplier = BigInt(100 + gasBoostPercentage);
   const boostedGasPrice = (baseGasPrice * gasBoostMultiplier) / 100n;
 
+  logger.info('Gas price calculation', {
+    baseGasPrice: baseGasPrice.toString(),
+    boostPercentage: gasBoostPercentage,
+    boostedGasPrice: boostedGasPrice.toString(),
+  });
+
   return { finalGasLimit, boostedGasPrice };
 }
 

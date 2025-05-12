@@ -19,7 +19,8 @@ export class GasCostEstimator {
   private static readonly FALLBACK_ETH_PRICE_USD = 2500;
   private static readonly FALLBACK_TOKEN_PRICE_USD = 0.1;
   private static readonly MINIMUM_GAS_COST_USD = 30; // $30 minimum
-  private static readonly FALLBACK_GAS_PRICE_GWEI = 50n; // 50 gwei
+  private static readonly FALLBACK_GAS_PRICE_GWEI = 3n; // 3 gwei (base ~2.257 + buffer)
+  private static readonly FALLBACK_PRIORITY_FEE_GWEI = 0.2; // 0.2 gwei (tip ~0.158 + buffer)
   private static readonly ETH_DECIMALS = 18;
   private static readonly TOKEN_DECIMALS =
     CONFIG.govlst.rewardTokenDecimals || 18;
@@ -46,20 +47,41 @@ export class GasCostEstimator {
   private async getCurrentGasPrice(provider: ethers.Provider): Promise<bigint> {
     try {
       const feeData = await provider.getFeeData();
-      const gasPrice = feeData?.gasPrice
-        ? BigInt(feeData.gasPrice.toString())
-        : GasCostEstimator.FALLBACK_GAS_PRICE_GWEI * 10n ** 9n;
+      let gasPrice: bigint;
+      let priorityFee: bigint | undefined;
 
-      this.logger.info('Retrieved current gas price', {
+      if (feeData?.gasPrice) {
+        // Apply 25% buffer to current gas price
+        const currentGasPrice = BigInt(feeData.gasPrice.toString());
+        gasPrice = (currentGasPrice * 125n) / 100n; // Add 25% buffer
+
+        // Also get max priority fee if EIP-1559 is active
+        if (feeData.maxPriorityFeePerGas) {
+          priorityFee = BigInt(feeData.maxPriorityFeePerGas.toString());
+          priorityFee = (priorityFee * 125n) / 100n; // Add 25% buffer
+        }
+      } else {
+        // Use fallback values
+        gasPrice = GasCostEstimator.FALLBACK_GAS_PRICE_GWEI * 10n ** 9n;
+        priorityFee = BigInt(
+          Math.floor(GasCostEstimator.FALLBACK_PRIORITY_FEE_GWEI * 1e9),
+        );
+      }
+
+      this.logger.info('Retrieved current gas price with 25% buffer', {
         gasPriceWei: gasPrice.toString(),
         gasPriceGwei: Number(gasPrice) / 1e9,
-        source: feeData?.gasPrice ? 'provider' : 'fallback',
+        priorityFeeWei: priorityFee?.toString() || 'N/A',
+        priorityFeeGwei: priorityFee ? Number(priorityFee) / 1e9 : 'N/A',
+        source: feeData?.gasPrice ? 'provider (+25% buffer)' : 'fallback',
       });
 
       return gasPrice;
     } catch (error) {
       this.logger.warn('Failed to get gas price, using fallback', {
         fallbackGwei: GasCostEstimator.FALLBACK_GAS_PRICE_GWEI.toString(),
+        fallbackPriorityFeeGwei:
+          GasCostEstimator.FALLBACK_PRIORITY_FEE_GWEI.toString(),
         error: error instanceof Error ? error.message : String(error),
       });
       return GasCostEstimator.FALLBACK_GAS_PRICE_GWEI * 10n ** 9n;
