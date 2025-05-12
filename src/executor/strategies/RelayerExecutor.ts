@@ -1608,6 +1608,9 @@ export class RelayerExecutor implements IExecutor {
                 this.logger,
                 this.errorLogger,
               );
+
+              // Check if we need to swap tokens for ETH after transaction
+              await this.checkAndSwapTokensIfNeeded();
             },
           );
         } catch (waitError) {
@@ -1658,6 +1661,9 @@ export class RelayerExecutor implements IExecutor {
               this.logger,
               this.errorLogger,
             );
+
+            // Check token swap needs even after error
+            await this.checkAndSwapTokensIfNeeded();
           },
         );
       }
@@ -1930,6 +1936,279 @@ export class RelayerExecutor implements IExecutor {
         depositCount: depositIds.length,
       });
       return null;
+    }
+  }
+
+  /**
+   * Checks ETH balance and swaps tokens if needed
+   */
+  private async checkAndSwapTokensIfNeeded(): Promise<void> {
+    // Only proceed if swap is enabled
+    if (!CONFIG.executor.swap.enabled) {
+      return;
+    }
+
+    try {
+      // Check relayer ETH balance
+      const relayerBalance =
+        await this.lstContract.runner?.provider?.getBalance(
+          await this.relaySigner.getAddress(),
+        );
+
+      if (!relayerBalance) {
+        this.logger.warn('Unable to get relayer balance');
+        return;
+      }
+
+      const minEthBalance = ethers.parseEther('0.1'); // 0.1 ETH threshold
+
+      if (relayerBalance < minEthBalance) {
+        this.logger.info(
+          'Relayer ETH balance below threshold, attempting to swap tokens',
+          {
+            currentBalance: ethers.formatEther(relayerBalance),
+            threshold: '0.1 ETH',
+          },
+        );
+
+        await this.swapTokensForEth();
+      }
+    } catch (error) {
+      this.logger.error('Failed to check ETH balance', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      if (this.errorLogger) {
+        this.errorLogger.error(
+          error instanceof Error ? error : new Error(String(error)),
+          {
+            stage: 'relayer-executor-check-eth-balance',
+          },
+        );
+      }
+    }
+  }
+
+  /**
+   * Swaps tokens for ETH using Uniswap
+   */
+  private async swapTokensForEth(): Promise<void> {
+    if (
+      !CONFIG.executor.swap.enabled ||
+      !CONFIG.executor.swap.uniswapRouterAddress
+    ) {
+      this.logger.warn('Token swap not configured properly');
+      return;
+    }
+
+    try {
+      // Get the reward token address
+      if (typeof this.lstContract.REWARD_TOKEN !== 'function') {
+        throw new Error('REWARD_TOKEN method not found on contract');
+      }
+
+      const rewardTokenAddress = await this.lstContract.REWARD_TOKEN();
+      if (!rewardTokenAddress) {
+        throw new Error('Failed to get reward token address');
+      }
+
+      // Get relayer address
+      const signerAddress = await this.relaySigner.getAddress();
+
+      // Create token contract
+      const tokenAbi = [
+        'function balanceOf(address account) view returns (uint256)',
+        'function approve(address spender, uint256 amount) returns (bool)',
+        'function decimals() view returns (uint8)',
+      ] as const;
+
+      const tokenContract = new ethers.Contract(
+        rewardTokenAddress,
+        tokenAbi,
+        this.relaySigner as unknown as ethers.Signer,
+      ) as ethers.Contract & {
+        balanceOf(account: string): Promise<bigint>;
+        approve(
+          spender: string,
+          amount: bigint,
+        ): Promise<ethers.ContractTransactionResponse>;
+        decimals(): Promise<number>;
+      };
+
+      // Create Uniswap router contract - use relaySigner directly
+      const uniswapAbi = [
+        'function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)',
+        'function getAmountsOut(uint amountIn, address[] calldata path) view returns (uint[] memory amounts)',
+      ] as const;
+
+      const uniswapRouter = new ethers.Contract(
+        CONFIG.executor.swap.uniswapRouterAddress,
+        uniswapAbi,
+        this.relaySigner as unknown as ethers.Signer,
+      ) as ethers.Contract & {
+        swapExactTokensForETH(
+          amountIn: bigint,
+          amountOutMin: bigint,
+          path: string[],
+          to: string,
+          deadline: number,
+        ): Promise<ethers.ContractTransactionResponse>;
+        getAmountsOut(amountIn: bigint, path: string[]): Promise<bigint[]>;
+      };
+
+      // Get token balance
+      const tokenBalance = await tokenContract.balanceOf(signerAddress);
+      const decimals = await tokenContract.decimals();
+      const minKeepAmount = ethers.parseUnits('2200', decimals); // Always keep at least 2200 tokens
+
+      this.logger.info('Current token balance', {
+        balance: ethers.formatUnits(tokenBalance, decimals),
+        minKeepAmount: ethers.formatUnits(minKeepAmount, decimals),
+      });
+
+      // Check if we have enough tokens to swap while maintaining minimum balance
+      if (tokenBalance <= minKeepAmount) {
+        this.logger.warn('Token balance too low for swap', {
+          balance: ethers.formatUnits(tokenBalance, decimals),
+          minKeepAmount: ethers.formatUnits(minKeepAmount, decimals),
+        });
+        return;
+      }
+
+      // Get contract's payout amount to ensure we don't go below it
+      const payoutAmount = await this.lstContract.payoutAmount();
+
+      // Calculate how much we can swap
+      // We want to keep at least max(minKeepAmount, payoutAmount)
+      const keepAmount =
+        minKeepAmount > payoutAmount ? minKeepAmount : payoutAmount;
+      const availableToSwap = tokenBalance - keepAmount;
+
+      // Use half of available tokens, but not more than maxAmountIn
+      let swapAmount = availableToSwap / 2n;
+      if (swapAmount > CONFIG.executor.swap.maxAmountIn) {
+        swapAmount = CONFIG.executor.swap.maxAmountIn;
+      }
+
+      // Check minimum swap amount
+      if (swapAmount < CONFIG.executor.swap.minAmountIn) {
+        this.logger.info('Swap amount below minimum threshold', {
+          amount: ethers.formatUnits(swapAmount, decimals),
+          minAmount: ethers.formatUnits(
+            CONFIG.executor.swap.minAmountIn,
+            decimals,
+          ),
+        });
+        return;
+      }
+
+      // Set up the swap path and parameters
+      const path = [rewardTokenAddress, ethers.ZeroAddress]; // Token -> ETH
+      const deadline =
+        Math.floor(Date.now() / 1000) +
+        CONFIG.executor.swap.deadlineMinutes * 60;
+
+      // Get expected ETH output
+      const amountsOut = await uniswapRouter.getAmountsOut(swapAmount, path);
+      if (!amountsOut || !Array.isArray(amountsOut) || amountsOut.length < 2) {
+        throw new Error('Invalid amounts out from Uniswap');
+      }
+
+      // TypeScript safe access to the second element (ETH amount)
+      const ethAmountRaw = amountsOut[1];
+      if (!ethAmountRaw) {
+        throw new Error('ETH output amount is undefined');
+      }
+
+      // Convert to BigInt to ensure type safety
+      const expectedEthAmount = BigInt(ethAmountRaw.toString());
+
+      // Apply slippage tolerance
+      const slippageTolerance = CONFIG.executor.swap.slippageTolerance;
+      const minOutputWithSlippage =
+        (expectedEthAmount *
+          BigInt(Math.floor((1 - slippageTolerance) * 1000))) /
+        1000n;
+
+      this.logger.info('Preparing token swap', {
+        swapAmount: ethers.formatUnits(swapAmount, decimals),
+        expectedEthOutput: ethers.formatEther(expectedEthAmount),
+        minOutputWithSlippage: ethers.formatEther(minOutputWithSlippage),
+        slippageTolerance: `${slippageTolerance * 100}%`,
+      });
+
+      // First approve the router to spend tokens
+      const approveTx = await tokenContract.approve(
+        CONFIG.executor.swap.uniswapRouterAddress,
+        swapAmount,
+      );
+
+      this.logger.info('Approval transaction submitted', {
+        hash: approveTx.hash,
+      });
+
+      // Wait for receipt
+      const approvalReceipt = await pollForReceipt(
+        approveTx.hash,
+        this.relayProvider as unknown as ethers.Provider,
+        this.logger,
+        1,
+      );
+
+      if (!approvalReceipt || approvalReceipt.status !== 1) {
+        throw new Error('Approval transaction failed');
+      }
+
+      this.logger.info('Approval confirmed', {
+        hash: approveTx.hash,
+        blockNumber: approvalReceipt.blockNumber,
+      });
+
+      // Execute the swap
+      const swapTx = await uniswapRouter.swapExactTokensForETH(
+        swapAmount,
+        minOutputWithSlippage,
+        path,
+        signerAddress,
+        deadline,
+      );
+
+      this.logger.info('Swap transaction submitted', {
+        hash: swapTx.hash,
+      });
+
+      // Wait for swap to be mined
+      const swapReceipt = await pollForReceipt(
+        swapTx.hash,
+        this.relayProvider as unknown as ethers.Provider,
+        this.logger,
+        1,
+      );
+
+      if (!swapReceipt) {
+        throw new Error('No receipt returned from swap transaction');
+      }
+
+      this.logger.info('Token swap successful', {
+        hash: swapTx.hash,
+        gasUsed: swapReceipt.gasUsed?.toString(),
+        blockNumber: swapReceipt.blockNumber,
+        tokensSwapped: ethers.formatUnits(swapAmount, decimals),
+      });
+    } catch (error) {
+      this.logger.error('Token swap failed', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+
+      if (this.errorLogger) {
+        this.errorLogger.error(
+          error instanceof Error ? error : new Error(String(error)),
+          {
+            stage: 'relayer-executor-token-swap-error',
+          },
+        );
+      }
     }
   }
 }
