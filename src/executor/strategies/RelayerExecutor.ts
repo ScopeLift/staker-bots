@@ -918,23 +918,21 @@ export class RelayerExecutor implements IExecutor {
             ? BigInt(feeData.maxPriorityFeePerGas.toString())
             : undefined;
 
-          // Apply significant boost to gas values
+          // Apply moderate boost to gas values for reliable inclusion
           if (maxFeePerGas) {
-            // Increase maxFeePerGas by 50%
-            maxFeePerGas = (maxFeePerGas * 150n) / 100n;
+            maxFeePerGas = (maxFeePerGas * 120n) / 100n;
           }
 
           if (maxPriorityFeePerGas) {
-            // Increase priority fee by 100%
-            maxPriorityFeePerGas = (maxPriorityFeePerGas * 200n) / 100n;
+            maxPriorityFeePerGas = (maxPriorityFeePerGas * 130n) / 100n;
           }
 
-          this.logger.info('Retrieved and boosted network fee data', {
+          this.logger.info('Retrieved and moderately boosted network fee data', {
             txId: tx.id,
             maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
             maxPriorityFeePerGas:
               maxPriorityFeePerGas?.toString() || 'undefined',
-            boostedBy: 'Fee: 50%, Priority: 100%',
+            boostedBy: 'Fee: 20%, Priority: 30%',
           });
         } catch (error) {
           this.logger.error('Failed to get fee data', {
