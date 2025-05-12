@@ -41,6 +41,8 @@ import {
   processQueue as processQueueHelper,
 } from './helpers';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
+import { SimulationService } from '@/simulation';
+import { SimulationTransaction } from '@/simulation/interfaces';
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -62,6 +64,7 @@ export class RelayerExecutor implements IExecutor {
   protected db?: DatabaseWrapper;
   private cleanupInProgress: Set<string> = new Set(); // Add cleanup lock set
   private readonly gasCostEstimator: GasCostEstimator;
+  private readonly simulationService: SimulationService | null;
 
   constructor(
     lstContract: ethers.Contract,
@@ -74,6 +77,22 @@ export class RelayerExecutor implements IExecutor {
     this.isRunning = false;
     this.processingInterval = null;
     this.gasCostEstimator = new GasCostEstimator();
+
+    // Initialize simulation service (with fallback)
+    try {
+      this.simulationService = new SimulationService();
+      this.logger.info(
+        'Initialized simulation service for transaction validation',
+      );
+    } catch (error) {
+      this.logger.warn(
+        'Failed to initialize simulation service, will use fallback gas estimation',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      this.simulationService = null;
+    }
 
     if (!provider) {
       const error = new ExecutorError('Provider is required', {}, false);
@@ -199,13 +218,64 @@ export class RelayerExecutor implements IExecutor {
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
-    return validateRelayerTransaction(
-      depositIds,
-      profitability,
-      this.queue,
-      this.relayProvider as unknown as ethers.Provider,
-      this.lstContract,
-    );
+    try {
+      // Try to get a better gas estimate using simulation if available
+      if (this.simulationService) {
+        try {
+          const signerAddress = await this.relaySigner.getAddress();
+          const payoutAmount =
+            profitability.estimates.payout_amount || BigInt(0);
+
+          // Use a minimal expected reward for estimation
+          const simulatedGas = await this.estimateGasUsingSimulation(
+            depositIds,
+            signerAddress,
+            payoutAmount,
+          );
+
+          if (
+            simulatedGas !== null &&
+            simulatedGas > profitability.estimates.gas_estimate
+          ) {
+            this.logger.info('Updated gas estimate from simulation', {
+              originalEstimate: profitability.estimates.gas_estimate.toString(),
+              simulatedEstimate: simulatedGas.toString(),
+              depositCount: depositIds.length,
+            });
+
+            // Update the gas estimate in the profitability object
+            profitability.estimates.gas_estimate = simulatedGas;
+          }
+        } catch (error) {
+          // Just log and continue with original estimate if simulation fails
+          this.logger.warn(
+            'Simulation-based gas estimation failed during validation',
+            {
+              error: error instanceof Error ? error.message : String(error),
+              depositIds: depositIds.map(String),
+            },
+          );
+        }
+      }
+
+      return validateRelayerTransaction(
+        depositIds,
+        profitability,
+        this.queue,
+        this.relayProvider as unknown as ethers.Provider,
+        this.lstContract,
+      );
+    } catch (error) {
+      const validationError = new TransactionValidationError(
+        error instanceof Error ? error.message : String(error),
+        { depositIds: depositIds.map(String) },
+      );
+      this.errorLogger.error(validationError, {
+        stage: 'transaction_validation',
+        depositIds: depositIds.map(String),
+      });
+      return { isValid: false, error: validationError };
+    }
   }
 
   async getQueueStats(): Promise<QueueStats> {
@@ -615,7 +685,7 @@ export class RelayerExecutor implements IExecutor {
           gasEstimate < 300000n ? 1200000n : gasEstimate * 2n;
 
         // Calculate gas limit with deposit count scaling
-        let calculatedGasLimit = calculateGasLimit(
+        const calculatedGasLimit = calculateGasLimit(
           baseGasLimit,
           depositIds.length,
           this.logger,
@@ -918,21 +988,21 @@ export class RelayerExecutor implements IExecutor {
             ? BigInt(feeData.maxPriorityFeePerGas.toString())
             : undefined;
 
-          // Apply moderate boost to gas values for reliable inclusion
+          // Apply slight boost to gas values for reliable inclusion
           if (maxFeePerGas) {
-            maxFeePerGas = (maxFeePerGas * 120n) / 100n;
+            maxFeePerGas = (maxFeePerGas * 125n) / 100n;
           }
 
           if (maxPriorityFeePerGas) {
-            maxPriorityFeePerGas = (maxPriorityFeePerGas * 130n) / 100n;
+            maxPriorityFeePerGas = (maxPriorityFeePerGas * 125n) / 100n;
           }
 
-          this.logger.info('Retrieved and moderately boosted network fee data', {
+          this.logger.info('Retrieved and slightly boosted network fee data', {
             txId: tx.id,
             maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
             maxPriorityFeePerGas:
               maxPriorityFeePerGas?.toString() || 'undefined',
-            boostedBy: 'Fee: 20%, Priority: 30%',
+            boostedBy: 'Fee: 25%, Priority: 25%',
           });
         } catch (error) {
           this.logger.error('Failed to get fee data', {
@@ -980,10 +1050,119 @@ export class RelayerExecutor implements IExecutor {
           depositIds: queueDepositIds,
         };
 
+        // Run transaction simulation before submitting to chain
+        // This will validate if the transaction will likely succeed and provide optimal gas estimates
+        let simulationGasLimit: bigint | null = null;
+        try {
+          const simulationResult = await this.simulateTransaction(
+            tx,
+            depositIds,
+            signerAddress,
+            finalThreshold,
+            calculatedGasLimit,
+          );
+
+          if (!simulationResult.success) {
+            // If simulation explicitly failed (not due to service error), reject the transaction
+            this.logger.error(
+              'Transaction simulation explicitly failed, removing from queue',
+              {
+                txId: tx.id,
+                error: simulationResult.error,
+              },
+            );
+            this.errorLogger.error(
+              new TransactionValidationError(
+                `Transaction simulation failed: ${simulationResult.error}`,
+                { depositIds: depositIds.map(String) },
+              ),
+              {
+                stage: 'executeTransaction_simulation',
+                txId: tx.id,
+                error: simulationResult.error,
+              },
+            );
+
+            // Update transaction status to failed
+            tx.status = TransactionStatus.FAILED;
+            tx.error = new Error(
+              `Simulation failed: ${simulationResult.error}`,
+            );
+            this.queue.set(tx.id, tx);
+
+            // Cleanup the queue item
+            await cleanupQueueItemsHelper(
+              tx,
+              '',
+              this.db,
+              this.logger,
+              this.errorLogger,
+            );
+
+            // Remove from queue and exit
+            this.queue.delete(tx.id);
+            return;
+          }
+
+          // If simulation succeeded and provided gas estimate, use it if it's better
+          if (simulationResult.gasEstimate) {
+            this.logger.info('Using gas limit from simulation', {
+              txId: tx.id,
+              originalLimit: calculatedGasLimit.toString(),
+              simulationEstimate: simulationResult.gasEstimate.toString(),
+              optimizedLimit:
+                simulationResult.optimizedGasLimit?.toString() || 'N/A',
+            });
+
+            // If optimized gas limit is available and higher than our calculated limit, use it
+            if (
+              simulationResult.optimizedGasLimit &&
+              simulationResult.optimizedGasLimit > calculatedGasLimit
+            ) {
+              simulationGasLimit = simulationResult.optimizedGasLimit;
+            } else if (simulationResult.gasEstimate) {
+              // Otherwise use the gas estimate with buffer
+              simulationGasLimit = simulationResult.gasEstimate;
+            }
+          }
+        } catch (simError) {
+          // If simulation fails with an exception, log but continue with original gas parameters
+          this.logger.warn(
+            'Transaction simulation error, continuing with standard parameters',
+            {
+              error:
+                simError instanceof Error ? simError.message : String(simError),
+              txId: tx.id,
+            },
+          );
+          this.errorLogger.warn(
+            simError instanceof Error
+              ? simError
+              : new Error(`Simulation error: ${String(simError)}`),
+            {
+              stage: 'executeTransaction_simulationError',
+              txId: tx.id,
+            },
+          );
+        }
+
+        // Select the final gas limit to use
+        const finalSimulatedGasLimit = simulationGasLimit || calculatedGasLimit;
+
+        // Use the limit from simulation if available
+        if (simulationGasLimit && simulationGasLimit !== calculatedGasLimit) {
+          this.logger.info('Using gas limit from simulation', {
+            txId: tx.id,
+            originalLimit: calculatedGasLimit.toString(),
+            simulationLimit: simulationGasLimit.toString(),
+            finalLimit: finalSimulatedGasLimit.toString(),
+          });
+        }
+
         // Execute via contract with signer with increased gas parameters
         const response = await this.lstContract
           .claimAndDistributeReward(signerAddress, finalThreshold, depositIds, {
-            gasLimit: calculatedGasLimit,
+            gasLimit: finalSimulatedGasLimit,
             maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
             maxPriorityFeePerGas:
               this.config.gasPolicy?.maxPriorityFeePerGas ||
@@ -1041,7 +1220,7 @@ export class RelayerExecutor implements IExecutor {
                   recipient: signerAddress,
                   minExpectedReward: finalThreshold.toString(),
                   depositIds: depositIds.map(String),
-                  gasLimit: calculatedGasLimit.toString(),
+                  gasLimit: finalSimulatedGasLimit.toString(),
                   maxFeePerGas: (
                     this.config.gasPolicy?.maxFeePerGas || maxFeePerGas
                   )?.toString(),
@@ -1144,17 +1323,18 @@ export class RelayerExecutor implements IExecutor {
 
                 if (estimatedGas) {
                   const estimatedGasBigInt = BigInt(estimatedGas.toString());
-                  if (estimatedGasBigInt > calculatedGasLimit) {
+                  if (estimatedGasBigInt > finalSimulatedGasLimit) {
                     // If estimated gas exceeds our limit, increase by 30% over estimated gas
-                    calculatedGasLimit = (estimatedGasBigInt * 130n) / 100n;
+                    const newGasLimit = (estimatedGasBigInt * 130n) / 100n;
                     this.logger.info(
                       'Increasing gas limit based on estimation',
                       {
-                        originalGasLimit: calculatedGasLimit.toString(),
+                        originalGasLimit: finalSimulatedGasLimit.toString(),
                         estimatedGas: estimatedGasBigInt.toString(),
-                        newGasLimit: calculatedGasLimit.toString(),
+                        newGasLimit: newGasLimit.toString(),
                       },
                     );
+                    simulationGasLimit = newGasLimit;
                   }
                 }
               } catch (gasError) {
@@ -1187,8 +1367,8 @@ export class RelayerExecutor implements IExecutor {
                   networkGasPrice.maxFeePerGas.toString(),
                 );
                 if (networkMaxFee > maxFeePerGas) {
-                  // If network gas price exceeds our configured max, use a 20% buffer on network price
-                  maxFeePerGas = (networkMaxFee * 120n) / 100n;
+                  // If network gas price exceeds our configured max, use a 25% buffer on network price
+                  maxFeePerGas = (networkMaxFee * 125n) / 100n;
                   this.logger.info(
                     'Adjusting maxFeePerGas to current network conditions',
                     {
@@ -1237,13 +1417,13 @@ export class RelayerExecutor implements IExecutor {
                       const suggestedGasLimit = BigInt(
                         String(defenderErrorData.suggestedGasLimit),
                       );
-                      calculatedGasLimit = (suggestedGasLimit * 130n) / 100n; // Add 30% buffer
+                      const newGasLimit = (suggestedGasLimit * 125n) / 100n; // Add 25% buffer
 
                       this.logger.info(
                         'Adjusting gas limit based on suggested value',
                         {
                           suggestedGasLimit: suggestedGasLimit.toString(),
-                          newGasLimit: calculatedGasLimit.toString(),
+                          newGasLimit: newGasLimit.toString(),
                         },
                       );
 
@@ -1253,7 +1433,7 @@ export class RelayerExecutor implements IExecutor {
                         finalThreshold,
                         depositIds,
                         {
-                          gasLimit: calculatedGasLimit,
+                          gasLimit: newGasLimit,
                           maxFeePerGas:
                             this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
                           maxPriorityFeePerGas:
@@ -1266,7 +1446,7 @@ export class RelayerExecutor implements IExecutor {
                     const gasLimitError = new ExecutorError(
                       'Gas limit too low for complex transaction',
                       {
-                        providedGasLimit: calculatedGasLimit.toString(),
+                        providedGasLimit: finalSimulatedGasLimit.toString(),
                         suggestedGasLimit: defenderErrorData.suggestedGasLimit,
                       },
                       true,
@@ -1274,7 +1454,7 @@ export class RelayerExecutor implements IExecutor {
                     this.errorLogger.error(gasLimitError, {
                       stage: 'executeTransaction_gasLimitTooLow',
                       txId: tx.id,
-                      providedGasLimit: calculatedGasLimit.toString(),
+                      providedGasLimit: finalSimulatedGasLimit.toString(),
                       suggestedGasLimit: defenderErrorData.suggestedGasLimit,
                     });
                     throw gasLimitError;
@@ -1309,16 +1489,16 @@ export class RelayerExecutor implements IExecutor {
                   'Gas limit too low for reentrancy protection',
                   {
                     error: errorMessage,
-                    currentGasLimit: calculatedGasLimit.toString(),
+                    currentGasLimit: finalSimulatedGasLimit.toString(),
                   },
                 );
 
                 // Double the gas limit and retry
-                const newGasLimit = calculatedGasLimit * 2n;
+                const newGasLimit = finalSimulatedGasLimit * 2n;
                 this.logger.info(
                   'Doubling gas limit for reentrancy protection',
                   {
-                    originalGasLimit: calculatedGasLimit.toString(),
+                    originalGasLimit: finalSimulatedGasLimit.toString(),
                     newGasLimit: newGasLimit.toString(),
                   },
                 );
@@ -1425,6 +1605,9 @@ export class RelayerExecutor implements IExecutor {
                 this.logger,
                 this.errorLogger,
               );
+
+              // Check if we need to swap tokens for ETH after transaction
+              await this.checkAndSwapTokensIfNeeded();
             },
           );
         } catch (waitError) {
@@ -1475,6 +1658,9 @@ export class RelayerExecutor implements IExecutor {
               this.logger,
               this.errorLogger,
             );
+
+            // Check token swap needs even after error
+            await this.checkAndSwapTokensIfNeeded();
           },
         );
       }
@@ -1495,6 +1681,531 @@ export class RelayerExecutor implements IExecutor {
           );
         },
       );
+    }
+  }
+
+  /**
+   * Simulates a transaction to verify it will succeed and estimate gas costs
+   * This uses Tenderly simulation API to validate the transaction without submitting to the chain
+   *
+   * @param tx The transaction to simulate
+   * @param depositIds List of deposit IDs
+   * @param signerAddress The address that will sign the transaction
+   * @param minExpectedReward Minimum expected reward
+   * @param gasLimit Initial gas limit to use for simulation
+   * @returns Object containing simulation results and gas parameters
+   */
+  private async simulateTransaction(
+    tx: QueuedTransaction,
+    depositIds: bigint[],
+    signerAddress: string,
+    minExpectedReward: bigint,
+    gasLimit: bigint,
+  ): Promise<{
+    success: boolean;
+    gasEstimate: bigint | null;
+    error?: string;
+    optimizedGasLimit?: bigint;
+  }> {
+    if (!this.simulationService) {
+      this.logger.warn(
+        'Simulation service not available, skipping simulation',
+        {
+          txId: tx.id,
+        },
+      );
+      return { success: true, gasEstimate: null }; // Default to success if service not available
+    }
+
+    try {
+      // Get the contract data for the transaction
+      const data = this.lstContract.interface.encodeFunctionData(
+        'claimAndDistributeReward',
+        [signerAddress, minExpectedReward, depositIds],
+      );
+
+      const contractAddress = this.lstContract.target.toString();
+
+      // Create simulation transaction object
+      const simulationTx: SimulationTransaction = {
+        from: signerAddress,
+        to: contractAddress,
+        data,
+        gas: Number(gasLimit),
+        value: '0',
+      };
+
+      this.logger.info('Simulating transaction', {
+        txId: tx.id,
+        depositIds: depositIds.map(String),
+        minExpectedReward: minExpectedReward.toString(),
+        recipient: signerAddress,
+        gasLimit: gasLimit.toString(),
+      });
+
+      // First try to get gas estimation (faster)
+      let gasEstimate: bigint | null = null;
+      try {
+        const gasEstimation = await this.simulationService.estimateGasCosts(
+          simulationTx,
+          {
+            networkId: CONFIG.tenderly.networkId || '1',
+          },
+        );
+
+        gasEstimate = BigInt(Math.ceil(gasEstimation.gasUnits * 1.3)); // Add 30% buffer
+        this.logger.info('Transaction gas estimation successful', {
+          txId: tx.id,
+          estimatedGas: gasEstimation.gasUnits,
+          bufferedGas: gasEstimate.toString(),
+        });
+      } catch (estimateError) {
+        this.logger.warn(
+          'Failed to estimate gas via simulation, will fall back to simulation',
+          {
+            error:
+              estimateError instanceof Error
+                ? estimateError.message
+                : String(estimateError),
+            txId: tx.id,
+          },
+        );
+      }
+
+      // Then run full simulation to check for other issues
+      const simulationResult = await this.simulationService.simulateTransaction(
+        simulationTx,
+        {
+          networkId: CONFIG.tenderly.networkId || '1',
+        },
+      );
+
+      // If simulation fails but the error is gas-related, try again with higher gas
+      if (
+        !simulationResult.success &&
+        simulationResult.error?.code === 'GAS_LIMIT_EXCEEDED' &&
+        simulationResult.gasUsed > 0
+      ) {
+        const newGasLimit = BigInt(Math.ceil(simulationResult.gasUsed * 1.5)); // 50% buffer
+
+        const retrySimulationTx = {
+          ...simulationTx,
+          gas: Number(newGasLimit),
+        };
+
+        this.logger.info('Retrying simulation with higher gas limit', {
+          txId: tx.id,
+          originalGasLimit: gasLimit.toString(),
+          newGasLimit: newGasLimit.toString(),
+        });
+
+        const retryResult = await this.simulationService.simulateTransaction(
+          retrySimulationTx,
+          {
+            networkId: CONFIG.tenderly.networkId || '1',
+          },
+        );
+
+        if (retryResult.success) {
+          this.logger.info(
+            'Transaction simulation succeeded with higher gas limit',
+            {
+              txId: tx.id,
+              gasUsed: retryResult.gasUsed,
+              optimizedGasLimit: newGasLimit.toString(),
+            },
+          );
+
+          return {
+            success: true,
+            gasEstimate:
+              gasEstimate || BigInt(Math.ceil(retryResult.gasUsed * 1.2)),
+            optimizedGasLimit: newGasLimit,
+          };
+        }
+      }
+
+      if (!simulationResult.success) {
+        this.logger.warn('Transaction simulation failed', {
+          txId: tx.id,
+          errorCode: simulationResult.error?.code,
+          errorMessage: simulationResult.error?.message,
+          errorDetails: simulationResult.error?.details,
+        });
+
+        return {
+          success: false,
+          gasEstimate: null,
+          error: `${simulationResult.error?.code}: ${simulationResult.error?.message}`,
+        };
+      }
+
+      // Use gas from simulation if it's higher than our estimate (plus buffer)
+      if (simulationResult.gasUsed > 0) {
+        const simulationGas = BigInt(Math.ceil(simulationResult.gasUsed * 1.2)); // 20% buffer
+        if (!gasEstimate || simulationGas > gasEstimate) {
+          gasEstimate = simulationGas;
+        }
+      }
+
+      this.logger.info('Transaction simulation successful', {
+        txId: tx.id,
+        gasUsed: simulationResult.gasUsed,
+        estimatedGas: gasEstimate?.toString(),
+        simulationStatus: simulationResult.status,
+      });
+
+      return {
+        success: true,
+        gasEstimate,
+      };
+    } catch (error) {
+      this.logger.error('Transaction simulation error', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        txId: tx.id,
+      });
+
+      // Return success true with null gasEstimate to allow fallback to normal gas estimation
+      return {
+        success: true,
+        gasEstimate: null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Estimates gas for a transaction using simulation
+   * This is a lighter-weight method that only calls the gas estimation part of the simulation
+   *
+   * @param depositIds List of deposit IDs
+   * @param recipient The recipient address
+   * @param reward The expected reward amount
+   * @returns Estimated gas or null if simulation fails
+   */
+  private async estimateGasUsingSimulation(
+    depositIds: bigint[],
+    recipient: string,
+    reward: bigint,
+  ): Promise<bigint | null> {
+    if (!this.simulationService) {
+      return null; // Simulation service not available
+    }
+
+    try {
+      // Encode transaction data
+      const data = this.lstContract.interface.encodeFunctionData(
+        'claimAndDistributeReward',
+        [recipient, reward, depositIds],
+      );
+
+      // Create simulation transaction with a high gas limit to ensure it doesn't fail due to gas
+      const simulationTx: SimulationTransaction = {
+        from: recipient,
+        to: this.lstContract.target.toString(),
+        data,
+        gas: 5000000, // 10M gas as a high limit for estimation
+        value: '0',
+      };
+
+      // Get gas estimation
+      const gasEstimation = await this.simulationService.estimateGasCosts(
+        simulationTx,
+        {
+          networkId: CONFIG.tenderly.networkId || '1',
+        },
+      );
+
+      // Add 30% buffer to the estimate
+      const gasEstimate = BigInt(Math.ceil(gasEstimation.gasUnits * 1.3));
+
+      this.logger.info('Estimated gas using simulation', {
+        depositCount: depositIds.length,
+        rawEstimate: gasEstimation.gasUnits,
+        bufferedEstimate: gasEstimate.toString(),
+      });
+
+      return gasEstimate;
+    } catch (error) {
+      this.logger.warn('Failed to estimate gas using simulation', {
+        error: error instanceof Error ? error.message : String(error),
+        depositCount: depositIds.length,
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Checks ETH balance and swaps tokens if needed
+   */
+  private async checkAndSwapTokensIfNeeded(): Promise<void> {
+    // Only proceed if swap is enabled
+    if (!CONFIG.executor.swap.enabled) {
+      return;
+    }
+
+    try {
+      // Check relayer ETH balance
+      const relayerBalance =
+        await this.lstContract.runner?.provider?.getBalance(
+          await this.relaySigner.getAddress(),
+        );
+
+      if (!relayerBalance) {
+        this.logger.warn('Unable to get relayer balance');
+        return;
+      }
+
+      const minEthBalance = ethers.parseEther('0.1'); // 0.1 ETH threshold
+
+      if (relayerBalance < minEthBalance) {
+        this.logger.info(
+          'Relayer ETH balance below threshold, attempting to swap tokens',
+          {
+            currentBalance: ethers.formatEther(relayerBalance),
+            threshold: '0.1 ETH',
+          },
+        );
+
+        await this.swapTokensForEth();
+      }
+    } catch (error) {
+      this.logger.error('Failed to check ETH balance', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      if (this.errorLogger) {
+        this.errorLogger.error(
+          error instanceof Error ? error : new Error(String(error)),
+          {
+            stage: 'relayer-executor-check-eth-balance',
+          },
+        );
+      }
+    }
+  }
+
+  /**
+   * Swaps tokens for ETH using Uniswap
+   */
+  private async swapTokensForEth(): Promise<void> {
+    if (
+      !CONFIG.executor.swap.enabled ||
+      !CONFIG.executor.swap.uniswapRouterAddress
+    ) {
+      this.logger.warn('Token swap not configured properly');
+      return;
+    }
+
+    try {
+      // Get the reward token address
+      if (typeof this.lstContract.REWARD_TOKEN !== 'function') {
+        throw new Error('REWARD_TOKEN method not found on contract');
+      }
+
+      const rewardTokenAddress = await this.lstContract.REWARD_TOKEN();
+      if (!rewardTokenAddress) {
+        throw new Error('Failed to get reward token address');
+      }
+
+      // Get relayer address
+      const signerAddress = await this.relaySigner.getAddress();
+
+      // Create token contract
+      const tokenAbi = [
+        'function balanceOf(address account) view returns (uint256)',
+        'function approve(address spender, uint256 amount) returns (bool)',
+        'function decimals() view returns (uint8)',
+      ] as const;
+
+      const tokenContract = new ethers.Contract(
+        rewardTokenAddress,
+        tokenAbi,
+        this.relaySigner as unknown as ethers.Signer,
+      ) as ethers.Contract & {
+        balanceOf(account: string): Promise<bigint>;
+        approve(
+          spender: string,
+          amount: bigint,
+        ): Promise<ethers.ContractTransactionResponse>;
+        decimals(): Promise<number>;
+      };
+
+      // Create Uniswap router contract - use relaySigner directly
+      const uniswapAbi = [
+        'function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)',
+        'function getAmountsOut(uint amountIn, address[] calldata path) view returns (uint[] memory amounts)',
+      ] as const;
+
+      const uniswapRouter = new ethers.Contract(
+        CONFIG.executor.swap.uniswapRouterAddress,
+        uniswapAbi,
+        this.relaySigner as unknown as ethers.Signer,
+      ) as ethers.Contract & {
+        swapExactTokensForETH(
+          amountIn: bigint,
+          amountOutMin: bigint,
+          path: string[],
+          to: string,
+          deadline: number,
+        ): Promise<ethers.ContractTransactionResponse>;
+        getAmountsOut(amountIn: bigint, path: string[]): Promise<bigint[]>;
+      };
+
+      // Get token balance
+      const tokenBalance = await tokenContract.balanceOf(signerAddress);
+      const decimals = await tokenContract.decimals();
+      const minKeepAmount = ethers.parseUnits('2200', decimals); // Always keep at least 2200 tokens
+
+      this.logger.info('Current token balance', {
+        balance: ethers.formatUnits(tokenBalance, decimals),
+        minKeepAmount: ethers.formatUnits(minKeepAmount, decimals),
+      });
+
+      // Check if we have enough tokens to swap while maintaining minimum balance
+      if (tokenBalance <= minKeepAmount) {
+        this.logger.warn('Token balance too low for swap', {
+          balance: ethers.formatUnits(tokenBalance, decimals),
+          minKeepAmount: ethers.formatUnits(minKeepAmount, decimals),
+        });
+        return;
+      }
+
+      // Get contract's payout amount to ensure we don't go below it
+      const payoutAmount = await this.lstContract.payoutAmount();
+
+      // Calculate how much we can swap
+      // We want to keep at least max(minKeepAmount, payoutAmount)
+      const keepAmount =
+        minKeepAmount > payoutAmount ? minKeepAmount : payoutAmount;
+      const availableToSwap = tokenBalance - keepAmount;
+
+      // Use half of available tokens, but not more than maxAmountIn
+      let swapAmount = availableToSwap / 2n;
+      if (swapAmount > CONFIG.executor.swap.maxAmountIn) {
+        swapAmount = CONFIG.executor.swap.maxAmountIn;
+      }
+
+      // Check minimum swap amount
+      if (swapAmount < CONFIG.executor.swap.minAmountIn) {
+        this.logger.info('Swap amount below minimum threshold', {
+          amount: ethers.formatUnits(swapAmount, decimals),
+          minAmount: ethers.formatUnits(
+            CONFIG.executor.swap.minAmountIn,
+            decimals,
+          ),
+        });
+        return;
+      }
+
+      // Set up the swap path and parameters
+      const path = [rewardTokenAddress, ethers.ZeroAddress]; // Token -> ETH
+      const deadline =
+        Math.floor(Date.now() / 1000) +
+        CONFIG.executor.swap.deadlineMinutes * 60;
+
+      // Get expected ETH output
+      const amountsOut = await uniswapRouter.getAmountsOut(swapAmount, path);
+      if (!amountsOut || !Array.isArray(amountsOut) || amountsOut.length < 2) {
+        throw new Error('Invalid amounts out from Uniswap');
+      }
+
+      // TypeScript safe access to the second element (ETH amount)
+      const ethAmountRaw = amountsOut[1];
+      if (!ethAmountRaw) {
+        throw new Error('ETH output amount is undefined');
+      }
+
+      // Convert to BigInt to ensure type safety
+      const expectedEthAmount = BigInt(ethAmountRaw.toString());
+
+      // Apply slippage tolerance
+      const slippageTolerance = CONFIG.executor.swap.slippageTolerance;
+      const minOutputWithSlippage =
+        (expectedEthAmount *
+          BigInt(Math.floor((1 - slippageTolerance) * 1000))) /
+        1000n;
+
+      this.logger.info('Preparing token swap', {
+        swapAmount: ethers.formatUnits(swapAmount, decimals),
+        expectedEthOutput: ethers.formatEther(expectedEthAmount),
+        minOutputWithSlippage: ethers.formatEther(minOutputWithSlippage),
+        slippageTolerance: `${slippageTolerance * 100}%`,
+      });
+
+      // First approve the router to spend tokens
+      const approveTx = await tokenContract.approve(
+        CONFIG.executor.swap.uniswapRouterAddress,
+        swapAmount,
+      );
+
+      this.logger.info('Approval transaction submitted', {
+        hash: approveTx.hash,
+      });
+
+      // Wait for receipt
+      const approvalReceipt = await pollForReceipt(
+        approveTx.hash,
+        this.relayProvider as unknown as ethers.Provider,
+        this.logger,
+        1,
+      );
+
+      if (!approvalReceipt || approvalReceipt.status !== 1) {
+        throw new Error('Approval transaction failed');
+      }
+
+      this.logger.info('Approval confirmed', {
+        hash: approveTx.hash,
+        blockNumber: approvalReceipt.blockNumber,
+      });
+
+      // Execute the swap
+      const swapTx = await uniswapRouter.swapExactTokensForETH(
+        swapAmount,
+        minOutputWithSlippage,
+        path,
+        signerAddress,
+        deadline,
+      );
+
+      this.logger.info('Swap transaction submitted', {
+        hash: swapTx.hash,
+      });
+
+      // Wait for swap to be mined
+      const swapReceipt = await pollForReceipt(
+        swapTx.hash,
+        this.relayProvider as unknown as ethers.Provider,
+        this.logger,
+        1,
+      );
+
+      if (!swapReceipt) {
+        throw new Error('No receipt returned from swap transaction');
+      }
+
+      this.logger.info('Token swap successful', {
+        hash: swapTx.hash,
+        gasUsed: swapReceipt.gasUsed?.toString(),
+        blockNumber: swapReceipt.blockNumber,
+        tokensSwapped: ethers.formatUnits(swapAmount, decimals),
+      });
+    } catch (error) {
+      this.logger.error('Token swap failed', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+
+      if (this.errorLogger) {
+        this.errorLogger.error(
+          error instanceof Error ? error : new Error(String(error)),
+          {
+            stage: 'relayer-executor-token-swap-error',
+          },
+        );
+      }
     }
   }
 }

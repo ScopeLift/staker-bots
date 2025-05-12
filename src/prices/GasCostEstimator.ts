@@ -19,9 +19,11 @@ export class GasCostEstimator {
   private static readonly FALLBACK_ETH_PRICE_USD = 2500;
   private static readonly FALLBACK_TOKEN_PRICE_USD = 0.1;
   private static readonly MINIMUM_GAS_COST_USD = 30; // $30 minimum
-  private static readonly FALLBACK_GAS_PRICE_GWEI = 50n; // 50 gwei
+  private static readonly FALLBACK_GAS_PRICE_GWEI = 3n; // 3 gwei (base ~2.257 + buffer)
+  private static readonly FALLBACK_PRIORITY_FEE_GWEI = 0.2; // 0.2 gwei (tip ~0.158 + buffer)
   private static readonly ETH_DECIMALS = 18;
-  private static readonly TOKEN_DECIMALS = CONFIG.govlst.rewardTokenDecimals || 18;
+  private static readonly TOKEN_DECIMALS =
+    CONFIG.govlst.rewardTokenDecimals || 18;
 
   constructor() {
     this.logger = new ConsoleLogger('info');
@@ -45,20 +47,41 @@ export class GasCostEstimator {
   private async getCurrentGasPrice(provider: ethers.Provider): Promise<bigint> {
     try {
       const feeData = await provider.getFeeData();
-      const gasPrice = feeData?.gasPrice
-        ? BigInt(feeData.gasPrice.toString())
-        : GasCostEstimator.FALLBACK_GAS_PRICE_GWEI * 10n ** 9n;
+      let gasPrice: bigint;
+      let priorityFee: bigint | undefined;
 
-      this.logger.info('Retrieved current gas price', {
+      if (feeData?.gasPrice) {
+        // Apply 25% buffer to current gas price
+        const currentGasPrice = BigInt(feeData.gasPrice.toString());
+        gasPrice = (currentGasPrice * 125n) / 100n; // Add 25% buffer
+
+        // Also get max priority fee if EIP-1559 is active
+        if (feeData.maxPriorityFeePerGas) {
+          priorityFee = BigInt(feeData.maxPriorityFeePerGas.toString());
+          priorityFee = (priorityFee * 125n) / 100n; // Add 25% buffer
+        }
+      } else {
+        // Use fallback values
+        gasPrice = GasCostEstimator.FALLBACK_GAS_PRICE_GWEI * 10n ** 9n;
+        priorityFee = BigInt(
+          Math.floor(GasCostEstimator.FALLBACK_PRIORITY_FEE_GWEI * 1e9),
+        );
+      }
+
+      this.logger.info('Retrieved current gas price with 25% buffer', {
         gasPriceWei: gasPrice.toString(),
         gasPriceGwei: Number(gasPrice) / 1e9,
-        source: feeData?.gasPrice ? 'provider' : 'fallback',
+        priorityFeeWei: priorityFee?.toString() || 'N/A',
+        priorityFeeGwei: priorityFee ? Number(priorityFee) / 1e9 : 'N/A',
+        source: feeData?.gasPrice ? 'provider (+25% buffer)' : 'fallback',
       });
 
       return gasPrice;
     } catch (error) {
       this.logger.warn('Failed to get gas price, using fallback', {
         fallbackGwei: GasCostEstimator.FALLBACK_GAS_PRICE_GWEI.toString(),
+        fallbackPriorityFeeGwei:
+          GasCostEstimator.FALLBACK_PRIORITY_FEE_GWEI.toString(),
         error: error instanceof Error ? error.message : String(error),
       });
       return GasCostEstimator.FALLBACK_GAS_PRICE_GWEI * 10n ** 9n;
@@ -84,10 +107,16 @@ export class GasCostEstimator {
 
     try {
       const prices = await this.priceFeed.getTokenPrices();
-      
+
       // Convert prices to wei/token base units with proper decimals
-      const ethPriceScaled = BigInt(Math.floor(prices.gasToken.usd * 10 ** GasCostEstimator.ETH_DECIMALS));
-      const tokenPriceScaled = BigInt(Math.floor(prices.rewardToken.usd * 10 ** GasCostEstimator.TOKEN_DECIMALS));
+      const ethPriceScaled = BigInt(
+        Math.floor(prices.gasToken.usd * 10 ** GasCostEstimator.ETH_DECIMALS),
+      );
+      const tokenPriceScaled = BigInt(
+        Math.floor(
+          prices.rewardToken.usd * 10 ** GasCostEstimator.TOKEN_DECIMALS,
+        ),
+      );
 
       const priceData = {
         ethPrice: ethPriceScaled,
@@ -132,10 +161,16 @@ export class GasCostEstimator {
 
       return {
         ethPrice: BigInt(
-          Math.floor(GasCostEstimator.FALLBACK_ETH_PRICE_USD * 10 ** GasCostEstimator.ETH_DECIMALS),
+          Math.floor(
+            GasCostEstimator.FALLBACK_ETH_PRICE_USD *
+              10 ** GasCostEstimator.ETH_DECIMALS,
+          ),
         ),
         tokenPrice: BigInt(
-          Math.floor(GasCostEstimator.FALLBACK_TOKEN_PRICE_USD * 10 ** GasCostEstimator.TOKEN_DECIMALS),
+          Math.floor(
+            GasCostEstimator.FALLBACK_TOKEN_PRICE_USD *
+              10 ** GasCostEstimator.TOKEN_DECIMALS,
+          ),
         ),
       };
     }
@@ -143,14 +178,21 @@ export class GasCostEstimator {
 
   private calculateMinimumGasCostInTokens(tokenPriceUSD: bigint): bigint {
     // Convert minimum USD value to token amount based on token price
-    const minCost = (BigInt(GasCostEstimator.MINIMUM_GAS_COST_USD) * 10n ** BigInt(GasCostEstimator.TOKEN_DECIMALS)) / tokenPriceUSD;
-    
+    const minCost =
+      (BigInt(GasCostEstimator.MINIMUM_GAS_COST_USD) *
+        10n ** BigInt(GasCostEstimator.TOKEN_DECIMALS)) /
+      tokenPriceUSD;
+
     this.logger.info('Calculated minimum gas cost in tokens', {
       minUSD: GasCostEstimator.MINIMUM_GAS_COST_USD,
-      tokenPriceUSD: Number(tokenPriceUSD) / 10 ** GasCostEstimator.TOKEN_DECIMALS,
-      minCostInTokens: ethers.formatUnits(minCost, GasCostEstimator.TOKEN_DECIMALS),
+      tokenPriceUSD:
+        Number(tokenPriceUSD) / 10 ** GasCostEstimator.TOKEN_DECIMALS,
+      minCostInTokens: ethers.formatUnits(
+        minCost,
+        GasCostEstimator.TOKEN_DECIMALS,
+      ),
     });
-    
+
     return minCost;
   }
 
@@ -179,35 +221,54 @@ export class GasCostEstimator {
       // Calculate cost in tokens with decimal adjustment
       // Formula: (gasCostWei * ethPriceUSD) / tokenPriceUSD
       // Note: We need to adjust for the difference in decimals between ETH and the reward token
-      const decimalAdjustment = 10n ** BigInt(Math.abs(GasCostEstimator.ETH_DECIMALS - GasCostEstimator.TOKEN_DECIMALS));
+      const decimalAdjustment =
+        10n **
+        BigInt(
+          Math.abs(
+            GasCostEstimator.ETH_DECIMALS - GasCostEstimator.TOKEN_DECIMALS,
+          ),
+        );
       let costInRewardTokens: bigint;
-      
+
       if (GasCostEstimator.ETH_DECIMALS >= GasCostEstimator.TOKEN_DECIMALS) {
-        costInRewardTokens = (gasCostWei * ethPrice) / (tokenPrice * decimalAdjustment);
+        costInRewardTokens =
+          (gasCostWei * ethPrice) / (tokenPrice * decimalAdjustment);
       } else {
-        costInRewardTokens = (gasCostWei * ethPrice * decimalAdjustment) / tokenPrice;
+        costInRewardTokens =
+          (gasCostWei * ethPrice * decimalAdjustment) / tokenPrice;
       }
 
       // Ensure we never go below minimum gas cost
       const minimumCost = this.calculateMinimumGasCostInTokens(tokenPrice);
 
       this.logger.info('Gas cost calculation details', {
-        gasCostInTokens: ethers.formatUnits(costInRewardTokens, GasCostEstimator.TOKEN_DECIMALS),
-        minimumCostInTokens: ethers.formatUnits(minimumCost, GasCostEstimator.TOKEN_DECIMALS),
+        gasCostInTokens: ethers.formatUnits(
+          costInRewardTokens,
+          GasCostEstimator.TOKEN_DECIMALS,
+        ),
+        minimumCostInTokens: ethers.formatUnits(
+          minimumCost,
+          GasCostEstimator.TOKEN_DECIMALS,
+        ),
         gasPriceGwei: Number(gasPriceWei) / 1e9,
         providedGasLimit: gasLimit.toString(),
         ethPriceUSD: Number(ethPrice) / 10 ** GasCostEstimator.ETH_DECIMALS,
-        tokenPriceUSD: Number(tokenPrice) / 10 ** GasCostEstimator.TOKEN_DECIMALS,
+        tokenPriceUSD:
+          Number(tokenPrice) / 10 ** GasCostEstimator.TOKEN_DECIMALS,
         decimalAdjustment: decimalAdjustment.toString(),
         ethDecimals: GasCostEstimator.ETH_DECIMALS,
         tokenDecimals: GasCostEstimator.TOKEN_DECIMALS,
         usingCache: this.isCacheValid(),
       });
 
-      const finalCost = costInRewardTokens > minimumCost ? costInRewardTokens : minimumCost;
+      const finalCost =
+        costInRewardTokens > minimumCost ? costInRewardTokens : minimumCost;
 
       this.logger.info('Final gas cost', {
-        costInTokens: ethers.formatUnits(finalCost, GasCostEstimator.TOKEN_DECIMALS),
+        costInTokens: ethers.formatUnits(
+          finalCost,
+          GasCostEstimator.TOKEN_DECIMALS,
+        ),
         usingMinimum: finalCost === minimumCost,
       });
 
@@ -215,11 +276,19 @@ export class GasCostEstimator {
     } catch (error) {
       // Fallback to minimum USD value in tokens
       const fallbackCost = this.calculateMinimumGasCostInTokens(
-        BigInt(Math.floor(GasCostEstimator.FALLBACK_TOKEN_PRICE_USD * 10 ** GasCostEstimator.TOKEN_DECIMALS)),
+        BigInt(
+          Math.floor(
+            GasCostEstimator.FALLBACK_TOKEN_PRICE_USD *
+              10 ** GasCostEstimator.TOKEN_DECIMALS,
+          ),
+        ),
       );
 
       this.logger.warn('Using fallback gas cost', {
-        costInTokens: ethers.formatUnits(fallbackCost, GasCostEstimator.TOKEN_DECIMALS),
+        costInTokens: ethers.formatUnits(
+          fallbackCost,
+          GasCostEstimator.TOKEN_DECIMALS,
+        ),
         minimumUSD: GasCostEstimator.MINIMUM_GAS_COST_USD,
         reason: error instanceof Error ? error.message : String(error),
       });

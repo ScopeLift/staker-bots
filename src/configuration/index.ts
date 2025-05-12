@@ -59,6 +59,21 @@ export const CONFIG = {
       process.env.EXECUTOR_STALE_TX_THRESHOLD_MINUTES || '5',
       10,
     ),
+    swap: {
+      enabled: process.env.EXECUTOR_SWAP_TO_ETH === 'true',
+      uniswapRouterAddress: process.env.UNISWAP_ROUTER_ADDRESS || '',
+      slippageTolerance: parseFloat(
+        process.env.SWAP_SLIPPAGE_TOLERANCE || '0.5',
+      ),
+      deadlineMinutes: parseInt(process.env.SWAP_DEADLINE_MINUTES || '10'),
+      minAmountIn: process.env.SWAP_MIN_AMOUNT_IN
+        ? BigInt(process.env.SWAP_MIN_AMOUNT_IN)
+        : ethers.parseUnits('1', 18), // Default 1 token
+      maxAmountIn: process.env.SWAP_MAX_AMOUNT_IN
+        ? BigInt(process.env.SWAP_MAX_AMOUNT_IN)
+        : ethers.parseUnits('1000', 18), // Default 1000 tokens
+      tokenDecimals: parseInt(process.env.SWAP_TOKEN_DECIMALS || '18'),
+    },
   },
   defender: {
     apiKey: process.env.DEFENDER_API_KEY || '',
@@ -72,12 +87,14 @@ export const CONFIG = {
         process.env.DEFENDER_MAX_PENDING_TXS || '5',
       ),
       gasPolicy: {
+        // Default max fee is ~3 Gwei (base fee ~2.257 Gwei + 25% buffer)
         maxFeePerGas: process.env.DEFENDER_MAX_FEE
           ? BigInt(process.env.DEFENDER_MAX_FEE)
-          : undefined,
+          : BigInt(3000000000),
+        // Default priority fee is ~0.2 Gwei (tip ~0.158 Gwei + 25% buffer)
         maxPriorityFeePerGas: process.env.DEFENDER_PRIORITY_FEE
           ? BigInt(process.env.DEFENDER_PRIORITY_FEE)
-          : undefined,
+          : BigInt(200000000),
       },
     },
   },
@@ -96,7 +113,7 @@ export const CONFIG = {
       process.env.PROFITABILITY_REWARD_CHECK_INTERVAL || '60000',
     ), // 1 minute
     minProfitMargin: parseFloat(
-      process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT || '10',
+      process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT || '1',
     ), // 10% minimum profit margin by default
     gasPriceBuffer: 50, // 50% buffer for gas price volatility
     maxBatchSize: 10,
@@ -115,9 +132,19 @@ export const CONFIG = {
     ), // 10% minimum profit margin by default
     maxBatchSize: parseInt(process.env.GOVLST_MAX_BATCH_SIZE || '10', 10),
     claimInterval: parseInt(process.env.GOVLST_CLAIM_INTERVAL || '3600', 10), // 1 hour default
-    gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.2'), // 20% buffer
+    gasPriceBuffer: parseFloat(process.env.GOVLST_GAS_PRICE_BUFFER || '1.25'), // 25% buffer
     minEarningPower: BigInt(process.env.GOVLST_MIN_EARNING_POWER || 10000), // Minimum earning power threshold
-    rewardTokenDecimals: parseInt(process.env.GOVLST_REWARD_TOKEN_DECIMALS || '18', 10), // Default to 18 decimals
+    rewardTokenDecimals: parseInt(
+      process.env.GOVLST_REWARD_TOKEN_DECIMALS || '18',
+      10,
+    ), // Default to 18 decimals
+  },
+  tenderly: {
+    useSimulation: process.env.TENDERLY_USE_SIMULATE === 'true',
+    accessKey: process.env.TENDERLY_ACCESS_KEY || '',
+    accountName: process.env.TENDERLY_ACCOUNT_NAME || '',
+    projectName: process.env.TENDERLY_PROJECT_NAME || '',
+    networkId: process.env.TENDERLY_NETWORK_ID || '1', // Default to mainnet (1)
   },
 } as const;
 
