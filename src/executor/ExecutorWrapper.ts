@@ -23,6 +23,7 @@ import {
   getCurrentBlockNumberWithRetry,
   sleep,
 } from './strategies/helpers';
+import { RelayerExecutorWithMEV, MEVRelayerExecutorConfig } from './strategies/RelayerExecutorWithMEV';
 
 // Basic sleep function implementation if not available in utils
 // const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -33,6 +34,8 @@ import {
 export enum ExecutorType {
   WALLET = 'wallet',
   DEFENDER = 'defender',
+  WALLET_WITH_MEV = 'wallet_with_mev',
+  DEFENDER_WITH_MEV = 'defender_with_mev',
 }
 
 /**
@@ -44,6 +47,19 @@ export interface ExtendedExecutorConfig extends ExecutorConfig {
 
 export interface ExtendedRelayerExecutorConfig extends RelayerExecutorConfig {
   errorLogger?: ErrorLogger;
+}
+
+// Add MEV-specific configuration interface
+export interface MEVConfig {
+  useMevProtection: boolean;
+  flashbots?: {
+    rpcUrl?: string;
+    chainId?: number;
+    fast?: boolean;
+  };
+  wallet?: {
+    privateKey?: string;
+  };
 }
 
 /**
@@ -122,9 +138,63 @@ export class ExecutorWrapper {
 
       this.executor = new RelayerExecutor(lstContract, provider, fullConfig);
       this.lastDefenderValidationTimestamp = Date.now(); // Initialize timestamp
+    } else if (type === ExecutorType.DEFENDER_WITH_MEV) {
+      // Create a RelayerExecutorWithMEV with MEV protection
+      const mevConfig: MEVRelayerExecutorConfig = {
+        ...EXECUTOR.DEFAULT_RELAYER_CONFIG,
+        ...(config as Partial<ExtendedRelayerExecutorConfig>),
+        errorLogger: this.errorLogger,
+        useMevProtection: true,
+        // Add wallet config if provided
+        wallet: {
+          privateKey: process.env.EXECUTOR_PRIVATE_KEY || '',
+          ...(config as any)?.wallet,
+        },
+        // Add flashbots config if provided
+        flashbots: {
+          chainId: Number(process.env.CHAIN_ID || '1'),
+          fast: process.env.FLASHBOTS_FAST_MODE !== 'false',
+          rpcUrl: process.env.FLASHBOTS_RPC_URL || '',
+          ...(config as any)?.flashbots,
+        },
+      };
+
+      this.executor = new RelayerExecutorWithMEV(
+        lstContract, 
+        provider, 
+        mevConfig
+      );
+    } else if (type === ExecutorType.WALLET_WITH_MEV) {
+      // For wallet with MEV, we'll also use RelayerExecutorWithMEV but configure it differently
+      const mevConfig: MEVRelayerExecutorConfig = {
+        ...EXECUTOR.DEFAULT_RELAYER_CONFIG,
+        apiKey: '',    // Not used with wallet
+        apiSecret: '', // Not used with wallet
+        address: '',   // Not used with wallet
+        errorLogger: this.errorLogger,
+        useMevProtection: true,
+        // Add wallet config using private key from env or config
+        wallet: {
+          privateKey: process.env.EXECUTOR_PRIVATE_KEY || '',
+          ...(config as Partial<ExtendedExecutorConfig>)?.wallet,
+        },
+        // Add flashbots config if provided
+        flashbots: {
+          chainId: Number(process.env.CHAIN_ID || '1'),
+          fast: process.env.FLASHBOTS_FAST_MODE !== 'false',
+          rpcUrl: process.env.FLASHBOTS_RPC_URL || '',
+          ...(config as any)?.flashbots,
+        },
+      };
+
+      this.executor = new RelayerExecutorWithMEV(
+        lstContract, 
+        provider, 
+        mevConfig
+      );
     } else {
       throw new ExecutorError(
-        `Invalid executor type: ${type}. Must be '${ExecutorType.WALLET}' or '${ExecutorType.DEFENDER}'`,
+        `Invalid executor type: ${type}. Must be one of: ${Object.values(ExecutorType).join(', ')}`,
         { type },
         false,
       );

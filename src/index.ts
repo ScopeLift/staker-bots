@@ -241,12 +241,28 @@ async function initializeExecutor(
   }
 
   // Determine executor type from environment or configuration
-  const executorType = CONFIG.executor.executorType || 'wallet';
+  const rawExecutorType = CONFIG.executor.executorType || 'wallet';
 
-  // Validate executor type
-  if (!['wallet', 'defender', 'relayer'].includes(executorType)) {
+  // Determine if MEV protection should be enabled
+  const useMevProtection = CONFIG.executor.mev?.enabled === true;
+
+  // Map the raw executor type to our ExecutorType enum with MEV protection if enabled
+  let executorType: ExecutorType;
+
+  if (rawExecutorType === 'wallet') {
+    executorType = useMevProtection ? ExecutorType.WALLET_WITH_MEV : ExecutorType.WALLET;
+  } else if (rawExecutorType === 'defender' || rawExecutorType === 'relayer') {
+    executorType = useMevProtection ? ExecutorType.DEFENDER_WITH_MEV : ExecutorType.DEFENDER;
+  } else {
     throw new Error(
-      `Invalid executor type: ${executorType}. Must be 'wallet', 'defender', or 'relayer'`,
+      `Invalid executor type: ${rawExecutorType}. Valid types are: wallet, defender, relayer`
+    );
+  }
+
+  // Validate that the enum values exist (prevents runtime errors from missing imports)
+  if (!Object.values(ExecutorType).includes(executorType)) {
+    throw new Error(
+      `Invalid executor type enum value: ${executorType}. Did you import ExecutorType correctly?`
     );
   }
 
@@ -257,53 +273,70 @@ async function initializeExecutor(
     provider,
   );
 
+  // Update the log message to include MEV status
   logger.info('Creating executor with configuration:', {
-    type: executorType,
+    type: executorType.toString(),
+    useMevProtection,
     lstAddress: CONFIG.monitor.lstAddress,
     tipReceiver: CONFIG.executor.tipReceiver,
     hasPrivateKey: !!CONFIG.executor.privateKey,
     hasDefenderCredentials:
       !!CONFIG.defender.apiKey && !!CONFIG.defender.secretKey,
+    flashbotsRpcUrl: useMevProtection ? (CONFIG.executor.mev.flashbotsRpcUrl || 'default') : 'disabled',
   });
 
-  const executorConfig =
-    executorType === 'defender' || executorType === 'relayer'
-      ? {
-          apiKey: CONFIG.defender.apiKey,
-          apiSecret: CONFIG.defender.secretKey,
-          address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
-          minBalance: CONFIG.defender.relayer.minBalance,
-          maxPendingTransactions:
-            CONFIG.defender.relayer.maxPendingTransactions,
-          maxQueueSize: 100,
-          minConfirmations: CONFIG.monitor.confirmations,
-          maxRetries: CONFIG.monitor.maxRetries,
-          retryDelayMs: 5000,
-          transferOutThreshold: ethers.parseEther('0.5'),
-          gasBoostPercentage: 30,
-          concurrentTransactions: 3,
-          gasPolicy: CONFIG.defender.relayer.gasPolicy,
-          staleTransactionThresholdMinutes:
-            CONFIG.executor.staleTransactionThresholdMinutes,
-          errorLogger, // Pass the error logger to the config
-        }
-      : {
-          wallet: {
-            privateKey: CONFIG.executor.privateKey,
-            minBalance: ethers.parseEther('0.01'),
-            maxPendingTransactions: 5,
-          },
-          defaultTipReceiver: CONFIG.executor.tipReceiver,
-          staleTransactionThresholdMinutes:
-            CONFIG.executor.staleTransactionThresholdMinutes,
-          errorLogger, // Pass the error logger to the config
-        };
+  // Update the executor config to include MEV settings if needed
+  const mevConfig = useMevProtection ? {
+    useMevProtection: true,
+    flashbots: {
+      rpcUrl: CONFIG.executor.mev.flashbotsRpcUrl,
+      chainId: CONFIG.executor.mev.chainId,
+      fast: CONFIG.executor.mev.fastMode,
+    },
+    wallet: {
+      privateKey: CONFIG.executor.privateKey,
+    },
+  } : undefined;
 
+  // Update the executor creation
   const executor = new ExecutorWrapper(
     lstContract,
     provider,
-    executorType === 'defender' ? ExecutorType.DEFENDER : ExecutorType.WALLET,
-    executorConfig,
+    executorType,
+    {
+      ...(executorType === ExecutorType.DEFENDER || executorType === ExecutorType.DEFENDER_WITH_MEV
+        ? {
+            apiKey: CONFIG.defender.apiKey,
+            apiSecret: CONFIG.defender.secretKey,
+            address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
+            minBalance: CONFIG.defender.relayer.minBalance,
+            maxPendingTransactions:
+              CONFIG.defender.relayer.maxPendingTransactions,
+            maxQueueSize: 100,
+            minConfirmations: CONFIG.monitor.confirmations,
+            maxRetries: CONFIG.monitor.maxRetries,
+            retryDelayMs: 5000,
+            transferOutThreshold: ethers.parseEther('0.5'),
+            gasBoostPercentage: 30,
+            concurrentTransactions: 3,
+            gasPolicy: CONFIG.defender.relayer.gasPolicy,
+            staleTransactionThresholdMinutes:
+              CONFIG.executor.staleTransactionThresholdMinutes,
+            errorLogger,
+          }
+        : {
+            wallet: {
+              privateKey: CONFIG.executor.privateKey,
+              minBalance: ethers.parseEther('0.00001'),
+              maxPendingTransactions: 5,
+            },
+            defaultTipReceiver: CONFIG.executor.tipReceiver,
+            staleTransactionThresholdMinutes:
+              CONFIG.executor.staleTransactionThresholdMinutes,
+            errorLogger,
+          }),
+      ...(mevConfig || {}), // Add MEV config if enabled
+    },
     database,
   );
 

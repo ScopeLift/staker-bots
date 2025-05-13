@@ -987,3 +987,65 @@ The executor now features automatic token swapping to ETH when ETH balance is lo
 - Handles token approvals and transaction confirmations
 - Detailed logging for monitoring and troubleshooting
 - Graceful error handling with full database logging
+
+# MEV Protection with Flashbots
+
+The staker-bots system now includes built-in MEV (Maximal Extractable Value) protection using Flashbots to prevent frontrunning attacks on your transactions. This integration allows transactions to be sent directly to validators/miners bypassing the public mempool, which significantly reduces the risk of frontrunning.
+
+## How MEV Protection Works
+
+1. **Direct to Validators**: Transactions are sent directly to validators via Flashbots Protect RPC instead of going through the public mempool
+2. **Private Transactions**: This prevents MEV bots from seeing and frontrunning your transactions
+3. **Automatic Fallback**: If Flashbots submission fails, the system automatically falls back to the standard transaction submission method
+4. **No Additional Costs**: Using Flashbots protection is completely free - you only pay normal gas fees
+
+## Enabling MEV Protection
+
+To enable MEV protection, update your `.env` file with:
+
+```env
+# Enable MEV protection
+USE_MEV_PROTECTION=true
+
+# Optional: Use fast mode for quicker inclusion (recommended)
+FLASHBOTS_FAST_MODE=true 
+
+# Optional: Override default Flashbots RPC URL
+# FLASHBOTS_RPC_URL=https://rpc.flashbots.net/fast
+```
+
+Then, set your executor type to one of the MEV-protected options:
+
+```env
+# For wallet-based executor with MEV protection
+EXECUTOR_TYPE=wallet_with_mev
+
+# OR for defender-based executor with MEV protection
+EXECUTOR_TYPE=defender_with_mev
+```
+
+## MEV Protection Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `USE_MEV_PROTECTION` | `false` | Enable/disable MEV protection |
+| `FLASHBOTS_FAST_MODE` | `true` | Use fast mode for quicker transaction inclusion |
+| `FLASHBOTS_RPC_URL` | Chain-specific | Override default Flashbots RPC URL |
+| `EXECUTOR_PRIVATE_KEY` | | Private key for signing and sending transactions |
+
+## Supported Networks
+
+MEV protection is available on the following networks:
+
+- Ethereum Mainnet
+- Goerli Testnet
+- Sepolia Testnet
+- Holesky Testnet
+
+## Troubleshooting
+
+If you experience issues with MEV protection:
+
+1. Ensure your private key has enough ETH for gas
+2. Check that you're using a supported network
+3. If transactions are consistently failing via Flashbots, temporarily disable MEV protection and investigate
