@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from "uuid";
 import { DatabaseWrapper } from "@/database";
 import { Interface } from "ethers";
 import { TransactionQueueStatus } from "@/database/interfaces/types";
+import { SimulationService } from "@/simulation";
 
 /**
  * Base implementation of the executor using a direct wallet.
@@ -175,17 +176,21 @@ export class BaseExecutor implements IExecutor {
     const tx: QueuedTransaction = {
       id: uuidv4(),
       depositId,
+      depositIds: [depositId],
       profitability,
       status: TransactionStatus.QUEUED,
       createdAt: new Date(),
       tx_data: txData,
+      metadata: {
+        queueItemId: undefined
+      }
     };
 
     // Add to queue
     this.queue.set(tx.id, tx);
     this.logger.info("Transaction queued:", {
       id: tx.id,
-      depositId: tx.depositId.toString(),
+      depositId: depositId.toString(),
       hasTxData: !!txData,
     });
 
@@ -231,13 +236,14 @@ export class BaseExecutor implements IExecutor {
         : 0;
 
     return {
-      totalQueued: txs.filter((tx) => tx.status === TransactionStatus.QUEUED)
-        .length,
-      totalPending: txs.filter((tx) => tx.status === TransactionStatus.PENDING)
-        .length,
+      totalTransactions: txs.length,
+      pendingTransactions: txs.filter(tx => tx.status === TransactionStatus.PENDING).length,
+      confirmedTransactions: confirmedTxs.length,
+      failedTransactions: txs.filter(tx => tx.status === TransactionStatus.FAILED).length,
+      totalQueued: txs.filter((tx) => tx.status === TransactionStatus.QUEUED).length,
+      totalPending: txs.filter((tx) => tx.status === TransactionStatus.PENDING).length,
       totalConfirmed: confirmedTxs.length,
-      totalFailed: txs.filter((tx) => tx.status === TransactionStatus.FAILED)
-        .length,
+      totalFailed: txs.filter((tx) => tx.status === TransactionStatus.FAILED).length,
       averageExecutionTime: avgExecTime,
       averageGasPrice: avgGasPrice,
       totalProfits,
@@ -268,6 +274,12 @@ export class BaseExecutor implements IExecutor {
       blockNumber: receipt.blockNumber,
       gasUsed: receipt.gasUsed,
       effectiveGasPrice: receipt.gasPrice || BigInt(0),
+      gasPrice: receipt.gasPrice || BigInt(0),
+      logs: receipt.logs.map(log => ({
+        address: log.address,
+        topics: [...log.topics],
+        data: log.data
+      }))
     };
   }
 
@@ -329,6 +341,12 @@ export class BaseExecutor implements IExecutor {
         blockNumber: receipt.blockNumber,
         gasUsed: receipt.gasUsed,
         effectiveGasPrice: receipt.gasPrice || BigInt(0),
+        gasPrice: receipt.gasPrice || BigInt(0),
+        logs: receipt.logs.map(log => ({
+          address: log.address,
+          topics: [...log.topics],
+          data: log.data
+        }))
       };
     } catch (error) {
       this.logger.error("Failed to transfer tips:", {
@@ -405,25 +423,78 @@ export class BaseExecutor implements IExecutor {
       this.logger.info("Executing transaction", { id: tx.id });
 
       // Parse transaction data
-      const { depositId, tipReceiver, requestedTip, queueItemId } =
-        this.parseTransactionData(tx);
+      const safeDepositId = tx.depositId || tx.depositIds[0];
+      if (!safeDepositId) {
+        throw new Error("No deposit ID found in transaction");
+      }
 
-      // Update database with pending status if queueItemId exists
-      if (this.db && queueItemId) {
+      let depositId = safeDepositId;
+      let tipReceiver = this.wallet.address;
+      let requestedTip = tx.profitability.estimates.optimalTip || BigInt(0);
+      let queueItemId: string | undefined;
+
+      // Parse tx_data if available
+      if (tx.tx_data) {
         try {
-          await this.db.updateTransactionQueueItem(queueItemId, {
-            status: TransactionQueueStatus.PENDING,
-          });
-          this.logger.info("Updated transaction queue item status to PENDING", {
-            queueItemId,
-          });
+          if (tx.tx_data.startsWith("{")) {
+            const txMetadata = JSON.parse(tx.tx_data);
+            queueItemId = txMetadata.id;
+
+            // Extract parameters
+            depositId = BigInt(txMetadata._depositId || depositId.toString());
+            tipReceiver =
+              typeof txMetadata._tipReceiver === "string"
+                ? txMetadata._tipReceiver
+                : this.wallet.address;
+
+            // Get requested tip amount
+            const metadataTip = BigInt(txMetadata._requestedTip || "0");
+            requestedTip = metadataTip > BigInt(0) ? metadataTip : requestedTip;
+          }
         } catch (error) {
-          this.logger.error("Failed to update transaction queue item status", {
+          this.logger.error("Failed to parse tx_data", {
             error: error instanceof Error ? error.message : String(error),
-            queueItemId,
+            txData: tx.tx_data.substring(0, 50) + "...",
           });
         }
       }
+
+      // Ensure tip doesn't exceed wallet balance
+      const adjustRequestedTip = async (): Promise<bigint> => {
+        const walletBalance = await this.getWalletBalance();
+        // Reserve some ETH for gas (estimated 0.01 ETH)
+        const reserveForGas = BigInt(10000000000000000); // 0.01 ETH
+
+        if (requestedTip > walletBalance) {
+          // Use at most 90% of wallet balance, minus gas reserve
+          const availableForTip =
+            walletBalance > reserveForGas
+              ? ((walletBalance - reserveForGas) * BigInt(90)) / BigInt(100)
+              : BigInt(0);
+
+          this.logger.info("Adjusting tip amount to fit wallet balance", {
+            originalTip: requestedTip.toString(),
+            adjustedTip: availableForTip.toString(),
+            walletBalance: walletBalance.toString(),
+          });
+
+          return availableForTip;
+        }
+
+        return requestedTip;
+      };
+
+      // Adjust the tip (synchronously for simplicity)
+      requestedTip = BigInt(0); // Default to 0 if wallet balance check fails
+      adjustRequestedTip()
+        .then((adjustedTip) => {
+          requestedTip = adjustedTip;
+        })
+        .catch((error) => {
+          this.logger.error("Failed to adjust tip amount", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
 
       // Verify transaction will succeed with static call before executing
       const simulationResult = await this.simulateTransaction(
@@ -533,6 +604,14 @@ export class BaseExecutor implements IExecutor {
           hash: receipt.hash,
         });
       }
+
+      // Update transaction with queue item ID
+      if (queueItemId) {
+        tx.metadata = {
+          ...tx.metadata,
+          queueItemId
+        };
+      }
     } catch (error) {
       // Handle execution error
       tx.status = TransactionStatus.FAILED;
@@ -541,7 +620,7 @@ export class BaseExecutor implements IExecutor {
 
       this.logger.error("Transaction execution failed", {
         id: tx.id,
-        depositId: tx.depositId.toString(),
+        depositId: (tx.depositId || tx.depositIds[0]!).toString(),
         error: error instanceof Error ? error.message : String(error),
       });
 
@@ -563,184 +642,101 @@ export class BaseExecutor implements IExecutor {
     requestedTip: bigint,
   ): Promise<{ success: boolean; result?: bigint; error?: string }> {
     try {
-      this.logger.info("Simulating transaction", {
-        depositId: depositId.toString(),
-        tipReceiver,
-        requestedTip: requestedTip.toString(),
-      });
-
-      // Get the function reference
-      const bumpFunction = this.stakerContract.getFunction("bumpEarningPower");
-
-      // Simulate the transaction
-      const result = await bumpFunction.staticCall(
+      const simulationService = new SimulationService();
+      const encodedData = this.contractInterface.encodeFunctionData("bumpEarningPower", [
         depositId,
         tipReceiver,
-        requestedTip,
-        { value: requestedTip },
+        requestedTip
+      ]);
+
+      const simulation = await simulationService.simulateTransaction(
+        {
+          from: this.wallet.address,
+          to: this.contractAddress,
+          data: encodedData,
+          value: requestedTip.toString(),
+        },
+        {
+          networkId: this.config.chainId.toString(),
+        },
       );
 
-      this.logger.info("Simulation successful", {
-        depositId: depositId.toString(),
-        result: result.toString(),
-      });
+      if (!simulation.success || simulation.error) {
+        return {
+          success: false,
+          error: simulation.error?.message || "Simulation failed",
+        };
+      }
 
-      return { success: true, result };
+      // Extract the result from the simulation if available
+      const result = simulation.returnValue
+        ? BigInt(simulation.returnValue)
+        : undefined;
+
+      return {
+        success: true,
+        result,
+      };
     } catch (error) {
-      // Log the error and return failure
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-
       this.logger.error("Transaction simulation failed", {
+        error: error instanceof Error ? error.message : String(error),
         depositId: depositId.toString(),
-        error: errorMessage,
       });
-
-      return { success: false, error: errorMessage };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
   /**
    * Estimate gas parameters for a transaction
-   * @param depositId The deposit ID
-   * @param tipReceiver The tip receiver address
-   * @param requestedTip The tip amount
-   * @returns Gas parameters with gasLimit and gasPrice
    */
   protected async estimateGasParams(
     depositId: bigint,
     tipReceiver: string,
     requestedTip: bigint,
   ): Promise<{ gasLimit: bigint; gasPrice: bigint }> {
-    // Calculate gas price with boost
-    const feeData = await this.provider.getFeeData();
-    const baseGasPrice = feeData.gasPrice || BigInt(0);
-    const boostMultiplier =
-      BigInt(100 + this.config.gasBoostPercentage) / BigInt(100);
-    let gasPrice = baseGasPrice * boostMultiplier;
-
-    // Ensure gas price is at least the base fee
-    const baseFeePerGas = feeData.maxFeePerGas || baseGasPrice;
-    if (gasPrice < baseFeePerGas) {
-      gasPrice = baseFeePerGas + BigInt(1_000_000); // Add 1 gwei buffer
-    }
-
-    // Estimate gas for the transaction
-    let gasLimit: bigint;
     try {
-      // Get the function reference
-      const bumpFunction = this.stakerContract.getFunction("bumpEarningPower");
-
-      gasLimit = await bumpFunction.estimateGas(
+      const simulationService = new SimulationService();
+      const encodedData = this.contractInterface.encodeFunctionData("bumpEarningPower", [
         depositId,
         tipReceiver,
-        requestedTip,
-        { value: requestedTip },
+        requestedTip
+      ]);
+
+      const gasEstimate = await simulationService.estimateGasCosts(
+        {
+          from: this.wallet.address,
+          to: this.contractAddress,
+          data: encodedData,
+          value: requestedTip.toString(),
+        },
+        {
+          networkId: this.config.chainId.toString(),
+        },
       );
 
-      // Add 20% buffer for safety
-      gasLimit = (gasLimit * BigInt(120)) / BigInt(100);
+      // Add a 20% buffer to the gas limit for safety
+      const gasLimit = BigInt(Math.floor(gasEstimate.gasUnits * 1.2));
 
-      this.logger.info("Gas estimation successful", {
+      // Use the medium priority fee for a balance of speed and cost
+      const gasPrice = ethers.parseUnits(
+        gasEstimate.gasPriceDetails?.medium.maxFeePerGas || gasEstimate.gasPrice,
+        "gwei",
+      );
+
+      return {
+        gasLimit,
+        gasPrice,
+      };
+    } catch (error) {
+      this.logger.error("Gas estimation failed", {
+        error: error instanceof Error ? error.message : String(error),
         depositId: depositId.toString(),
-        gasLimit: gasLimit.toString(),
-        gasPrice: gasPrice.toString(),
       });
-    } catch (err) {
-      this.logger.error("Failed to estimate gas", {
-        error: err instanceof Error ? err.message : String(err),
-        depositId: depositId.toString(),
-      });
-
-      // Use fallback gas limit
-      gasLimit = BigInt(300000);
-
-      this.logger.warn(`Using fallback gas limit of ${gasLimit.toString()}`);
+      throw error;
     }
-
-    return { gasLimit, gasPrice };
-  }
-
-  /**
-   * Parse transaction data from tx_data or use defaults
-   */
-  private parseTransactionData(tx: QueuedTransaction): {
-    depositId: bigint;
-    tipReceiver: string;
-    requestedTip: bigint;
-    queueItemId?: string;
-  } {
-    let depositId = tx.depositId;
-    let tipReceiver = this.wallet.address;
-    let requestedTip = tx.profitability.estimates.optimalTip || BigInt(0);
-    let queueItemId: string | undefined;
-
-    // Parse tx_data if available
-    if (tx.tx_data) {
-      try {
-        if (tx.tx_data.startsWith("{")) {
-          const txMetadata = JSON.parse(tx.tx_data);
-
-          // Get queue item ID
-          queueItemId = txMetadata.id;
-
-          // Extract parameters
-          depositId = BigInt(txMetadata._depositId || tx.depositId.toString());
-          tipReceiver =
-            typeof txMetadata._tipReceiver === "string"
-              ? txMetadata._tipReceiver
-              : this.wallet.address;
-
-          // Get requested tip amount
-          const metadataTip = BigInt(txMetadata._requestedTip || "0");
-          requestedTip = metadataTip > BigInt(0) ? metadataTip : requestedTip;
-        }
-      } catch (error) {
-        this.logger.error("Failed to parse tx_data", {
-          error: error instanceof Error ? error.message : String(error),
-          txData: tx.tx_data.substring(0, 50) + "...",
-        });
-      }
-    }
-
-    // Ensure tip doesn't exceed wallet balance
-    const adjustRequestedTip = async (): Promise<bigint> => {
-      const walletBalance = await this.getWalletBalance();
-      // Reserve some ETH for gas (estimated 0.01 ETH)
-      const reserveForGas = BigInt(10000000000000000); // 0.01 ETH
-
-      if (requestedTip > walletBalance) {
-        // Use at most 90% of wallet balance, minus gas reserve
-        const availableForTip =
-          walletBalance > reserveForGas
-            ? ((walletBalance - reserveForGas) * BigInt(90)) / BigInt(100)
-            : BigInt(0);
-
-        this.logger.info("Adjusting tip amount to fit wallet balance", {
-          originalTip: requestedTip.toString(),
-          adjustedTip: availableForTip.toString(),
-          walletBalance: walletBalance.toString(),
-        });
-
-        return availableForTip;
-      }
-
-      return requestedTip;
-    };
-
-    // Adjust the tip (synchronously for simplicity)
-    requestedTip = BigInt(0); // Default to 0 if wallet balance check fails
-    adjustRequestedTip()
-      .then((adjustedTip) => {
-        requestedTip = adjustedTip;
-      })
-      .catch((error) => {
-        this.logger.error("Failed to adjust tip amount", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-
-    return { depositId, tipReceiver, requestedTip, queueItemId };
   }
 
   /**
@@ -787,8 +783,8 @@ export class BaseExecutor implements IExecutor {
     try {
       let queueItemId: string | undefined;
 
-      if (tx.queueItemId) {
-        queueItemId = tx.queueItemId;
+      if (tx.metadata?.queueItemId) {
+        queueItemId = tx.metadata.queueItemId;
       } else if (tx.tx_data && tx.tx_data.startsWith("{")) {
         try {
           const parseResult = JSON.parse(tx.tx_data);
@@ -868,9 +864,11 @@ export class BaseExecutor implements IExecutor {
 
         // Skip if we already have this transaction in our queue
         const existingTx = Array.from(this.queue.values()).find(
-          (tx) =>
-            tx.depositId.toString() === item.deposit_id &&
-            tx.status !== TransactionStatus.FAILED,
+          (tx) => {
+            const txDepositId = tx.depositId || tx.depositIds[0];
+            return txDepositId?.toString() === item.deposit_id &&
+              tx.status !== TransactionStatus.FAILED;
+          }
         );
 
         if (existingTx) {
@@ -914,7 +912,10 @@ export class BaseExecutor implements IExecutor {
           );
 
           // Store the database queue item ID in the transaction for future reference
-          tx.queueItemId = item.id;
+          tx.metadata = {
+            ...tx.metadata,
+            queueItemId: item.id
+          };
 
           this.logger.info("Queued transaction from database", {
             id: tx.id,

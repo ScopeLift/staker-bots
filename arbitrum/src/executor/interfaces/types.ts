@@ -20,29 +20,37 @@ export interface RelayerConfig {
 
 export interface QueuedTransaction {
   id: string;
-  depositId: bigint;
+  depositIds: bigint[];
+  depositId?: bigint; // For backward compatibility
   profitability: ProfitabilityCheck;
   status: TransactionStatus;
-  hash?: string;
   error?: Error;
+  tx_data?: string;
+  metadata?: {
+    queueItemId?: string;
+    depositIds?: string[];
+  };
+  gasPrice?: bigint;
   createdAt: Date;
   executedAt?: Date;
-  gasPrice?: bigint;
-  gasLimit?: bigint;
-  tx_data?: string;
+  hash?: string;
   retryCount?: number;
-  queueItemId?: string;
 }
 
 export enum TransactionStatus {
-  QUEUED = "QUEUED",
-  PENDING = "PENDING",
-  CONFIRMED = "CONFIRMED",
-  FAILED = "FAILED",
+  QUEUED = 'QUEUED',
+  PENDING = 'PENDING',
+  CONFIRMED = 'CONFIRMED',
+  FAILED = 'FAILED',
 }
 
 export interface ExecutorConfig {
-  wallet: WalletConfig;
+  chainId: number;
+  wallet: {
+    privateKey: string;
+    minBalance: bigint;
+    maxPendingTransactions: number;
+  };
   maxQueueSize: number;
   minConfirmations: number;
   maxRetries: number;
@@ -50,22 +58,50 @@ export interface ExecutorConfig {
   transferOutThreshold: bigint;
   gasBoostPercentage: number;
   concurrentTransactions: number;
-  defaultTipReceiver?: string;
+  defaultTipReceiver: string;
+  minProfitMargin: number;
+  staleTransactionThresholdMinutes: number;
 }
 
-export interface RelayerExecutorConfig extends Omit<ExecutorConfig, "wallet"> {
-  relayer: RelayerConfig;
+export interface RelayerExecutorConfig {
+  chainId: number;
+  relayer: {
+    apiKey: string;
+    apiSecret: string;
+    address: string;
+    maxPendingTransactions?: number;
+    gasPolicy?: {
+      maxFeePerGas?: bigint;
+      maxPriorityFeePerGas?: bigint;
+    };
+  };
+  gasBoostPercentage?: number;
+  maxPendingTransactions?: number;
+  maxRetries?: number;
+  retryDelayMs?: number;
+  confirmations?: number;
+  maxQueueSize?: number;
+  minConfirmations?: number;
+  concurrentTransactions?: number;
 }
 
 export interface TransactionReceipt {
   hash: string;
-  status: boolean;
   blockNumber: number;
   gasUsed: bigint;
-  effectiveGasPrice: bigint;
+  gasPrice: bigint;
+  status: boolean;
+  logs: TransactionLog[];
+  effectiveGasPrice?: bigint;
 }
 
 export interface QueueStats {
+  totalTransactions: number;
+  pendingTransactions: number;
+  confirmedTransactions: number;
+  failedTransactions: number;
+  averageGasUsed?: bigint;
+  totalGasUsed?: bigint;
   totalQueued: number;
   totalPending: number;
   totalConfirmed: number;
@@ -73,4 +109,46 @@ export interface QueueStats {
   averageExecutionTime: number;
   averageGasPrice: bigint;
   totalProfits: bigint;
+}
+
+export interface TransactionLog {
+  address: string;
+  topics: string[];
+  data: string;
+}
+
+export interface EthersTransactionReceipt {
+  transactionHash: string;
+  blockNumber: number;
+  gasUsed: bigint;
+  status: number;
+  logs: TransactionLog[];
+}
+
+export interface DefenderError extends Error {
+  response?: {
+    status: number;
+    statusText: string;
+    data?: {
+      error?: {
+        code: string;
+        message: string;
+        suggestedNonce?: number;
+        suggestedGasLimit?: number;
+      };
+    };
+  };
+  config?: {
+    method?: string;
+    url?: string;
+    data?: unknown;
+  };
+}
+
+export interface GasEstimationError extends Error {
+  data?: {
+    code: string;
+    message: string;
+    details?: string;
+  };
 }

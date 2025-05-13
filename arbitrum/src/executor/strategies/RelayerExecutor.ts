@@ -13,7 +13,7 @@ import { ProfitabilityCheck } from "@/profitability/interfaces/types";
 import { v4 as uuidv4 } from "uuid";
 import { DatabaseWrapper } from "@/database";
 import { TransactionQueueStatus } from "@/database/interfaces/types";
-import { TransactionSimulator } from "../utils";
+import { SimulationService } from "@/simulation";
 
 /**
  * Implementation of executor using OpenZeppelin Defender Relayer.
@@ -267,14 +267,15 @@ export class RelayerExecutor implements IExecutor {
     txData?: string,
   ): Promise<QueuedTransaction> {
     // Check queue size
-    if (this.queue.size >= this.config.maxQueueSize) {
+    if (this.queue.size >= (this.config.maxQueueSize || 100)) {
       throw new Error("Queue is full");
     }
 
     // Create transaction object
     const tx: QueuedTransaction = {
       id: uuidv4(),
-      depositId,
+      depositIds: [depositId],
+      depositId, // For backward compatibility
       profitability,
       status: TransactionStatus.QUEUED,
       createdAt: new Date(),
@@ -285,13 +286,12 @@ export class RelayerExecutor implements IExecutor {
     this.queue.set(tx.id, tx);
     this.logger.info("Transaction queued:", {
       id: tx.id,
-      depositId: tx.depositId.toString(),
+      depositId: depositId.toString(),
       hasTxData: !!txData,
     });
 
     // Process queue immediately if running
     if (this.isRunning) {
-      // Use setImmediate to avoid blocking the current call stack
       setImmediate(() => this.processQueue());
     }
 
@@ -331,6 +331,14 @@ export class RelayerExecutor implements IExecutor {
         : 0;
 
     return {
+      totalTransactions: txs.length,
+      pendingTransactions: txs.filter(
+        (tx) => tx.status === TransactionStatus.PENDING,
+      ).length,
+      confirmedTransactions: confirmedTxs.length,
+      failedTransactions: txs.filter(
+        (tx) => tx.status === TransactionStatus.FAILED,
+      ).length,
       totalQueued: txs.filter((tx) => tx.status === TransactionStatus.QUEUED)
         .length,
       totalPending: txs.filter((tx) => tx.status === TransactionStatus.PENDING)
@@ -369,6 +377,12 @@ export class RelayerExecutor implements IExecutor {
         blockNumber: receipt.blockNumber,
         gasUsed: receipt.gasUsed,
         effectiveGasPrice: receipt.gasPrice || BigInt(0),
+        gasPrice: receipt.gasPrice || BigInt(0),
+        logs: receipt.logs.map(log => ({
+          address: log.address,
+          topics: [...log.topics],
+          data: log.data
+        }))
       };
     } catch (error) {
       this.logger.error("Failed to get transaction receipt:", {
@@ -403,7 +417,6 @@ export class RelayerExecutor implements IExecutor {
       return;
     }
 
-    // Only process if there are queued transactions
     const queuedTxs = Array.from(this.queue.values()).filter(
       (tx) => tx.status === TransactionStatus.QUEUED,
     );
@@ -412,19 +425,19 @@ export class RelayerExecutor implements IExecutor {
       return;
     }
 
-    // Check how many pending transactions we have
     const pendingTxCount = Array.from(this.queue.values()).filter(
       (tx) => tx.status === TransactionStatus.PENDING,
     ).length;
 
-    // If we have too many pending transactions, don't execute more
-    if (pendingTxCount >= this.config.relayer.maxPendingTransactions) {
+    if (pendingTxCount >= (this.config.relayer.maxPendingTransactions || 5)) {
       this.logger.info("Too many pending transactions, skipping execution");
       return;
     }
 
-    // Process up to concurrentTransactions at a time
-    const toProcess = queuedTxs.slice(0, this.config.concurrentTransactions);
+    const toProcess = queuedTxs.slice(
+      0,
+      this.config.concurrentTransactions || 3,
+    );
     for (const tx of toProcess) {
       this.executeTransaction(tx).catch((error) => {
         this.logger.error("Error executing transaction:", {
@@ -445,13 +458,14 @@ export class RelayerExecutor implements IExecutor {
     }
 
     try {
-      // Update status to pending
       tx.status = TransactionStatus.PENDING;
       tx.executedAt = new Date();
       this.logger.info("Executing transaction through relayer", { id: tx.id });
 
-      // Parse transaction data and extract queue item ID
       const { depositId, queueItemId } = this.parseTransactionData(tx);
+      if (!depositId) {
+        throw new Error("No deposit ID found in transaction data");
+      }
 
       // Update database with pending status if queueItemId exists
       if (this.db && queueItemId) {
@@ -596,13 +610,20 @@ export class RelayerExecutor implements IExecutor {
     depositId: bigint;
     queueItemId?: string;
   } {
-    const depositId = tx.depositId;
+    if (!tx.depositId && tx.depositIds.length === 0) {
+      throw new Error("No deposit ID found in transaction");
+    }
+
+    // Ensure we have a valid depositId
+    const depositId = tx.depositId || tx.depositIds[0];
+    if (!depositId) {
+      throw new Error("Invalid deposit ID");
+    }
+
     let queueItemId: string | undefined;
 
-    // Parse tx_data if available
     if (tx.tx_data) {
       try {
-        // Check if tx_data is a JSON string
         if (tx.tx_data.startsWith("{")) {
           const txData = JSON.parse(tx.tx_data);
           queueItemId = txData.id;
@@ -691,7 +712,7 @@ export class RelayerExecutor implements IExecutor {
       wait: async (confirmations?: number) => {
         return this.waitForTransaction(
           response.data.hash,
-          confirmations || this.config.minConfirmations,
+          confirmations || this.config.minConfirmations!,
         );
       },
     };
@@ -701,21 +722,18 @@ export class RelayerExecutor implements IExecutor {
    * Handle transaction retry logic
    */
   private handleTransactionRetry(tx: QueuedTransaction, error: unknown): void {
-    // If we have retries left, requeue the transaction
-    if ((tx.retryCount ?? 0) < this.config.maxRetries) {
+    if ((tx.retryCount ?? 0) < (this.config.maxRetries || 3)) {
       this.logger.info("Requeuing failed transaction", {
         id: tx.id,
         retryCount: tx.retryCount ?? 0,
         error: error instanceof Error ? error.message : String(error),
       });
 
-      // Delay retries using an exponential backoff
       const delayMs =
-        this.config.retryDelayMs * Math.pow(2, (tx.retryCount ?? 0) - 1);
+        (this.config.retryDelayMs || 5000) *
+        Math.pow(2, (tx.retryCount ?? 0) - 1);
       setTimeout(() => {
-        // Reset status to QUEUED for retry
         tx.status = TransactionStatus.QUEUED;
-        // Process queue to pick up the retry
         this.processQueue();
       }, delayMs);
     } else {
@@ -724,7 +742,6 @@ export class RelayerExecutor implements IExecutor {
         error: error instanceof Error ? error.message : String(error),
       });
 
-      // Update database if needed
       this.updateFailedTransactionInDb(tx, error);
     }
   }
@@ -783,27 +800,29 @@ export class RelayerExecutor implements IExecutor {
   ): Promise<TransactionReceipt | null> {
     this.logger.info("Waiting for transaction:", { hash, confirmations });
 
-    // Maximum wait time in milliseconds
     const maxWaitTimeMs = confirmations * 15000; // ~15 sec/block
     const startTime = Date.now();
 
-    // Wait for the transaction to be mined
     while (Date.now() - startTime < maxWaitTimeMs) {
       try {
         const receipt = await this.provider.getTransactionReceipt(hash);
         if (receipt) {
-          // Check confirmations
           const latestBlock = await this.provider.getBlockNumber();
           const currentConfirmations = latestBlock - receipt.blockNumber + 1;
 
           if (currentConfirmations >= confirmations) {
-            // Convert ethers receipt to our TransactionReceipt type
             return {
               hash: receipt.hash,
               status: receipt.status === 1,
               blockNumber: receipt.blockNumber,
               gasUsed: receipt.gasUsed,
               effectiveGasPrice: receipt.gasPrice || BigInt(0),
+              gasPrice: receipt.gasPrice || BigInt(0),
+              logs: receipt.logs.map(log => ({
+                address: log.address,
+                topics: [...log.topics],
+                data: log.data
+              })),
             };
           }
 
@@ -820,7 +839,6 @@ export class RelayerExecutor implements IExecutor {
         });
       }
 
-      // Sleep before checking again
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
 
@@ -859,7 +877,7 @@ export class RelayerExecutor implements IExecutor {
         // Skip if we already have this transaction in our queue
         const existingTx = Array.from(this.queue.values()).find(
           (tx) =>
-            tx.depositId.toString() === item.deposit_id &&
+            tx.depositId!.toString() === item.deposit_id &&
             tx.status !== TransactionStatus.FAILED,
         );
 
@@ -964,35 +982,45 @@ export class RelayerExecutor implements IExecutor {
     depositId: bigint,
   ): Promise<{ success: boolean; result?: bigint; error?: string }> {
     try {
-      this.logger.info("Simulating transaction", {
-        depositId: depositId.toString(),
-      });
+      const simulationService = new SimulationService();
+      const encodedData = this.contractInterface.encodeFunctionData("bumpEarningPower", [depositId]);
 
-      // Create transaction simulator instance
-      const simulator = new TransactionSimulator(this.provider, this.logger);
-
-      // Simulate the transaction
-      const simulation = await simulator.simulateContractFunction<bigint>(
-        this.stakerContract,
-        "bumpEarningPower",
-        [depositId],
+      const simulation = await simulationService.simulateTransaction(
         {
-          context: `depositId:${depositId.toString()}`,
+          from: this.config.relayer.address,
+          to: this.contractAddress,
+          data: encodedData,
+        },
+        {
+          networkId: this.config.chainId.toString(),
         },
       );
 
-      return simulation;
+      if (!simulation.success || simulation.error) {
+        return {
+          success: false,
+          error: simulation.error?.message || "Simulation failed",
+        };
+      }
+
+      // Extract the result from the simulation if available
+      const result = simulation.returnValue
+        ? BigInt(simulation.returnValue)
+        : undefined;
+
+      return {
+        success: true,
+        result,
+      };
     } catch (error) {
-      // Log the error and return failure
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-
-      this.logger.error("Transaction simulation failed outside of simulator", {
+      this.logger.error("Transaction simulation failed", {
+        error: error instanceof Error ? error.message : String(error),
         depositId: depositId.toString(),
-        error: errorMessage,
       });
-
-      return { success: false, error: errorMessage };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -1005,45 +1033,39 @@ export class RelayerExecutor implements IExecutor {
     depositId: bigint,
   ): Promise<{ gasLimit: bigint; gasPrice: bigint }> {
     try {
-      // Create transaction simulator instance
-      const simulator = new TransactionSimulator(this.provider, this.logger, {
-        gasBoostPercentage: this.config.gasBoostPercentage,
-        gasLimitBufferPercentage: 20, // 20% buffer by default
-      });
+      const simulationService = new SimulationService();
+      const encodedData = this.contractInterface.encodeFunctionData("bumpEarningPower", [depositId]);
 
-      // Estimate gas parameters
-      const gasEstimate = await simulator.estimateGasParameters(
-        this.stakerContract,
-        "bumpEarningPower",
-        [depositId],
+      const gasEstimate = await simulationService.estimateGasCosts(
         {
-          fallbackGasLimit: BigInt(300000),
-          context: `depositId:${depositId.toString()}`,
+          from: this.config.relayer.address,
+          to: this.contractAddress,
+          data: encodedData,
+        },
+        {
+          networkId: this.config.chainId.toString(),
         },
       );
 
-      this.logger.info("Gas parameters estimated", {
-        depositId: depositId.toString(),
-        gasLimit: gasEstimate.gasLimit.toString(),
-        gasPrice: gasEstimate.gasPrice.toString(),
-      });
+      // Add a 20% buffer to the gas limit for safety
+      const gasLimit = BigInt(Math.floor(gasEstimate.gasUnits * 1.2));
 
-      return gasEstimate;
-    } catch (error) {
-      // Log the error and use fallback values
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      // Use the medium priority fee for a balance of speed and cost
+      const gasPrice = ethers.parseUnits(
+        gasEstimate.gasPriceDetails?.medium.maxFeePerGas || gasEstimate.gasPrice,
+        "gwei",
+      );
 
-      this.logger.error("Gas estimation failed completely", {
-        depositId: depositId.toString(),
-        error: errorMessage,
-      });
-
-      // Use fallback values
       return {
-        gasLimit: BigInt(300000),
-        gasPrice: BigInt(0), // This will be set by the relayer
+        gasLimit,
+        gasPrice,
       };
+    } catch (error) {
+      this.logger.error("Gas estimation failed", {
+        error: error instanceof Error ? error.message : String(error),
+        depositId: depositId.toString(),
+      });
+      throw error;
     }
   }
 }

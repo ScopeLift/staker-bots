@@ -1,26 +1,26 @@
 import { ethers } from "ethers";
-import { BinaryEligibilityOracleEarningPowerCalculator } from "../calculator";
-import { BaseProfitabilityEngine } from "../profitability/strategies/BaseProfitabilityEngine";
+import { BinaryEligibilityOracleEarningPowerCalculator } from "@/calculator";
+import { BaseProfitabilityEngine } from "@/profitability/strategies/BaseProfitabilityEngine";
 import {
   ProfitabilityConfig,
   Deposit as ProfitabilityDeposit,
   ProfitabilityCheck,
-  BatchAnalysis,
-} from "../profitability/interfaces/types";
-import { DatabaseWrapper } from "../database";
-import { ConsoleLogger, Logger } from "../monitor/logging";
+  BatchAnalysis,  
+} from "@/profitability/interfaces/types";
+import { DatabaseWrapper } from "@/database";
+import { ConsoleLogger, Logger } from "@/monitor/logging";
 import fs from "fs";
-import { Deposit } from "../database/interfaces/types";
-import { CoinMarketCapFeed } from "../shared/price-feeds/coinmarketcap/CoinMarketCapFeed";
+import { Deposit } from "@/database/interfaces/types";
+import { CoinMarketCapFeed } from "@/shared/price-feeds/coinmarketcap/CoinMarketCapFeed";
 import { CONFIG } from "@/configuration/constants";
-import { ExecutorWrapper, ExecutorType } from "../executor";
-import { TransactionStatus } from "../executor/interfaces/types";
-import { ProfitabilityEngineWrapper } from "../profitability/ProfitabilityEngineWrapper";
+import { ExecutorWrapper, ExecutorType } from "@/executor";
+import { TransactionStatus } from "@/executor/interfaces/types";
+import { ProfitabilityEngineWrapper } from "@/profitability/ProfitabilityEngineWrapper";
 import path from "path";
 import {
   Deposit as DatabaseDeposit,
   ScoreEvent,
-} from "../database/interfaces/types";
+} from "@/database/interfaces/types";
 
 // Define database deposit type
 interface DatabaseContent {
@@ -123,8 +123,8 @@ async function getScoreHistory(
 
       // If we found earlier events, get the most recent one
       if (delegateeEvents.length > 0) {
-        const previousScore = BigInt(delegateeEvents[0].score);
-        const previousBlockNumber = delegateeEvents[0].block_number;
+        const previousScore = BigInt(delegateeEvents[0]!.score);
+        const previousBlockNumber = delegateeEvents[0]!.block_number;
 
         logger.info(
           `Found previous score for delegatee ${delegatee}: ${previousScore.toString()} at block ${previousBlockNumber}`,

@@ -334,11 +334,24 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
           .map((item) => item.deposit_id),
       );
 
+      // Get all transaction queue items to avoid reprocessing deposits that are already queued for execution
+      const existingTransactionItems = await Promise.all(
+        deposits.map(deposit => 
+          this.db.getTransactionQueueItemByDepositId(deposit.deposit_id!.toString())
+        )
+      );
+      const depositsInTransactionQueue = new Set(
+        existingTransactionItems
+          .filter(item => item && item.status !== TransactionQueueStatus.FAILED)
+          .map(item => item!.deposit_id)
+      );
+
       this.logger.info("Found existing queue items:", {
         delegatee,
         existingCount: existingQueueItems.length,
         pendingOrProcessingCount: existingDepositIds.size,
         existingIds: Array.from(existingDepositIds).join(", "),
+        depositsInTransactionQueue: Array.from(depositsInTransactionQueue).join(", ")
       });
 
       // Convert deposits to match Deposit type as expected by the profitability engine
@@ -369,6 +382,15 @@ export class ProfitabilityEngineWrapper implements IProfitabilityEngine {
         if (this.processingQueue.has(depositIdStr)) {
           this.logger.debug(
             `Deposit ${depositIdStr} already in memory processing queue, skipping`,
+          );
+          skippedCount++;
+          continue;
+        }
+
+        // Skip if already in transaction queue (unless failed)
+        if (depositsInTransactionQueue.has(depositIdStr)) {
+          this.logger.debug(
+            `Deposit ${depositIdStr} already in transaction queue, skipping`,
           );
           skippedCount++;
           continue;

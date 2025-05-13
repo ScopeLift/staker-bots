@@ -654,6 +654,36 @@ export class StakerMonitor extends EventEmitter {
           });
         }
 
+        // Process grouped events first
+        for (const [txHash, events] of eventsByTx.entries()) {
+          if (events.deposited) {
+            // Process deposit first
+            const { depositId, owner, delegatee, amount } = events.deposited.args;
+            const depositEvent: StakeDepositedEvent = {
+              depositId: depositId.toString(),
+              ownerAddress: owner,
+              delegateeAddress: delegatee,
+              amount,
+              blockNumber: events.deposited.blockNumber!,
+              transactionHash: txHash,
+            };
+            await this.handleStakeDeposited(depositEvent);
+
+            // If there's a DelegateeAltered event in the same tx, process it
+            if (events.altered) {
+              const { depositId: alteredDepositId, oldDelegatee, newDelegatee } = events.altered.args;
+              const alteredEvent: DelegateeAlteredEvent = {
+                depositId: alteredDepositId.toString(),
+                oldDelegatee,
+                newDelegatee,
+                blockNumber: events.altered.blockNumber!,
+                transactionHash: txHash,
+              };
+              await this.handleDelegateeAltered(alteredEvent);
+            }
+          }
+        }
+
         // Process standalone StakeWithdrawn events
         for (const event of withdrawnEvents) {
           const { depositId, amount } = (event as ethers.EventLog).args;
@@ -666,11 +696,16 @@ export class StakerMonitor extends EventEmitter {
           await this.handleStakeWithdrawn(withdrawnEvent);
         }
 
-        // Process standalone DelegateeAltered events
+        // Process standalone DelegateeAltered events (ones not part of a deposit tx)
+        const processedTxHashes = new Set(eventsByTx.keys());
         for (const event of alteredEvents) {
-          // Skip events that were processed with deposits
           const txHash = event.transactionHash!;
-          if (eventsByTx.has(txHash) && eventsByTx.get(txHash)!.deposited) {
+          // Skip if this tx was already processed in the grouped events
+          if (processedTxHashes.has(txHash)) {
+            this.logger.debug("Skipping already processed DelegateeAltered event", {
+              txHash,
+              depositId: (event as ethers.EventLog).args.depositId.toString(),
+            });
             continue;
           }
 

@@ -9,6 +9,7 @@ export const EXECUTOR = {
    * Default configuration for wallet-based executor
    */
   DEFAULT_CONFIG: {
+    chainId: 42161, // Arbitrum One
     wallet: {
       privateKey: "",
       minBalance: ethers.parseEther("0.000001"), // 0.1 ETH

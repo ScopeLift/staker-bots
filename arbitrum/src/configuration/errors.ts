@@ -68,14 +68,14 @@ export class DepositNotFoundError extends MonitorError {
 
 // -------- Executor Errors --------
 
-export class ExecutorError extends BaseError {
+export class ExecutorError extends Error {
   constructor(
     message: string,
-    context: Record<string, unknown>,
-    retryable: boolean = false,
+    public readonly details: Record<string, unknown> = {},
+    public readonly isRetryable: boolean = true,
   ) {
-    super(message, context, retryable);
-    this.name = "ExecutorError";
+    super(message);
+    this.name = 'ExecutorError';
   }
 }
 
@@ -94,25 +94,17 @@ export class TransactionExecutionError extends ExecutorError {
   }
 }
 
-export class GasEstimationError extends ExecutorError {
-  constructor(error: Error, context: Record<string, unknown>) {
-    super(
-      `Gas estimation failed: ${error.message}`,
-      context,
-      true, // Gas estimation errors are generally retryable
-    );
-    this.name = "GasEstimationError";
+export class GasEstimationError extends Error {
+  constructor(message: string, public readonly details?: unknown) {
+    super(message);
+    this.name = 'GasEstimationError';
   }
 }
 
-export class ContractMethodError extends ExecutorError {
+export class ContractMethodError extends Error {
   constructor(methodName: string) {
-    super(
-      `Contract method ${methodName} not found or invalid`,
-      { methodName },
-      false, // Contract method errors are not retryable
-    );
-    this.name = "ContractMethodError";
+    super(`Contract method ${methodName} not found or invalid`);
+    this.name = 'ContractMethodError';
   }
 }
 
@@ -131,28 +123,19 @@ export class QueueOperationError extends ExecutorError {
   }
 }
 
-export class TransactionValidationError extends ExecutorError {
-  constructor(reason: string, context: Record<string, unknown>) {
-    super(
-      `Transaction validation failed: ${reason}`,
-      context,
-      false, // Validation errors are not retryable
-    );
-    this.name = "TransactionValidationError";
+export class TransactionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TransactionValidationError';
   }
 }
 
-export class InsufficientBalanceError extends ExecutorError {
+export class InsufficientBalanceError extends Error {
   constructor(currentBalance: bigint, requiredBalance: bigint) {
     super(
-      "Insufficient gas balance for transaction, top up your wallet",
-      {
-        currentBalance: currentBalance.toString(),
-        requiredBalance: requiredBalance.toString(),
-      },
-      true, // Balance errors are retryable once funds are added
+      `Insufficient balance: ${currentBalance.toString()} < ${requiredBalance.toString()}`,
     );
-    this.name = "InsufficientBalanceError";
+    this.name = 'InsufficientBalanceError';
   }
 }
 
@@ -237,4 +220,25 @@ export function createError(
 
   const message = error instanceof Error ? error.message : String(error);
   return new BaseError(message, context, false);
+}
+
+export class SimulationError extends Error {
+  constructor(message: string, public readonly details?: unknown) {
+    super(message);
+    this.name = 'SimulationError';
+  }
+}
+
+export class TenderlyConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TenderlyConfigError';
+  }
+}
+
+export class ConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
 }
