@@ -438,6 +438,26 @@ LOG_LEVEL=debug
 
 ## Configuration Guide
 
+### Tenderly Transaction Simulation
+
+The system supports transaction simulation using Tenderly's API before sending transactions to the blockchain. This helps prevent wasted gas on transactions that would fail and provides more accurate gas estimates.
+
+```env
+# Tenderly Configuration
+TENDERLY_USE_SIMULATE=true
+TENDERLY_ACCESS_KEY=your_tenderly_access_key
+TENDERLY_ACCOUNT_NAME=your_tenderly_account_name
+TENDERLY_PROJECT_NAME=your_tenderly_project_name
+TENDERLY_NETWORK_ID=1  # Default is 1 for mainnet, use appropriate ID for other networks
+```
+
+Benefits of transaction simulation:
+
+- Prevents failed transactions by simulating them before sending
+- Provides more accurate gas estimates for profitability calculations
+- Offers detailed transaction execution traces for debugging
+- Falls back gracefully to standard estimation if simulation is unavailable
+
 ### Detailed Configuration Examples
 
 #### 1. Development Environment (Local Testing)
@@ -891,3 +911,79 @@ The engine provides detailed monitoring capabilities:
 - [Contract Documentation](./docs/contracts.md)
 - [API Reference](./docs/api.md)
 - [Configuration Guide](./docs/config.md)
+
+# Executor Module
+
+The executor module is responsible for executing transactions in the staker-bots system.
+
+## Strategies
+
+### Swap Strategy
+
+The swap strategy allows automatic conversion of tokens to ETH using Uniswap V2. This is useful for converting accumulated reward tokens into ETH.
+
+#### Configuration
+
+Copy the environment variables from `strategies/swap.env.example` to your `.env` file and adjust as needed:
+
+```env
+# Enable/disable automatic token swapping to ETH
+EXECUTOR_SWAP_TO_ETH=false
+
+# Uniswap V2 Router address (mainnet)
+UNISWAP_ROUTER_ADDRESS=0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+
+# Maximum allowed slippage in percentage (e.g., 0.5 for 0.5%)
+SWAP_SLIPPAGE_TOLERANCE=0.5
+
+# Number of minutes until the swap transaction expires
+SWAP_DEADLINE_MINUTES=10
+
+# Minimum amount of tokens required to trigger a swap (in wei)
+SWAP_MIN_AMOUNT_IN=1000000000000000000 # 1 token
+
+# Maximum amount of tokens to swap in a single transaction (in wei)
+SWAP_MAX_AMOUNT_IN=1000000000000000000000 # 1000 tokens
+
+# Number of decimals for the token being swapped
+SWAP_TOKEN_DECIMALS=18
+```
+
+#### Features
+
+- Automatic token to ETH swaps via Uniswap V2
+- Configurable slippage tolerance
+- Minimum and maximum swap amounts
+- Transaction deadline protection
+- Uses OpenZeppelin Defender Relayer for secure transaction execution
+- Automatic approval handling
+
+#### Usage
+
+The swap strategy will automatically:
+
+1. Check if token balance exceeds minimum amount
+2. Get optimal swap path and quote from Uniswap
+3. Apply slippage tolerance to protect against price movement
+4. Execute swap with deadline protection
+5. Handle token approvals if needed
+
+### Automatic Token Swapping
+
+The executor now features automatic token swapping to ETH when ETH balance is low. This ensures that the executor always has enough ETH for transaction fees.
+
+#### How it works
+
+1. After each transaction (successful or failed), the executor checks the wallet's ETH balance
+2. If the balance is below 0.1 ETH, it automatically swaps some reward tokens for ETH
+3. The swap maintains a minimum token balance (max of 2200 tokens or contract's payout amount)
+4. Only half of excess tokens above the minimum are swapped to avoid depleting token reserves
+5. The swap uses Uniswap V2 with configurable slippage protection (default 0.5%)
+
+#### Benefits
+
+- Maintains sufficient ETH for gas fees without manual intervention
+- Preserves minimum token balance for payout requirements
+- Handles token approvals and transaction confirmations
+- Detailed logging for monitoring and troubleshooting
+- Graceful error handling with full database logging

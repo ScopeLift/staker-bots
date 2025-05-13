@@ -25,6 +25,10 @@ export const MONITOR_EVENTS = {
   UNSTAKED: 'unstaked',
   DEPOSIT_INITIALIZED: 'depositInitialized',
   DEPOSIT_UPDATED: 'depositUpdated',
+  CLAIMER_ALTERED: 'claimerAltered',
+  REWARD_CLAIMED: 'rewardClaimed',
+  DEPOSIT_SUBSIDIZED: 'depositSubsidized',
+  EARNING_POWER_BUMPED: 'earningPowerBumped',
 } as const;
 
 // Processing constants
@@ -95,6 +99,10 @@ export const EVENT_TYPES = {
   UNSTAKED: 'Unstaked',
   DEPOSIT_INITIALIZED: 'DepositInitialized',
   DEPOSIT_UPDATED: 'DepositUpdated',
+  CLAIMER_ALTERED: 'ClaimerAltered',
+  REWARD_CLAIMED: 'RewardClaimed',
+  DEPOSIT_SUBSIDIZED: 'DepositSubsidized',
+  EARNING_POWER_BUMPED: 'EarningPowerBumped',
 } as const;
 
 export type EventType = (typeof EVENT_TYPES)[keyof typeof EVENT_TYPES];

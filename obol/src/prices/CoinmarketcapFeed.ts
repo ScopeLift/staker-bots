@@ -65,7 +65,7 @@ export class CoinMarketCapFeed implements IPriceFeed {
       timeout: config.timeout || 5000,
       headers: {
         'X-CMC_PRO_API_KEY': config.apiKey,
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
     });
     this.logger = logger;
@@ -217,10 +217,16 @@ export class CoinMarketCapFeed implements IPriceFeed {
       let tokenId: number;
 
       // Special handling for ETH
-      if (tokenAddress.toLowerCase() === 'eth' || tokenAddress.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') {
+      if (
+        tokenAddress.toLowerCase() === 'eth' ||
+        tokenAddress.toLowerCase() ===
+          '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+      ) {
         tokenId = this.ETH_ID;
         this.logger.info('Using ETH token ID', { tokenId });
-      } else if (tokenAddress.toLowerCase() === this.rewardToken.toLowerCase()) {
+      } else if (
+        tokenAddress.toLowerCase() === this.rewardToken.toLowerCase()
+      ) {
         // Special handling for Obol token
         tokenId = this.OBOL_ID;
         this.logger.info('Using Obol token ID', { tokenId });

@@ -76,6 +76,11 @@ export interface EventGroup {
   unstaked?: ethers.EventLog;
   depositInitialized?: ethers.EventLog;
   depositUpdated?: ethers.EventLog;
+  claimerAltered?: ethers.EventLog;
+  rewardClaimed?: ethers.EventLog;
+  depositSubsidized?: ethers.EventLog;
+  earningPowerBumped?: ethers.EventLog;
+  rewardNotified?: ethers.EventLog;
 }
 
 export interface TransactionEntry {
@@ -116,6 +121,42 @@ export interface DepositUpdatedEvent {
   holder: string;
   oldDepositId: string;
   newDepositId: string;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface ClaimerAlteredEvent {
+  depositId: string;
+  oldClaimer: string;
+  newClaimer: string;
+  earningPower: BigNumberish;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface RewardClaimedEvent {
+  depositId: string;
+  claimer: string;
+  amount: BigNumberish;
+  earningPower: BigNumberish;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface DepositSubsidizedEvent {
+  depositId: string;
+  amount: BigNumberish;
+  blockNumber: number;
+  transactionHash: string;
+}
+
+export interface EarningPowerBumpedEvent {
+  depositId: string;
+  oldEarningPower: BigNumberish;
+  newEarningPower: BigNumberish;
+  bumper: string;
+  tipReceiver: string;
+  tipAmount: BigNumberish;
   blockNumber: number;
   transactionHash: string;
 }

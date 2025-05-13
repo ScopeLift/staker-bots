@@ -17,6 +17,7 @@ import {
 import { CONFIG } from '@/configuration';
 import { ErrorLogger } from '@/configuration/errorLogger';
 import { CoinMarketCapFeed } from '@/prices/CoinmarketcapFeed';
+import { TokenPrice } from '@/prices/interface';
 
 /**
  * Updated ProfitabilityConfig to include errorLogger
@@ -38,6 +39,12 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
   private gasPriceCache: { price: bigint; timestamp: number } | null = null;
+  private priceCache: {
+    rewardToken: TokenPrice;
+    gasToken: TokenPrice;
+    timestamp: number;
+  } | null = null;
+  private readonly PRICE_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes in milliseconds
   public readonly config: ProfitabilityConfig;
   private static readonly BATCH_SIZE = 100; // Number of deposits to fetch in a single batch
   private activeBin: GovLstDepositGroup | null = null; // Current active bin being filled
@@ -82,9 +89,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       {
         ...CONFIG.priceFeed.coinmarketcap,
         rewardToken: CONFIG.priceFeed.coinmarketcap.rewardTokenAddress,
-        gasToken: 'ETH'
+        gasToken: 'ETH',
       },
-      this.logger
+      this.logger,
     );
   }
 
@@ -873,26 +880,28 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         gasCostEther: ethers.formatEther(gasCost),
       });
 
-      // Get real-time price data from CoinMarketCap
-      const prices = await this.priceFeed.getTokenPrices();
-      
+      // Get real-time price data from cache or CoinMarketCap
+      const prices = await this.getPrices();
+
       // Log raw price data for verification
       this.logger.info('Price data from CoinMarketCap:', {
         gasToken: {
           address: 'ETH',
           priceUsd: prices.gasToken.usd,
-          lastUpdated: prices.gasToken.lastUpdated
+          lastUpdated: prices.gasToken.lastUpdated,
         },
         rewardToken: {
           address: CONFIG.priceFeed.coinmarketcap.rewardTokenAddress,
           priceUsd: prices.rewardToken.usd,
-          lastUpdated: prices.rewardToken.lastUpdated
-        }
+          lastUpdated: prices.rewardToken.lastUpdated,
+        },
       });
 
       // Convert prices to scaled values (18 decimals)
       const ethPriceScaled = BigInt(Math.floor(prices.gasToken.usd * 1e18));
-      const rewardTokenPriceScaled = BigInt(Math.floor(prices.rewardToken.usd * 1e18));
+      const rewardTokenPriceScaled = BigInt(
+        Math.floor(prices.rewardToken.usd * 1e18),
+      );
 
       // Calculate gas cost in reward tokens
       const gasCostInRewardTokens =
@@ -981,5 +990,32 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       }
       throw error;
     }
+  }
+
+  private async getPrices(): Promise<{
+    rewardToken: TokenPrice;
+    gasToken: TokenPrice;
+  }> {
+    // Check if we have valid cached prices
+    if (
+      this.priceCache &&
+      Date.now() - this.priceCache.timestamp < this.PRICE_CACHE_DURATION
+    ) {
+      return {
+        rewardToken: this.priceCache.rewardToken,
+        gasToken: this.priceCache.gasToken,
+      };
+    }
+
+    // Fetch fresh prices
+    const prices = await this.priceFeed.getTokenPrices();
+
+    // Update cache
+    this.priceCache = {
+      ...prices,
+      timestamp: Date.now(),
+    };
+
+    return prices;
   }
 }

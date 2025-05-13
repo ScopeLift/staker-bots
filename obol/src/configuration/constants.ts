@@ -25,8 +25,8 @@ export const TIME_CONSTANTS = {
 
 // Gas and Transaction Constants
 export const GAS_CONSTANTS = {
-  GAS_PRICE_BUFFER: 1.2, // 20% buffer
-  GAS_LIMIT_BUFFER: 1.3, // 30% buffer
+  GAS_PRICE_BUFFER: 1.25, // 25% buffer
+  GAS_LIMIT_BUFFER: 1.25, // 25% buffer
   MIN_EXECUTOR_BALANCE: ethers.parseEther('0.001'),
   MAX_PENDING_TRANSACTIONS: 10,
 } as const;
@@ -166,14 +166,18 @@ export const EXECUTOR = {
 
   GAS: {
     GAS_PRICE_UPDATE_INTERVAL: 60_000, // 1 minute
-    GAS_PRICE_BUFFER_PERCENT: 30, // 30%
+    GAS_PRICE_BUFFER_PERCENT: 25, // 25%
+    BASE_GAS_PER_DEPOSIT: 30_000n, // Base cost per deposit
+    ADDITIONAL_GAS_PER_DEPOSIT: 10_000n, // Additional overhead per extra deposit
     MIN_GAS_LIMIT: 300_000n, // Minimum gas limit for reward claims
-    MAX_GAS_LIMIT: 1_000_000n, // Maximum gas limit for reward claims
-    GAS_LIMIT_BUFFER: 1.5, // 50% buffer on gas estimates
+    MAX_GAS_LIMIT: 5_000_000n, // Maximum gas limit for reward claims
+    GAS_LIMIT_BUFFER: 1.25, // 25% buffer on gas estimates
+    REENTRANCY_THRESHOLD: 20, // Number of deposits where we start adding reentrancy protection buffer
+    REENTRANCY_BUFFER: 1.25, // 25% additional buffer for reentrancy protection
   },
 
   QUEUE: {
-    QUEUE_PROCESSOR_INTERVAL: 60000, // 1 minute
+    QUEUE_PROCESSOR_INTERVAL: 3000, // 3 seconds (changed from 60000)
     MAX_BATCH_SIZE: 100, // Maximum number of deposits per batch
     MIN_BATCH_SIZE: 1, // Minimum number of deposits per batch
     MAX_RETRIES: 3, // Maximum number of retries per transaction
@@ -196,7 +200,7 @@ export const EXECUTOR = {
     maxRetries: 3,
     retryDelayMs: 5000,
     transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
-    gasBoostPercentage: 30,
+    gasBoostPercentage: 25,
     concurrentTransactions: 3,
     defaultTipReceiver: '',
     minProfitMargin: 10,
@@ -218,7 +222,7 @@ export const EXECUTOR = {
     maxRetries: 3,
     retryDelayMs: 5000,
     transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
-    gasBoostPercentage: 30,
+    gasBoostPercentage: 25,
     concurrentTransactions: 3,
     defaultTipReceiver: '',
     minProfitMargin: 10,

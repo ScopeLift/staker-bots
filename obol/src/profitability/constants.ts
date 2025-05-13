@@ -1,7 +1,7 @@
 // Gas and Transaction Constants
 export const GAS_CONSTANTS = {
   FALLBACK_GAS_ESTIMATE: BigInt(150000),
-  DEFAULT_GAS_BUFFER: 10, // 10% buffer
+  DEFAULT_GAS_BUFFER: 25, // 25% buffer
   GAS_PRICE_UPDATE_INTERVAL: 60_000, // 1 minute in ms
   MAX_RETRIES: 3,
   RETRY_DELAY: 1000, // 1 second in ms

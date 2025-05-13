@@ -1,4 +1,5 @@
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
+import { ErrorLogger } from '@/configuration/errorLogger';
 
 export interface WalletConfig {
   privateKey: string;
@@ -177,4 +178,19 @@ export interface DefenderError extends Error {
 // Add gas estimation error interface
 export interface GasEstimationError extends Error {
   data?: unknown;
+}
+
+export enum ExecutorType {
+  WALLET = 'wallet',
+  DEFENDER = 'defender',
+}
+
+// Extended executor config with error logger - single source of truth
+export interface ExtendedExecutorConfig extends Omit<ExecutorConfig, 'wallet'> {
+  errorLogger?: ErrorLogger;
+  wallet: {
+    privateKey: string;
+    minBalance: bigint;
+    maxPendingTransactions: number;
+  };
 }
