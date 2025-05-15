@@ -246,23 +246,28 @@ async function initializeExecutor(
   // Determine if MEV protection should be enabled
   const useMevProtection = CONFIG.executor.mev?.enabled === true;
 
-  // Map the raw executor type to our ExecutorType enum with MEV protection if enabled
-  let executorType: ExecutorType;
-
-  if (rawExecutorType === 'wallet') {
-    executorType = useMevProtection ? ExecutorType.WALLET_WITH_MEV : ExecutorType.WALLET;
-  } else if (rawExecutorType === 'defender' || rawExecutorType === 'relayer') {
-    executorType = useMevProtection ? ExecutorType.DEFENDER_WITH_MEV : ExecutorType.DEFENDER;
-  } else {
+  // Valid raw executor types
+  const validRawTypes = ['wallet', 'defender', 'relayer'];
+  if (!validRawTypes.includes(rawExecutorType)) {
     throw new Error(
-      `Invalid executor type: ${rawExecutorType}. Valid types are: wallet, defender, relayer`
+      `Invalid executor type: ${rawExecutorType}. Valid types are: ${validRawTypes.join(', ')}`
     );
   }
 
-  // Validate that the enum values exist (prevents runtime errors from missing imports)
-  if (!Object.values(ExecutorType).includes(executorType)) {
+  // Map to the appropriate ExecutorType with MEV protection if enabled
+  let executorType: ExecutorType;
+  if (rawExecutorType === 'wallet') {
+    executorType = useMevProtection ? ExecutorType.WALLET_WITH_MEV : ExecutorType.WALLET;
+  } else {
+    // defender or relayer both map to defender types
+    executorType = useMevProtection ? ExecutorType.DEFENDER_WITH_MEV : ExecutorType.DEFENDER;
+  }
+
+  // Double check that we got a valid enum value
+  const validExecutorTypes = Object.values(ExecutorType);
+  if (!validExecutorTypes.includes(executorType)) {
     throw new Error(
-      `Invalid executor type enum value: ${executorType}. Did you import ExecutorType correctly?`
+      `Invalid executor type mapping: ${executorType}. Available types: ${validExecutorTypes.join(', ')}`
     );
   }
 
@@ -312,7 +317,7 @@ async function initializeExecutor(
             minBalance: CONFIG.defender.relayer.minBalance,
             maxPendingTransactions:
               CONFIG.defender.relayer.maxPendingTransactions,
-            maxQueueSize: 100,
+            maxQueueSize: 125,
             minConfirmations: CONFIG.monitor.confirmations,
             maxRetries: CONFIG.monitor.maxRetries,
             retryDelayMs: 5000,

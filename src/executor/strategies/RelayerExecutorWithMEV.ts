@@ -4,6 +4,8 @@ import { FlashbotsExecutorStrategy } from './FlashbotsExecutorStrategy'
 import { QueuedTransaction, TransactionStatus, RelayerExecutorConfig } from '../interfaces/types'
 import { pollForReceipt } from '@/configuration/helpers'
 import { ErrorLogger } from '@/configuration/errorLogger'
+import { GasCostEstimator } from '@/prices/GasCostEstimator'
+import { CONFIG } from '@/configuration'
 
 /**
  * Extended configuration for RelayerExecutorWithMEV
@@ -120,13 +122,44 @@ export class RelayerExecutorWithMEV extends RelayerExecutor {
       
       // Calculate profit margin and optimal threshold
       const profitMargin = this.config.minProfitMargin || 10
-      const includeGasCost = true // Default to including gas cost in threshold
-      const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100))
-      
-      // Base amount includes payout amount and gas cost
-      const gasCost = gasPrice * gasLimit
+      const includeGasCost = CONFIG.profitability.includeGasCost !== false
+
+      // Estimate gas cost in reward tokens using price feeds
+      const gasCostEstimator = new GasCostEstimator()
+      let gasCost: bigint = 0n
+      let estimationSucceeded = false
+
+      if (includeGasCost) {
+        try {
+          gasCost = await gasCostEstimator.estimateGasCostInRewardToken(
+            this.provider,
+            gasLimit,
+          )
+
+          // Cap gas cost at 20 % of payout amount
+          const maxGasCost = payoutAmount / 5n
+          if (gasCost > maxGasCost) gasCost = maxGasCost
+
+          estimationSucceeded = true
+          this.logger.info('Estimated gas cost in reward tokens for MEV tx', {
+            gasCost: gasCost.toString(),
+            gasLimit: gasLimit.toString(),
+          })
+        } catch (estErr) {
+          this.logger.warn('Failed to estimate gas cost for MEV tx', {
+            error: estErr instanceof Error ? estErr.message : String(estErr),
+          })
+        }
+      }
+
+      // Extra 2 % margin if estimation failed
+      const extraProfitMarginBps = estimationSucceeded ? 0n : 200n
+
       const baseAmount = payoutAmount + (includeGasCost ? gasCost : 0n)
-      
+
+      let profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100))
+      profitMarginBasisPoints += extraProfitMarginBps
+
       // Add profit margin
       const profitMarginAmount = (baseAmount * profitMarginBasisPoints) / 10000n
       const finalThreshold = baseAmount + profitMarginAmount
