@@ -250,24 +250,28 @@ async function initializeExecutor(
   const validRawTypes = ['wallet', 'defender', 'relayer'];
   if (!validRawTypes.includes(rawExecutorType)) {
     throw new Error(
-      `Invalid executor type: ${rawExecutorType}. Valid types are: ${validRawTypes.join(', ')}`
+      `Invalid executor type: ${rawExecutorType}. Valid types are: ${validRawTypes.join(', ')}`,
     );
   }
 
   // Map to the appropriate ExecutorType with MEV protection if enabled
   let executorType: ExecutorType;
   if (rawExecutorType === 'wallet') {
-    executorType = useMevProtection ? ExecutorType.WALLET_WITH_MEV : ExecutorType.WALLET;
+    executorType = useMevProtection
+      ? ExecutorType.WALLET_WITH_MEV
+      : ExecutorType.WALLET;
   } else {
     // defender or relayer both map to defender types
-    executorType = useMevProtection ? ExecutorType.DEFENDER_WITH_MEV : ExecutorType.DEFENDER;
+    executorType = useMevProtection
+      ? ExecutorType.DEFENDER_WITH_MEV
+      : ExecutorType.DEFENDER;
   }
 
   // Double check that we got a valid enum value
   const validExecutorTypes = Object.values(ExecutorType);
   if (!validExecutorTypes.includes(executorType)) {
     throw new Error(
-      `Invalid executor type mapping: ${executorType}. Available types: ${validExecutorTypes.join(', ')}`
+      `Invalid executor type mapping: ${executorType}. Available types: ${validExecutorTypes.join(', ')}`,
     );
   }
 
@@ -287,21 +291,25 @@ async function initializeExecutor(
     hasPrivateKey: !!CONFIG.executor.privateKey,
     hasDefenderCredentials:
       !!CONFIG.defender.apiKey && !!CONFIG.defender.secretKey,
-    flashbotsRpcUrl: useMevProtection ? (CONFIG.executor.mev.flashbotsRpcUrl || 'default') : 'disabled',
+    flashbotsRpcUrl: useMevProtection
+      ? CONFIG.executor.mev.flashbotsRpcUrl || 'default'
+      : 'disabled',
   });
 
   // Update the executor config to include MEV settings if needed
-  const mevConfig = useMevProtection ? {
-    useMevProtection: true,
-    flashbots: {
-      rpcUrl: CONFIG.executor.mev.flashbotsRpcUrl,
-      chainId: CONFIG.executor.mev.chainId,
-      fast: CONFIG.executor.mev.fastMode,
-    },
-    wallet: {
-      privateKey: CONFIG.executor.privateKey,
-    },
-  } : undefined;
+  const mevConfig = useMevProtection
+    ? {
+        useMevProtection: true,
+        flashbots: {
+          rpcUrl: CONFIG.executor.mev.flashbotsRpcUrl,
+          chainId: CONFIG.executor.mev.chainId,
+          fast: CONFIG.executor.mev.fastMode,
+        },
+        wallet: {
+          privateKey: CONFIG.executor.privateKey,
+        },
+      }
+    : undefined;
 
   // Update the executor creation
   const executor = new ExecutorWrapper(
@@ -309,7 +317,8 @@ async function initializeExecutor(
     provider,
     executorType,
     {
-      ...(executorType === ExecutorType.DEFENDER || executorType === ExecutorType.DEFENDER_WITH_MEV
+      ...(executorType === ExecutorType.DEFENDER ||
+      executorType === ExecutorType.DEFENDER_WITH_MEV
         ? {
             apiKey: CONFIG.defender.apiKey,
             apiSecret: CONFIG.defender.secretKey,

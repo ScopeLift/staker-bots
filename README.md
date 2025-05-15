@@ -1008,7 +1008,7 @@ To enable MEV protection, update your `.env` file with:
 USE_MEV_PROTECTION=true
 
 # Optional: Use fast mode for quicker inclusion (recommended)
-FLASHBOTS_FAST_MODE=true 
+FLASHBOTS_FAST_MODE=true
 
 # Optional: Override default Flashbots RPC URL
 # FLASHBOTS_RPC_URL=https://rpc.flashbots.net/fast
@@ -1026,12 +1026,12 @@ EXECUTOR_TYPE=defender_with_mev
 
 ## MEV Protection Configuration
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `USE_MEV_PROTECTION` | `false` | Enable/disable MEV protection |
-| `FLASHBOTS_FAST_MODE` | `true` | Use fast mode for quicker transaction inclusion |
-| `FLASHBOTS_RPC_URL` | Chain-specific | Override default Flashbots RPC URL |
-| `EXECUTOR_PRIVATE_KEY` | | Private key for signing and sending transactions |
+| Setting                | Default        | Description                                      |
+| ---------------------- | -------------- | ------------------------------------------------ |
+| `USE_MEV_PROTECTION`   | `false`        | Enable/disable MEV protection                    |
+| `FLASHBOTS_FAST_MODE`  | `true`         | Use fast mode for quicker transaction inclusion  |
+| `FLASHBOTS_RPC_URL`    | Chain-specific | Override default Flashbots RPC URL               |
+| `EXECUTOR_PRIVATE_KEY` |                | Private key for signing and sending transactions |
 
 ## Supported Networks
 

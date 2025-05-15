@@ -23,7 +23,10 @@ import {
   getCurrentBlockNumberWithRetry,
   sleep,
 } from './strategies/helpers';
-import { RelayerExecutorWithMEV, MEVRelayerExecutorConfig } from './strategies/RelayerExecutorWithMEV';
+import {
+  RelayerExecutorWithMEV,
+  MEVRelayerExecutorConfig,
+} from './strategies/RelayerExecutorWithMEV';
 
 // Basic sleep function implementation if not available in utils
 // const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -148,29 +151,29 @@ export class ExecutorWrapper {
         // Add wallet config if provided
         wallet: {
           privateKey: process.env.EXECUTOR_PRIVATE_KEY || '',
-          ...(config as any)?.wallet,
+          ...(config as Partial<MEVConfig>)?.wallet,
         },
         // Add flashbots config if provided
         flashbots: {
           chainId: Number(process.env.CHAIN_ID || '1'),
           fast: process.env.FLASHBOTS_FAST_MODE !== 'false',
           rpcUrl: process.env.FLASHBOTS_RPC_URL || '',
-          ...(config as any)?.flashbots,
+          ...(config as Partial<MEVConfig>)?.flashbots,
         },
       };
 
       this.executor = new RelayerExecutorWithMEV(
-        lstContract, 
-        provider, 
-        mevConfig
+        lstContract,
+        provider,
+        mevConfig,
       );
     } else if (type === ExecutorType.WALLET_WITH_MEV) {
       // For wallet with MEV, we'll also use RelayerExecutorWithMEV but configure it differently
       const mevConfig: MEVRelayerExecutorConfig = {
         ...EXECUTOR.DEFAULT_RELAYER_CONFIG,
-        apiKey: '',    // Not used with wallet
+        apiKey: '', // Not used with wallet
         apiSecret: '', // Not used with wallet
-        address: '',   // Not used with wallet
+        address: '', // Not used with wallet
         errorLogger: this.errorLogger,
         useMevProtection: true,
         // Add wallet config using private key from env or config
@@ -183,14 +186,14 @@ export class ExecutorWrapper {
           chainId: Number(process.env.CHAIN_ID || '1'),
           fast: process.env.FLASHBOTS_FAST_MODE !== 'false',
           rpcUrl: process.env.FLASHBOTS_RPC_URL || '',
-          ...(config as any)?.flashbots,
+          ...(config as Partial<MEVConfig>)?.flashbots,
         },
       };
 
       this.executor = new RelayerExecutorWithMEV(
-        lstContract, 
-        provider, 
-        mevConfig
+        lstContract,
+        provider,
+        mevConfig,
       );
     } else {
       throw new ExecutorError(
