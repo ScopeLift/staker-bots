@@ -59,6 +59,12 @@ export const CONFIG = {
       process.env.EXECUTOR_STALE_TX_THRESHOLD_MINUTES || '5',
       10,
     ),
+    mev: {
+      enabled: process.env.USE_MEV_PROTECTION === 'true',
+      flashbotsRpcUrl: process.env.FLASHBOTS_RPC_URL || '',
+      fastMode: process.env.FLASHBOTS_FAST_MODE !== 'false',
+      chainId: parseInt(process.env.CHAIN_ID || '1', 10),
+    },
     swap: {
       enabled: process.env.EXECUTOR_SWAP_TO_ETH === 'true',
       uniswapRouterAddress: process.env.UNISWAP_ROUTER_ADDRESS || '',

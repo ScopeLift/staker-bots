@@ -1,4 +1,6 @@
 export * from './interfaces/types';
 export * from './interfaces/IExecutor';
 export { RelayerExecutor } from './strategies/RelayerExecutor';
-export { ExecutorWrapper } from './ExecutorWrapper';
+export { RelayerExecutorWithMEV } from './strategies/RelayerExecutorWithMEV';
+export { FlashbotsExecutorStrategy } from './strategies/FlashbotsExecutorStrategy';
+export { ExecutorWrapper, ExecutorType } from './ExecutorWrapper';
