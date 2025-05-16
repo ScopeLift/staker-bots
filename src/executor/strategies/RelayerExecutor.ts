@@ -8,6 +8,7 @@ import {
   QueueStats,
   TransactionReceipt,
   EthersTransactionReceipt,
+  DefenderTransactionRequest,
 } from '../interfaces/types';
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { DatabaseWrapper } from '@/database';
@@ -1167,7 +1168,8 @@ export class RelayerExecutor implements IExecutor {
             maxPriorityFeePerGas:
               this.config.gasPolicy?.maxPriorityFeePerGas ||
               maxPriorityFeePerGas,
-          })
+            isPrivate: this.config.isPrivate
+          } as DefenderTransactionRequest)
           .catch(async (error: Error) => {
             // Enhanced error handling for Defender 400 errors
             const defenderError = error as DefenderError;
@@ -1439,7 +1441,8 @@ export class RelayerExecutor implements IExecutor {
                           maxPriorityFeePerGas:
                             this.config.gasPolicy?.maxPriorityFeePerGas ||
                             maxPriorityFeePerGas,
-                        },
+                          isPrivate: this.config.isPrivate,
+                        } as DefenderTransactionRequest,
                       );
                     }
 
@@ -1515,7 +1518,8 @@ export class RelayerExecutor implements IExecutor {
                     maxPriorityFeePerGas:
                       this.config.gasPolicy?.maxPriorityFeePerGas ||
                       maxPriorityFeePerGas,
-                  },
+                    isPrivate: this.config.isPrivate,
+                  } as DefenderTransactionRequest,
                 );
               }
             }

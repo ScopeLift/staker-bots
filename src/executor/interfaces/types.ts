@@ -1,5 +1,6 @@
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { ErrorLogger } from '@/configuration/errorLogger';
+import { ethers } from 'ethers';
 
 export interface WalletConfig {
   privateKey: string;
@@ -84,6 +85,7 @@ export interface RelayerExecutorConfig {
   defaultTipReceiver: string;
   minProfitMargin: number;
   staleTransactionThresholdMinutes?: number;
+  isPrivate?: boolean;
 }
 
 export interface TransactionReceipt {
@@ -194,3 +196,7 @@ export interface ExtendedExecutorConfig extends Omit<ExecutorConfig, 'wallet'> {
     maxPendingTransactions: number;
   };
 }
+
+export type DefenderTransactionRequest = ethers.TransactionRequest & {
+  isPrivate?: boolean;
+};

@@ -227,6 +227,7 @@ export const EXECUTOR = {
     defaultTipReceiver: '',
     minProfitMargin: 10,
     staleTransactionThresholdMinutes: 5, // Clean up stale transactions after 5 minutes
+    isPrivate: false,
   } as RelayerExecutorConfig,
 } as const;
 

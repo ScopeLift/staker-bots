@@ -80,6 +80,7 @@ export const CONFIG = {
     secretKey: process.env.DEFENDER_SECRET_KEY || '',
     address: process.env.PUBLIC_ADDRESS_DEFENDER || '',
     relayer: {
+      isPrivate: process.env.RELAYER_PRIVATE_TRANSACTIONS === 'true',
       minBalance: process.env.DEFENDER_MIN_BALANCE
         ? BigInt(process.env.DEFENDER_MIN_BALANCE)
         : ethers.parseEther('0.0000001'),

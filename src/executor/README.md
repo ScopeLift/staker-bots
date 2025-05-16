@@ -392,6 +392,20 @@ await executor.queueTransaction(depositIds, profitability)
 
 The executor module is responsible for executing transactions in the staker-bots system.
 
+## Features
+
+### Privacy Mode
+
+The RelayerExecutor supports private transactions through OpenZeppelin Defender. When enabled, transactions are sent through private mempool channels to help prevent front-running and MEV attacks.
+
+To enable private transactions, set the following environment variable:
+
+```env
+RELAYER_PRIVATE_TRANSACTIONS=true
+```
+
+Note that private transactions may have slightly higher gas costs and longer confirmation times.
+
 ## Strategies
 
 ### Swap Strategy
