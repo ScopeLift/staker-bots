@@ -235,7 +235,7 @@ export class RelayerExecutor implements IExecutor {
 
           if (
             simulatedGas !== null &&
-            simulatedGas < profitability.estimates.gas_estimate
+            simulatedGas > profitability.estimates.gas_estimate
           ) {
             this.logger.info('Updated gas estimate from simulation', {
               originalEstimate: profitability.estimates.gas_estimate.toString(),
