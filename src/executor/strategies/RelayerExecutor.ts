@@ -16,7 +16,7 @@ import {
   DefenderRelayProvider,
   DefenderRelaySigner,
 } from '@openzeppelin/defender-relay-client/lib/ethers';
-import { TransactionQueueStatus } from '@/database/interfaces/types';
+import { TransactionQueueStatus, TransactionDetails, TransactionDetailsStatus } from '@/database/interfaces/types';
 import {
   ContractMethodError,
   ExecutorError,
@@ -361,6 +361,10 @@ export class RelayerExecutor implements IExecutor {
       expectedProfit: tx.profitability.estimates.expected_profit.toString(),
     });
 
+    // Initialize transaction tracking data
+    const txStartTime = new Date();
+    let transactionDetailsId: string | undefined;
+
     try {
       if (!this.lstContract) {
         const error = new ExecutorError(
@@ -440,8 +444,7 @@ export class RelayerExecutor implements IExecutor {
             error instanceof Error
               ? error
               : new Error(
-                  `Failed to update queue item status: ${String(error)}`,
-                ),
+                  `Failed to update queue item status: ${String(error)}`),
             {
               stage: 'executeTransaction',
               txId: tx.id,
@@ -694,52 +697,47 @@ export class RelayerExecutor implements IExecutor {
         // Calculate real gas cost in reward tokens
         let gasCost: bigint;
 
-        // Only estimate gas cost if includeGasCost is enabled
-        if (CONFIG.profitability.includeGasCost) {
-          try {
-            // Use the GasCostEstimator to get a real gas cost estimate based on calculated gas limit
-            gasCost = await this.gasCostEstimator.estimateGasCostInRewardToken(
-              this.relayProvider as unknown as ethers.Provider,
-              calculatedGasLimit,
+        try {
+          // Use the GasCostEstimator to get a real gas cost estimate based on calculated gas limit
+          gasCost = await this.gasCostEstimator.estimateGasCostInRewardToken(
+            this.relayProvider as unknown as ethers.Provider,
+            calculatedGasLimit,
+          );
+
+          // Simple safety check - if gas cost is unreasonable, use a flat value
+          if (
+            gasCost < ethers.parseUnits(CONFIG.executor.minGasCost, 18) ||
+            gasCost > ethers.parseUnits(CONFIG.executor.maxGasCost, 18)
+          ) {
+            this.logger.warn(
+              'Gas cost outside reasonable range, using flat default',
+              {
+                calculatedGasCost: ethers.formatUnits(gasCost, 18),
+                usingDefaultCost: CONFIG.executor.avgGasCost,
+                calculatedGasLimit: calculatedGasLimit.toString(),
+              },
             );
-
-            // Simple safety check - if gas cost is unreasonable, use a flat value
-            if (
-              gasCost < ethers.parseUnits(CONFIG.executor.minGasCost, 18) ||
-              gasCost > ethers.parseUnits(CONFIG.executor.maxGasCost, 18)
-            ) {
-              this.logger.warn(
-                'Gas cost outside reasonable range, using flat default',
-                {
-                  calculatedGasCost: ethers.formatUnits(gasCost, 18),
-                  usingDefaultCost: CONFIG.executor.avgGasCost,
-                  calculatedGasLimit: calculatedGasLimit.toString(),
-                },
-              );
-              gasCost = ethers.parseUnits(CONFIG.executor.avgGasCost, 18); // Flat avgGasCost tokens
-            }
-
-            this.logger.info('Calculated gas cost in reward tokens:', {
-              gasCost: gasCost.toString(),
-              gasLimit: calculatedGasLimit.toString(),
-            });
-          } catch (error) {
-            this.logger.error('Failed to estimate gas cost in reward tokens', {
-              error: error instanceof Error ? error.message : String(error),
-            });
-
-            // Use flat default when estimation fails
             gasCost = ethers.parseUnits(CONFIG.executor.avgGasCost, 18); // Flat avgGasCost tokens
-
-            this.logger.info('Using default gas cost:', {
-              gasCost: gasCost.toString(),
-              gasLimit: calculatedGasLimit.toString(),
-            });
           }
-        } else {
-          // If gas cost estimation is disabled, use zero
-          gasCost = 0n;
+
+          this.logger.info('Calculated gas cost in reward tokens:', {
+            gasCost: gasCost.toString(),
+            gasLimit: calculatedGasLimit.toString(),
+          });
+        } catch (error) {
+          this.logger.error('Failed to estimate gas cost in reward tokens', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          // Use flat default when estimation fails
+          gasCost = ethers.parseUnits(CONFIG.executor.avgGasCost, 18); // Flat avgGasCost tokens
+
+          this.logger.info('Using default gas cost:', {
+            gasCost: gasCost.toString(),
+            gasLimit: calculatedGasLimit.toString(),
+          });
         }
+        
 
         // Get profit margin directly from CONFIG to ensure we use the environment variable value
         const profitMargin = +CONFIG.profitability.minProfitMargin;
@@ -974,6 +972,61 @@ export class RelayerExecutor implements IExecutor {
             simulationLimit: simulationGasLimit.toString(),
             finalLimit: finalSimulatedGasLimit.toString(),
           });
+        }
+
+        // Save transaction details before execution
+        if (this.db) {
+          try {
+            // Get network information
+            const chainId = await this.lstContract.runner?.provider?.getNetwork()
+              .then(network => network.chainId.toString())
+              .catch(() => 'unknown');
+
+            // Create transaction details record
+            const txDetails: Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'> = {
+              transaction_id: tx.id,
+              status: TransactionDetailsStatus.PENDING,
+              deposit_ids: tx.depositIds.map(String),
+              recipient_address: signerAddress,
+              min_expected_reward: finalThreshold.toString(),
+              payout_amount: payoutAmount.toString(),
+              profit_margin_amount: profitMarginAmount.toString(),
+              gas_cost_estimate: gasCost.toString(),
+              gas_limit: finalSimulatedGasLimit.toString(),
+              expected_profit: tx.profitability.estimates.expected_profit.toString(),
+              contract_address: this.lstContract.target.toString(),
+              network_id: chainId || '1', // Default to mainnet if unknown
+              tx_queue_item_id: queueItemId,
+              start_time: txStartTime.toISOString(),
+              max_fee_per_gas: (this.config.gasPolicy?.maxFeePerGas || maxFeePerGas)?.toString(),
+              max_priority_fee_per_gas: (this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas)?.toString(),
+              reward_token_price_usd: undefined,
+              eth_price_usd: undefined,
+            };
+
+            const savedDetails = await this.db.createTransactionDetails(txDetails);
+            transactionDetailsId = savedDetails.id;
+            
+            this.logger.info('Created transaction details record', {
+              txId: tx.id,
+              transactionDetailsId: transactionDetailsId,
+            });
+          } catch (dbError) {
+            // Log but continue with transaction execution
+            this.logger.error('Failed to create transaction details record', {
+              error: dbError instanceof Error ? dbError.message : String(dbError),
+              txId: tx.id,
+            });
+            this.errorLogger.error(
+              dbError instanceof Error
+                ? dbError
+                : new Error(`Failed to create transaction details: ${String(dbError)}`),
+              {
+                stage: 'executeTransaction_saveTxDetails',
+                txId: tx.id,
+              },
+            );
+          }
         }
 
         // Execute via contract with signer with increased gas parameters
@@ -1362,6 +1415,32 @@ export class RelayerExecutor implements IExecutor {
           maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
         });
 
+        // Update transaction details with transaction hash and status
+        if (this.db && transactionDetailsId) {
+          try {
+            await this.db.updateTransactionDetails(transactionDetailsId, {
+              transaction_hash: response.hash,
+              status: TransactionDetailsStatus.SUBMITTED,
+              gas_price: response.gasPrice?.toString(),
+              max_fee_per_gas: response.maxFeePerGas?.toString(),
+              max_priority_fee_per_gas: response.maxPriorityFeePerGas?.toString(),
+            });
+            
+            this.logger.info('Updated transaction details with hash', {
+              txId: tx.id,
+              transactionDetailsId,
+              hash: response.hash,
+            });
+          } catch (dbError) {
+            // Log but continue with transaction execution
+            this.logger.error('Failed to update transaction details with hash', {
+              error: dbError instanceof Error ? dbError.message : String(dbError),
+              txId: tx.id,
+              hash: response.hash,
+            });
+          }
+        }
+
         // Wait for transaction to be mined
         this.logger.info('Waiting for transaction...');
         try {
@@ -1378,6 +1457,70 @@ export class RelayerExecutor implements IExecutor {
               blockNumber: receipt?.blockNumber?.toString() || 'unknown',
               status: receipt?.status?.toString() || 'unknown',
             });
+
+            // Update transaction details with receipt information
+            if (this.db && transactionDetailsId && receipt) {
+              try {
+                // Calculate actual profit
+                let actualProfit: bigint | undefined;
+                try {
+                  // Actual profit = payout - gas cost
+                  const gasUsed = BigInt(receipt.gasUsed.toString());
+                  const effectiveGasPrice = receipt.effectiveGasPrice 
+                    ? BigInt(receipt.effectiveGasPrice.toString()) 
+                    : (response.gasPrice ? BigInt(response.gasPrice.toString()) : 0n);
+                  
+                  // Calculate gas cost in ETH
+                  const gasCostEth = gasUsed * effectiveGasPrice;
+                  
+                  // For now, actual profit is just expected profit (we don't have a way to get actual reward amount)
+                  // This could be refined if we parse event logs for the actual reward amount
+                  actualProfit = tx.profitability.estimates.expected_profit;
+                  
+                  // Calculate transaction duration
+                  const txEndTime = new Date();
+                  const durationMs = txEndTime.getTime() - txStartTime.getTime();
+                  
+                  await this.db.updateTransactionDetails(transactionDetailsId, {
+                    status: TransactionDetailsStatus.CONFIRMED,
+                    gas_used: gasUsed.toString(),
+                    gas_price: effectiveGasPrice.toString(),
+                    gas_cost_eth: gasCostEth.toString(),
+                    actual_profit: actualProfit.toString(),
+                    end_time: txEndTime.toISOString(),
+                    duration_ms: durationMs,
+                  });
+                  
+                  this.logger.info('Updated transaction details with receipt information', {
+                    txId: tx.id,
+                    transactionDetailsId,
+                    gasUsed: gasUsed.toString(),
+                    gasPrice: effectiveGasPrice.toString(),
+                    actualProfit: actualProfit.toString(),
+                    durationMs,
+                  });
+                } catch (calcError) {
+                  this.logger.error('Error calculating actual profit', {
+                    error: calcError instanceof Error ? calcError.message : String(calcError),
+                    txId: tx.id,
+                  });
+                  
+                  // Still update with available information
+                  await this.db.updateTransactionDetails(transactionDetailsId, {
+                    status: TransactionDetailsStatus.CONFIRMED,
+                    gas_used: receipt.gasUsed.toString(),
+                    end_time: new Date().toISOString(),
+                  });
+                }
+              } catch (dbError) {
+                this.logger.error('Failed to update transaction details with receipt', {
+                  error: dbError instanceof Error ? dbError.message : String(dbError),
+                  txId: tx.id,
+                  hash: response.hash,
+                });
+              }
+            }
+            
           } catch (confirmError: unknown) {
             // If polling fails, just log the error
             this.logger.warn('Transaction confirmation failed', {
@@ -1479,6 +1622,32 @@ export class RelayerExecutor implements IExecutor {
               this.errorLogger,
             );
 
+            // Update transaction details with error information
+            if (this.db && transactionDetailsId) {
+              try {
+                const txEndTime = new Date();
+                const durationMs = txEndTime.getTime() - txStartTime.getTime();
+                
+                await this.db.updateTransactionDetails(transactionDetailsId, {
+                  status: TransactionDetailsStatus.FAILED,
+                  error: error instanceof Error ? error.message : String(error),
+                  end_time: txEndTime.toISOString(),
+                  duration_ms: durationMs,
+                });
+                
+                this.logger.info('Updated transaction details with error information', {
+                  txId: tx.id,
+                  transactionDetailsId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              } catch (dbError) {
+                this.logger.error('Failed to update transaction details with error', {
+                  error: dbError instanceof Error ? dbError.message : String(dbError),
+                  txId: tx.id,
+                });
+              }
+            }
+
             // Check token swap needs even after error
             await this.checkAndSwapTokensIfNeeded();
           },
@@ -1499,6 +1668,32 @@ export class RelayerExecutor implements IExecutor {
             this.logger,
             this.errorLogger,
           );
+
+          // Update transaction details with error information for outer error
+          if (this.db && transactionDetailsId) {
+            try {
+              const txEndTime = new Date();
+              const durationMs = txEndTime.getTime() - txStartTime.getTime();
+              
+              await this.db.updateTransactionDetails(transactionDetailsId, {
+                status: TransactionDetailsStatus.FAILED,
+                error: error instanceof Error ? error.message : String(error),
+                end_time: txEndTime.toISOString(),
+                duration_ms: durationMs,
+              });
+              
+              this.logger.info('Updated transaction details with error information (outer error)', {
+                txId: tx.id,
+                transactionDetailsId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            } catch (dbError) {
+              this.logger.error('Failed to update transaction details with error', {
+                error: dbError instanceof Error ? dbError.message : String(dbError),
+                txId: tx.id,
+              });
+            }
+          }
         },
       );
     }

@@ -1,3 +1,3 @@
 export * from './interfaces/types';
+export * from './DatabaseWrapper';
 export * from './interfaces/IDatabase';
-export { DatabaseWrapper } from './DatabaseWrapper';
