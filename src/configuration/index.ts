@@ -49,6 +49,9 @@ export const CONFIG = {
     healthCheckInterval: parseInt(process.env.HEALTH_CHECK_INTERVAL || '60'),
   },
   executor: {
+    minGasCost: process.env.MIN_GAS_COST || '20.0',
+    maxGasCost: process.env.MAX_GAS_COST || '450.0',
+    avgGasCost: process.env.AVG_GAS_COST || '200.0',
     approvalAmount:
       process.env.EXECUTOR_APPROVAL_AMOUNT || '1000000000000000000000000',
     executorType: process.env.EXECUTOR_TYPE || '',

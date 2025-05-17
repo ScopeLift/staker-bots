@@ -703,17 +703,20 @@ export class RelayerExecutor implements IExecutor {
               calculatedGasLimit,
             );
 
-            // Cap gas cost to prevent excessive thresholds - max 20% of payout (reduced from 25%)
-            const maxGasCost = payoutAmount / 5n;
-            if (gasCost > maxGasCost) {
-              this.logger.info('Capping excessive gas cost estimate', {
-                originalGasCost: gasCost.toString(),
-                cappedGasCost: maxGasCost.toString(),
-                payoutAmount: payoutAmount.toString(),
-                ratio: 'Max 20% of payout',
-                calculatedGasLimit: calculatedGasLimit.toString(),
-              });
-              gasCost = maxGasCost;
+            // Simple safety check - if gas cost is unreasonable, use a flat value
+            if (
+              gasCost < ethers.parseUnits(CONFIG.executor.minGasCost, 18) ||
+              gasCost > ethers.parseUnits(CONFIG.executor.maxGasCost, 18)
+            ) {
+              this.logger.warn(
+                'Gas cost outside reasonable range, using flat default',
+                {
+                  calculatedGasCost: ethers.formatUnits(gasCost, 18),
+                  usingDefaultCost: CONFIG.executor.avgGasCost,
+                  calculatedGasLimit: calculatedGasLimit.toString(),
+                },
+              );
+              gasCost = ethers.parseUnits(CONFIG.executor.avgGasCost, 18); // Flat avgGasCost tokens
             }
 
             this.logger.info('Calculated gas cost in reward tokens:', {
@@ -725,33 +728,17 @@ export class RelayerExecutor implements IExecutor {
               error: error instanceof Error ? error.message : String(error),
             });
 
-            // Use a safe fallback - but much lower than before
-            // Base rate of 1% plus only 0.25% per deposit, capped at 5%
-            const basePercentage = 1n;
-            const perDepositPercentage = 25n; // 0.25% = 25 basis points per deposit
-            let fallbackPercentage =
-              basePercentage +
-              (BigInt(depositIds.length) * perDepositPercentage) / 100n;
+            // Use flat default when estimation fails
+            gasCost = ethers.parseUnits(CONFIG.executor.avgGasCost, 18); // Flat avgGasCost tokens
 
-            // Cap at 5% to avoid excessive gas estimates (reduced from 10%)
-            if (fallbackPercentage > 5n) {
-              fallbackPercentage = 5n;
-            }
-
-            gasCost = (payoutAmount * fallbackPercentage) / 100n;
-
-            this.logger.info('Using fallback gas cost calculation:', {
+            this.logger.info('Using default gas cost:', {
               gasCost: gasCost.toString(),
-              fallbackPercentage: fallbackPercentage.toString(),
-              basePercentage: basePercentage.toString(),
-              perDepositPercentage: perDepositPercentage.toString(),
-              depositCount: depositIds.length,
-              payoutAmount: payoutAmount.toString(),
+              gasLimit: calculatedGasLimit.toString(),
             });
           }
         } else {
-          // If gas cost estimation is disabled, use a minimal amount (0.01% of payout)
-          gasCost = payoutAmount / 100n;
+          // If gas cost estimation is disabled, use zero
+          gasCost = 0n;
         }
 
         // Get profit margin directly from CONFIG to ensure we use the environment variable value
@@ -794,187 +781,16 @@ export class RelayerExecutor implements IExecutor {
           ),
         );
 
-        this.logger.info('Scaled profit margin for transaction complexity:', {
-          configuredMinProfitMargin: `${profitMargin}%`,
-          depositCount: depositIds.length,
-          depositScalingBasisPoints: depositScalingBasisPoints.toString(),
-          minProfitMarginBasisPoints: minProfitMarginBasisPoints.toString(),
-          scaledProfitMarginBasisPoints:
-            scaledProfitMarginBasisPoints.toString(),
-          effectiveScaledMargin: `${Number(scaledProfitMarginBasisPoints) / 100}%`,
-          cap: '15%',
-          floor: `${profitMargin}%`,
-        });
-
         // Already in basis points (100 = 1%)
         const profitMarginBasisPoints = scaledProfitMarginBasisPoints;
-        this.logger.info('Profit margin basis points:', {
-          value: profitMarginBasisPoints.toString(),
-          type: typeof profitMarginBasisPoints,
-          originalValue: `${Number(profitMarginBasisPoints) / 100}%`,
-          effectivePercentage: `${Number(profitMarginBasisPoints) / 100}%`,
-        });
 
-        this.logger.info('Pre-calculation values:', {
-          payoutAmount: payoutAmount.toString(),
-          payoutAmountType: typeof payoutAmount,
-          gasCost: gasCost.toString(),
-          gasCostType: typeof gasCost,
-          profitMarginBasisPoints: profitMarginBasisPoints.toString(),
-          profitMarginBasisPointsType: typeof profitMarginBasisPoints,
-          minimumProfitMarginBasisPoints: minProfitMarginBasisPoints.toString(),
-        });
-
-        // Calculate base amount including gas cost if enabled
-        const baseAmount =
-          payoutAmount + (CONFIG.profitability.includeGasCost ? gasCost : 0n);
-
-        // Calculate minimum required profit
-        // If profitMargin is 1 (100%), this calculates:
-        // baseAmount * 100 / 10000 = 1% of baseAmount
-        const minProfitAmount =
-          (baseAmount * BigInt(Math.floor(profitMargin * 100))) / 10000n;
-
-        // Calculate scaled profit margin amount (may be higher than minimum)
-        const scaledProfitAmount =
-          (baseAmount * profitMarginBasisPoints) / 10000n;
-
-        // Use the larger of minimum or scaled profit
+        // Simple threshold calculation - always include gas cost if enabled, apply profit margin to payout
         const profitMarginAmount =
-          scaledProfitAmount > minProfitAmount
-            ? scaledProfitAmount
-            : minProfitAmount;
-
-        // Calculate optimal threshold including gas cost (only if enabled) and profit margin
-        const optimalThreshold =
+          (payoutAmount * profitMarginBasisPoints) / 10000n;
+        const finalThreshold =
           payoutAmount +
           (CONFIG.profitability.includeGasCost ? gasCost : 0n) +
           profitMarginAmount;
-
-        // CRITICAL: Final safety check - ensure threshold is at most 85% of expected profit
-        const expectedProfit = tx.profitability.estimates.expected_profit;
-
-        // Base threshold - must be greater than payout amount plus minimum profit
-        const minThreshold =
-          payoutAmount + (payoutAmount * minProfitMarginBasisPoints) / 10000n;
-
-        // Calculate maximum allowed threshold (85% of expected profit)
-        const maxAllowedThreshold = (expectedProfit * 85n) / 100n;
-
-        // Determine final threshold:
-        let finalThreshold: bigint;
-
-        if (optimalThreshold <= minThreshold) {
-          this.logger.info(
-            'Optimal threshold below minimum, using minimum threshold',
-            {
-              optimalThreshold: optimalThreshold.toString(),
-              minThreshold: minThreshold.toString(),
-              minimumProfitMargin: `${profitMargin}%`,
-            },
-          );
-          finalThreshold = minThreshold;
-        } else if (optimalThreshold > maxAllowedThreshold) {
-          // Before using maxAllowedThreshold, verify it provides minimum profit margin
-          const maxAllowedProfit =
-            maxAllowedThreshold -
-            payoutAmount -
-            (CONFIG.profitability.includeGasCost ? gasCost : 0n);
-          const maxAllowedProfitMargin =
-            (maxAllowedProfit * 10000n) / baseAmount;
-
-          if (maxAllowedProfitMargin < minProfitMarginBasisPoints) {
-            this.logger.info(
-              'Max allowed threshold does not meet minimum profit margin, using minimum threshold',
-              {
-                maxAllowedThreshold: maxAllowedThreshold.toString(),
-                maxAllowedProfitMargin: `${Number(maxAllowedProfitMargin) / 100}%`,
-                requiredMinimum: `${profitMargin}%`,
-                usingThreshold: minThreshold.toString(),
-              },
-            );
-            finalThreshold = minThreshold;
-          } else {
-            this.logger.info('Using maximum allowed threshold', {
-              originalThreshold: optimalThreshold.toString(),
-              maxAllowedThreshold: maxAllowedThreshold.toString(),
-              effectiveProfitMargin: `${Number(maxAllowedProfitMargin) / 100}%`,
-            });
-            finalThreshold = maxAllowedThreshold;
-          }
-        } else {
-          finalThreshold = optimalThreshold;
-        }
-
-        this.logger.info('Final threshold calculation details:', {
-          value: finalThreshold.toString(),
-          components: {
-            payoutAmount: payoutAmount.toString(),
-            gasCost: gasCost.toString(),
-            gasCostIncluded: CONFIG.profitability.includeGasCost,
-            profitMarginAmount: profitMarginAmount.toString(),
-            expectedProfit: expectedProfit.toString(),
-            effectiveProfitMargin: CONFIG.profitability.includeGasCost
-              ? `${Number(((finalThreshold - payoutAmount - gasCost) * 10000n) / baseAmount) / 100}%`
-              : `${Number(((finalThreshold - payoutAmount) * 10000n) / baseAmount) / 100}%`,
-            minimumRequiredProfitMargin: `${profitMargin}%`,
-          },
-        });
-
-        this.logger.info('Calculated optimal threshold:', {
-          payoutAmount: ethers.formatEther(payoutAmount),
-          payoutAmountRaw: payoutAmount.toString(),
-          gasCost: ethers.formatEther(gasCost),
-          gasCostRaw: gasCost.toString(),
-          gasCostIncluded: CONFIG.profitability.includeGasCost,
-          profitMargin: `${Number(profitMarginBasisPoints) / 100}%`,
-          profitMarginAmount: ethers.formatEther(profitMarginAmount),
-          profitMarginAmountRaw: profitMarginAmount.toString(),
-          optimalThreshold: ethers.formatEther(finalThreshold),
-          optimalThresholdRaw: finalThreshold.toString(),
-          expectedProfit: ethers.formatEther(expectedProfit),
-          expectedProfitRaw: expectedProfit.toString(),
-        });
-
-        // Validation check should never fail now since we ensure finalThreshold > payoutAmount
-        if (finalThreshold <= payoutAmount) {
-          const error = new TransactionValidationError(
-            'Optimal threshold is less than or equal to payout amount',
-            {
-              optimalThreshold: finalThreshold.toString(),
-              payoutAmount: payoutAmount.toString(),
-              depositIds: tx.depositIds.map(String),
-            },
-          );
-          this.errorLogger.error(error, {
-            stage: 'executeTransaction_thresholdValidation',
-            txId: tx.id,
-          });
-          throw error;
-        }
-
-        // Verify that expected profit is greater than our calculated threshold
-        // This should now always pass due to our capping logic above
-        if (tx.profitability.estimates.expected_profit < finalThreshold) {
-          const error = new TransactionValidationError(
-            'Expected profit less than optimal threshold with gas costs',
-            {
-              expectedProfit:
-                tx.profitability.estimates.expected_profit.toString(),
-              calculatedThreshold: finalThreshold.toString(),
-              difference: (
-                finalThreshold - tx.profitability.estimates.expected_profit
-              ).toString(),
-              depositIds: depositIds.map(String),
-              gasCostIncluded: CONFIG.profitability.includeGasCost,
-            },
-          );
-          this.errorLogger.error(error, {
-            stage: 'executeTransaction_profitValidation',
-            txId: tx.id,
-          });
-          throw error;
-        }
 
         // Get current network conditions
         let maxFeePerGas: bigint | undefined;
@@ -1168,7 +984,7 @@ export class RelayerExecutor implements IExecutor {
             maxPriorityFeePerGas:
               this.config.gasPolicy?.maxPriorityFeePerGas ||
               maxPriorityFeePerGas,
-            isPrivate: this.config.isPrivate
+            isPrivate: this.config.isPrivate,
           } as DefenderTransactionRequest)
           .catch(async (error: Error) => {
             // Enhanced error handling for Defender 400 errors

@@ -50,6 +50,17 @@ export class GasCostEstimator {
       let gasPrice: bigint;
       let priorityFee: bigint | undefined;
 
+      // Add detailed debug for production issue
+      this.logger.info('Raw fee data debug', {
+        feeDataExists: !!feeData,
+        gasPriceExists: !!feeData?.gasPrice,
+        gasPriceValue: feeData?.gasPrice?.toString() || 'undefined',
+        maxFeePerGas: feeData?.maxFeePerGas?.toString() || 'undefined',
+        maxPriorityFeePerGas:
+          feeData?.maxPriorityFeePerGas?.toString() || 'undefined',
+        providerType: provider.constructor.name,
+      });
+
       if (feeData?.gasPrice) {
         // Apply 25% buffer to current gas price
         const currentGasPrice = BigInt(feeData.gasPrice.toString());
@@ -65,6 +76,16 @@ export class GasCostEstimator {
         gasPrice = GasCostEstimator.FALLBACK_GAS_PRICE_GWEI * 10n ** 9n;
         priorityFee = BigInt(
           Math.floor(GasCostEstimator.FALLBACK_PRIORITY_FEE_GWEI * 1e9),
+        );
+
+        // Log when using fallback
+        this.logger.warn(
+          'Using fallback gas price due to missing feeData.gasPrice',
+          {
+            fallbackGwei: GasCostEstimator.FALLBACK_GAS_PRICE_GWEI.toString(),
+            fallbackWei: gasPrice.toString(),
+            reason: feeData ? 'feeData.gasPrice is null/0' : 'feeData is null',
+          },
         );
       }
 
@@ -230,16 +251,77 @@ export class GasCostEstimator {
         );
       let costInRewardTokens: bigint;
 
+      // Add detailed debug for conversion calculation
+      this.logger.info('Token conversion debug values', {
+        gasCostWei: gasCostWei.toString(),
+        gasCostEth: ethers.formatEther(gasCostWei),
+        ethPrice: ethPrice.toString(),
+        tokenPrice: tokenPrice.toString(),
+        ethDecimals: GasCostEstimator.ETH_DECIMALS,
+        tokenDecimals: GasCostEstimator.TOKEN_DECIMALS,
+        decimalAdjustment: decimalAdjustment.toString(),
+        ethPriceUsd: Number(ethPrice) / 10 ** GasCostEstimator.ETH_DECIMALS,
+        tokenPriceUsd:
+          Number(tokenPrice) / 10 ** GasCostEstimator.TOKEN_DECIMALS,
+      });
+
       if (GasCostEstimator.ETH_DECIMALS >= GasCostEstimator.TOKEN_DECIMALS) {
         costInRewardTokens =
           (gasCostWei * ethPrice) / (tokenPrice * decimalAdjustment);
+
+        this.logger.info(
+          'Token conversion calculation (ETH decimals >= Token decimals)',
+          {
+            numerator: (gasCostWei * ethPrice).toString(),
+            denominator: (tokenPrice * decimalAdjustment).toString(),
+            formula: 'gasCostWei * ethPrice / (tokenPrice * decimalAdjustment)',
+          },
+        );
       } else {
         costInRewardTokens =
           (gasCostWei * ethPrice * decimalAdjustment) / tokenPrice;
+
+        this.logger.info(
+          'Token conversion calculation (ETH decimals < Token decimals)',
+          {
+            numerator: (gasCostWei * ethPrice * decimalAdjustment).toString(),
+            denominator: tokenPrice.toString(),
+            formula: 'gasCostWei * ethPrice * decimalAdjustment / tokenPrice',
+          },
+        );
       }
 
       // Ensure we never go below minimum gas cost
       const minimumCost = this.calculateMinimumGasCostInTokens(tokenPrice);
+
+      this.logger.info('Gas cost calculation results', {
+        rawCostInRewardTokens: costInRewardTokens.toString(),
+        formattedCostInRewardTokens: ethers.formatUnits(
+          costInRewardTokens,
+          GasCostEstimator.TOKEN_DECIMALS,
+        ),
+        minimumCost: minimumCost.toString(),
+        formattedMinimumCost: ethers.formatUnits(
+          minimumCost,
+          GasCostEstimator.TOKEN_DECIMALS,
+        ),
+        isZero: costInRewardTokens === 0n,
+        usesMinimum: costInRewardTokens < minimumCost,
+      });
+
+      // Add check for zero result
+      if (costInRewardTokens === 0n) {
+        this.logger.warn(
+          'Gas cost in reward token calculated as zero, using minimum cost',
+          {
+            gasCostWei: gasCostWei.toString(),
+            ethPrice: ethPrice.toString(),
+            tokenPrice: tokenPrice.toString(),
+            minimumCost: minimumCost.toString(),
+          },
+        );
+        return minimumCost;
+      }
 
       this.logger.info('Gas cost calculation details', {
         gasCostInTokens: ethers.formatUnits(
