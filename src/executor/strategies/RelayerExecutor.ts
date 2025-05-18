@@ -814,12 +814,35 @@ export class RelayerExecutor implements IExecutor {
             maxPriorityFeePerGas = (maxPriorityFeePerGas * 125n) / 100n;
           }
 
-          this.logger.info('Retrieved and slightly boosted network fee data', {
+          // NEW: Prefer the higher of network fee data or any configured override
+          const configuredMaxFeePerGas = this.config.gasPolicy?.maxFeePerGas;
+          const configuredMaxPriorityFeePerGas =
+            this.config.gasPolicy?.maxPriorityFeePerGas;
+
+          const finalMaxFeePerGas = configuredMaxFeePerGas && maxFeePerGas
+            ? maxFeePerGas > configuredMaxFeePerGas
+              ? maxFeePerGas
+              : configuredMaxFeePerGas
+            : configuredMaxFeePerGas || maxFeePerGas;
+
+          const finalMaxPriorityFeePerGas =
+            configuredMaxPriorityFeePerGas && maxPriorityFeePerGas
+              ? maxPriorityFeePerGas > configuredMaxPriorityFeePerGas
+                ? maxPriorityFeePerGas
+                : configuredMaxPriorityFeePerGas
+              : configuredMaxPriorityFeePerGas || maxPriorityFeePerGas;
+
+          maxFeePerGas = finalMaxFeePerGas;
+          maxPriorityFeePerGas = finalMaxPriorityFeePerGas;
+
+          this.logger.info('Calculated final gas parameters', {
             txId: tx.id,
-            maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
-            maxPriorityFeePerGas:
-              maxPriorityFeePerGas?.toString() || 'undefined',
-            boostedBy: 'Fee: 25%, Priority: 25%',
+            finalMaxFeePerGas: finalMaxFeePerGas?.toString() || 'undefined',
+            finalMaxPriorityFeePerGas:
+              finalMaxPriorityFeePerGas?.toString() || 'undefined',
+            configuredMaxFeePerGas: configuredMaxFeePerGas?.toString() || 'undefined',
+            configuredMaxPriorityFeePerGas:
+              configuredMaxPriorityFeePerGas?.toString() || 'undefined',
           });
         } catch (error) {
           this.logger.error('Failed to get fee data', {
@@ -980,10 +1003,8 @@ export class RelayerExecutor implements IExecutor {
         const response = await this.lstContract
           .claimAndDistributeReward(signerAddress, finalThreshold, depositIds, {
             gasLimit: finalSimulatedGasLimit,
-            maxFeePerGas: this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-            maxPriorityFeePerGas:
-              this.config.gasPolicy?.maxPriorityFeePerGas ||
-              maxPriorityFeePerGas,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
             isPrivate: this.config.isPrivate,
           } as DefenderTransactionRequest)
           .catch(async (error: Error) => {
@@ -1039,13 +1060,8 @@ export class RelayerExecutor implements IExecutor {
                   minExpectedReward: finalThreshold.toString(),
                   depositIds: depositIds.map(String),
                   gasLimit: finalSimulatedGasLimit.toString(),
-                  maxFeePerGas: (
-                    this.config.gasPolicy?.maxFeePerGas || maxFeePerGas
-                  )?.toString(),
-                  maxPriorityFeePerGas: (
-                    this.config.gasPolicy?.maxPriorityFeePerGas ||
-                    maxPriorityFeePerGas
-                  )?.toString(),
+                  maxFeePerGas: maxFeePerGas?.toString(),
+                  maxPriorityFeePerGas: maxPriorityFeePerGas?.toString(),
                 },
                 networkState: {
                   currentBlock: blockNumber,
@@ -1112,11 +1128,8 @@ export class RelayerExecutor implements IExecutor {
                       'claimAndDistributeReward',
                       [signerAddress, finalThreshold, depositIds],
                     ),
-                    maxFeePerGas:
-                      this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-                    maxPriorityFeePerGas:
-                      this.config.gasPolicy?.maxPriorityFeePerGas ||
-                      maxPriorityFeePerGas,
+                    maxFeePerGas: maxFeePerGas,
+                    maxPriorityFeePerGas: maxPriorityFeePerGas,
                   })
                   .catch((estimateError: GasEstimationError) => {
                     this.logger.error('Gas estimation failed:', {
@@ -1252,11 +1265,8 @@ export class RelayerExecutor implements IExecutor {
                         depositIds,
                         {
                           gasLimit: newGasLimit,
-                          maxFeePerGas:
-                            this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-                          maxPriorityFeePerGas:
-                            this.config.gasPolicy?.maxPriorityFeePerGas ||
-                            maxPriorityFeePerGas,
+                          maxFeePerGas,
+                          maxPriorityFeePerGas,
                           isPrivate: this.config.isPrivate,
                         } as DefenderTransactionRequest,
                       );
@@ -1329,11 +1339,8 @@ export class RelayerExecutor implements IExecutor {
                   depositIds,
                   {
                     gasLimit: newGasLimit,
-                    maxFeePerGas:
-                      this.config.gasPolicy?.maxFeePerGas || maxFeePerGas,
-                    maxPriorityFeePerGas:
-                      this.config.gasPolicy?.maxPriorityFeePerGas ||
-                      maxPriorityFeePerGas,
+                    maxFeePerGas,
+                    maxPriorityFeePerGas,
                     isPrivate: this.config.isPrivate,
                   } as DefenderTransactionRequest,
                 );
