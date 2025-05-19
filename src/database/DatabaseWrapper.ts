@@ -8,6 +8,8 @@ import {
   TransactionQueueStatus,
   GovLstClaimHistory,
   ErrorLog,
+  TransactionDetails,
+  TransactionDetailsStatus,
 } from './interfaces/types';
 import * as supabaseDb from './supabase/deposits';
 import * as supabaseCheckpoints from './supabase/checkpoints';
@@ -15,6 +17,7 @@ import * as supabaseProcessingQueue from './supabase/processing_queue';
 import * as supabaseTransactionQueue from './supabase/transaction_queue';
 import * as supabaseGovLstRewards from './supabase/govlst_rewards';
 import * as supabaseErrors from './supabase/errors';
+import * as supabaseTransactionDetails from './supabase/transaction_details';
 import { JsonDatabase } from './json/JsonDatabase';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 
@@ -105,6 +108,30 @@ export class DatabaseWrapper implements IDatabase {
         deleteTransactionQueueItem: this.wrapWithFallback(
           supabaseTransactionQueue.deleteTransactionQueueItem,
         ),
+
+        // Transaction Details Operations
+        createTransactionDetails: this.wrapWithFallback(
+          supabaseTransactionDetails.createTransactionDetails,
+        ),
+        updateTransactionDetails: this.wrapWithFallback(
+          supabaseTransactionDetails.updateTransactionDetails,
+        ),
+        getTransactionDetailsByTransactionId: this.wrapWithFallback(
+          supabaseTransactionDetails.getTransactionDetailsByTransactionId,
+        ),
+        getTransactionDetailsByTransactionHash: this.wrapWithFallback(
+          supabaseTransactionDetails.getTransactionDetailsByTransactionHash,
+        ),
+        getTransactionDetailsByStatus: this.wrapWithFallback(
+          supabaseTransactionDetails.getTransactionDetailsByStatus,
+        ),
+        getTransactionDetailsByDepositId: this.wrapWithFallback(
+          supabaseTransactionDetails.getTransactionDetailsByDepositId,
+        ),
+        getRecentTransactionDetails: this.wrapWithFallback(
+          supabaseTransactionDetails.getRecentTransactionDetails,
+        ),
+
         // GovLst Claim History Operations
         createGovLstClaimHistory: this.wrapWithFallback(
           supabaseGovLstRewards.createGovLstClaimHistory,
@@ -370,5 +397,52 @@ export class DatabaseWrapper implements IDatabase {
 
   async deleteErrorLog(id: string): Promise<void> {
     return this.db.deleteErrorLog(id);
+  }
+
+  // Transaction Details methods
+  async createTransactionDetails(
+    details: Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'>,
+  ): Promise<TransactionDetails> {
+    return this.db.createTransactionDetails(details);
+  }
+
+  async updateTransactionDetails(
+    id: string,
+    update: Partial<
+      Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'>
+    >,
+  ): Promise<void> {
+    return this.db.updateTransactionDetails(id, update);
+  }
+
+  async getTransactionDetailsByTransactionId(
+    transactionId: string,
+  ): Promise<TransactionDetails | null> {
+    return this.db.getTransactionDetailsByTransactionId(transactionId);
+  }
+
+  async getTransactionDetailsByTransactionHash(
+    transactionHash: string,
+  ): Promise<TransactionDetails | null> {
+    return this.db.getTransactionDetailsByTransactionHash(transactionHash);
+  }
+
+  async getTransactionDetailsByStatus(
+    status: TransactionDetailsStatus,
+  ): Promise<TransactionDetails[]> {
+    return this.db.getTransactionDetailsByStatus(status);
+  }
+
+  async getTransactionDetailsByDepositId(
+    depositId: string,
+  ): Promise<TransactionDetails[]> {
+    return this.db.getTransactionDetailsByDepositId(depositId);
+  }
+
+  async getRecentTransactionDetails(
+    limit?: number,
+    offset?: number,
+  ): Promise<TransactionDetails[]> {
+    return this.db.getRecentTransactionDetails(limit, offset);
   }
 }

@@ -7,6 +7,8 @@ import {
   TransactionQueueStatus,
   GovLstClaimHistory,
   ErrorLog,
+  TransactionDetails,
+  TransactionDetailsStatus,
 } from './types';
 
 export interface IDatabase {
@@ -70,6 +72,33 @@ export interface IDatabase {
   ): Promise<TransactionQueueItem | null>;
   getTransactionQueueItemsByHash(hash: string): Promise<TransactionQueueItem[]>;
   deleteTransactionQueueItem(id: string): Promise<void>;
+
+  // Transaction Details
+  createTransactionDetails(
+    details: Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'>,
+  ): Promise<TransactionDetails>;
+  updateTransactionDetails(
+    id: string,
+    update: Partial<
+      Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'>
+    >,
+  ): Promise<void>;
+  getTransactionDetailsByTransactionId(
+    transactionId: string,
+  ): Promise<TransactionDetails | null>;
+  getTransactionDetailsByTransactionHash(
+    transactionHash: string,
+  ): Promise<TransactionDetails | null>;
+  getTransactionDetailsByStatus(
+    status: TransactionDetailsStatus,
+  ): Promise<TransactionDetails[]>;
+  getTransactionDetailsByDepositId(
+    depositId: string,
+  ): Promise<TransactionDetails[]>;
+  getRecentTransactionDetails(
+    limit?: number,
+    offset?: number,
+  ): Promise<TransactionDetails[]>;
 
   // GovLst Claim History
   createGovLstClaimHistory(
