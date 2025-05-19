@@ -10,6 +10,8 @@ import {
   TransactionQueueStatus,
   GovLstClaimHistory,
   ErrorLog,
+  TransactionDetails,
+  TransactionDetailsStatus,
 } from '../interfaces/types';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { v4 as uuidv4 } from 'uuid';
@@ -24,6 +26,7 @@ export class JsonDatabase implements IDatabase {
     transaction_queue: Record<string, TransactionQueueItem>;
     govlst_claim_history: Record<string, GovLstClaimHistory>;
     errors: Record<string, ErrorLog>;
+    transaction_details: Record<string, TransactionDetails>;
   };
 
   constructor(dbPath = 'staker-monitor-db.json') {
@@ -49,6 +52,7 @@ export class JsonDatabase implements IDatabase {
       transaction_queue: {},
       govlst_claim_history: {},
       errors: {},
+      transaction_details: {},
     };
 
     this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
@@ -89,6 +93,7 @@ export class JsonDatabase implements IDatabase {
             transaction_queue: loadedData.transaction_queue || {},
             govlst_claim_history: loadedData.govlst_claim_history || {},
             errors: loadedData.errors || {},
+            transaction_details: loadedData.transaction_details || {},
           };
 
           this.logger.info('Successfully loaded existing database:', {
@@ -97,6 +102,8 @@ export class JsonDatabase implements IDatabase {
             processing_queue: Object.keys(this.data.processing_queue).length,
             transaction_queue: Object.keys(this.data.transaction_queue).length,
             govlst_claim_history: Object.keys(this.data.govlst_claim_history)
+              .length,
+            transaction_details: Object.keys(this.data.transaction_details)
               .length,
           });
           return;
@@ -554,5 +561,94 @@ export class JsonDatabase implements IDatabase {
   async deleteErrorLog(id: string): Promise<void> {
     delete this.data.errors[id];
     await this.saveToFile();
+  }
+
+  // Transaction Details methods
+  async createTransactionDetails(
+    details: Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'>,
+  ): Promise<TransactionDetails> {
+    const id = uuidv4();
+    const now = new Date().toISOString();
+
+    const newDetails: TransactionDetails = {
+      ...details,
+      id,
+      created_at: now,
+      updated_at: now,
+    };
+
+    this.data.transaction_details[id] = newDetails;
+    await this.saveToFile();
+    return newDetails;
+  }
+
+  async updateTransactionDetails(
+    id: string,
+    update: Partial<
+      Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'>
+    >,
+  ): Promise<void> {
+    const existing = this.data.transaction_details[id];
+    if (!existing) {
+      throw new Error(`Transaction details with ID ${id} not found`);
+    }
+
+    this.data.transaction_details[id] = {
+      ...existing,
+      ...update,
+      updated_at: new Date().toISOString(),
+    };
+
+    await this.saveToFile();
+  }
+
+  async getTransactionDetailsByTransactionId(
+    transactionId: string,
+  ): Promise<TransactionDetails | null> {
+    const allDetails = Object.values(this.data.transaction_details);
+    return (
+      allDetails.find((details) => details.transaction_id === transactionId) ||
+      null
+    );
+  }
+
+  async getTransactionDetailsByTransactionHash(
+    transactionHash: string,
+  ): Promise<TransactionDetails | null> {
+    const allDetails = Object.values(this.data.transaction_details);
+    return (
+      allDetails.find(
+        (details) => details.transaction_hash === transactionHash,
+      ) || null
+    );
+  }
+
+  async getTransactionDetailsByStatus(
+    status: TransactionDetailsStatus,
+  ): Promise<TransactionDetails[]> {
+    return Object.values(this.data.transaction_details).filter(
+      (details) => details.status === status,
+    );
+  }
+
+  async getTransactionDetailsByDepositId(
+    depositId: string,
+  ): Promise<TransactionDetails[]> {
+    return Object.values(this.data.transaction_details).filter((details) =>
+      details.deposit_ids.includes(depositId),
+    );
+  }
+
+  async getRecentTransactionDetails(
+    limit = 50,
+    offset = 0,
+  ): Promise<TransactionDetails[]> {
+    return Object.values(this.data.transaction_details)
+      .sort(
+        (a, b) =>
+          new Date(b.created_at || 0).getTime() -
+          new Date(a.created_at || 0).getTime(),
+      )
+      .slice(offset, offset + limit);
   }
 }

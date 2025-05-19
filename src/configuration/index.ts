@@ -79,6 +79,8 @@ export const CONFIG = {
     },
   },
   defender: {
+    mainKey: process.env.DEFENDER_MAIN_KEY || '',
+    mainSecret: process.env.DEFENDER_MAIN_SECRET || '',
     apiKey: process.env.DEFENDER_API_KEY || '',
     secretKey: process.env.DEFENDER_SECRET_KEY || '',
     address: process.env.PUBLIC_ADDRESS_DEFENDER || '',

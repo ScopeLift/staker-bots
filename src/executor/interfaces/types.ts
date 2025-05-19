@@ -45,6 +45,7 @@ export enum TransactionStatus {
   PENDING = 'PENDING',
   CONFIRMED = 'CONFIRMED',
   FAILED = 'FAILED',
+  REPLACED = 'REPLACED',
 }
 
 export interface ExecutorConfig {
@@ -199,4 +200,18 @@ export interface ExtendedExecutorConfig extends Omit<ExecutorConfig, 'wallet'> {
 
 export type DefenderTransactionRequest = ethers.TransactionRequest & {
   isPrivate?: boolean;
+  flashbots?: 'normal' | 'fast';
 };
+
+export interface RelayerTransactionState {
+  id: string;
+  transactionId?: string;
+  hash?: string;
+  submittedAt: number;
+  lastChecked: number;
+  retryCount: number;
+  gasLimit: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  status: 'pending' | 'submitted' | 'confirmed' | 'failed';
+}
