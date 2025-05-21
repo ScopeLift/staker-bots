@@ -31,15 +31,16 @@
   "license": "ISC",
   "dependencies": {
     "@openzeppelin/defender-relay-client": "^1.54.6",
-    "@openzeppelin/defender-sdk": "^2.3.0",
+    "@openzeppelin/defender-sdk": "^2.5.0",
     "@openzeppelin/defender-sdk-relay-signer-client": "^2.6.0",
     "@supabase/supabase-js": "^2.48.1",
     "@tenderly/sdk": "^0.3.1",
     "axios": "^1.7.9",
-    "dotenv": "^16.4.5",
-    "ethers": "^6.11.1",
+    "dotenv": "^16.5.0",
+    "ethers": "^6.13.7",
     "uuid": "^11.0.5",
-    "web3": "4.7.0"
+    "web3": "4.14.0",
+    "web3-core": "4.7.0"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
