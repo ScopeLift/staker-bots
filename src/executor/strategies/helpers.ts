@@ -870,12 +870,6 @@ export async function processQueue(
   }
 
   try {
-    logger.info('Starting queue processing cycle', {
-      isPeriodicCheck,
-      queueSize: queue.size,
-      timestamp: new Date().toISOString(),
-    });
-
     // Run stale transaction cleanup (default 5 minutes)
     const staleThresholdMinutes = config.staleTransactionThresholdMinutes || 5;
     const cleanupResult = await cleanupStaleTransactions(
@@ -1131,15 +1125,6 @@ export async function cleanupStaleTransactions(
   const effectiveStaleThreshold = Math.max(10, staleThresholdMinutes);
   const staleThresholdMs = effectiveStaleThreshold * 60 * 1000;
   let databaseStaleCount = 0;
-
-  if (logger) {
-    logger.info('Starting stale transaction cleanup', {
-      queueSize: queue.size,
-      staleThresholdMinutes: effectiveStaleThreshold,
-      timestamp: now.toISOString(),
-    });
-  }
-
   // First, clean up in-memory queue - but only clear failed or truly stale transactions
   for (const [txId, tx] of queue.entries()) {
     const txTime = tx.createdAt || new Date(0);
@@ -1223,7 +1208,7 @@ export async function cleanupStaleTransactions(
         TransactionQueueStatus.PENDING,
       );
 
-      if (logger) {
+      if (allTxItems.length > 0 && logger) {
         logger.info('Found transaction queue items to check for staleness', {
           count: allTxItems.length,
         });
@@ -1289,7 +1274,7 @@ export async function cleanupStaleTransactions(
         ProcessingQueueStatus.PENDING,
       );
 
-      if (logger) {
+      if (allProcessingItems.length > 0 && logger) {
         logger.info('Found processing queue items to check for staleness', {
           count: allProcessingItems.length,
         });
@@ -1375,16 +1360,6 @@ export async function cleanupStaleTransactions(
   }
 
   const totalStaleCount = staleIds.length + databaseStaleCount;
-
-  if (logger) {
-    logger.info('Stale transaction cleanup completed', {
-      inMemoryStaleCount: staleIds.length,
-      databaseStaleCount,
-      totalStaleCount,
-      cleanedIds: staleIds,
-      remainingQueueSize: queue.size,
-    });
-  }
 
   return { staleCount: totalStaleCount, cleanedIds: staleIds };
 }
