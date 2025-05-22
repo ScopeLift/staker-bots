@@ -288,7 +288,7 @@ async function initializeExecutor(
           errorLogger, // Pass the error logger to the config
           defaultTipReceiver: CONFIG.executor.tipReceiver || ethers.ZeroAddress,
           minProfitMargin: CONFIG.profitability.minProfitMargin || 10,
-          isPrivate: CONFIG.defender.relayer.isPrivate || false
+          isPrivate: CONFIG.defender.relayer.isPrivate || false,
         }
       : {
           wallet: {

@@ -91,11 +91,16 @@ export class GovLstProfitabilityEngineWrapper
     let simulationService: SimulationService | null = null;
     try {
       simulationService = new SimulationService();
-      this.logger.info('Initialized simulation service for transaction validation');
+      this.logger.info(
+        'Initialized simulation service for transaction validation',
+      );
     } catch (error) {
-      this.logger.warn('Failed to initialize simulation service, will use fallback gas estimation', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      this.logger.warn(
+        'Failed to initialize simulation service, will use fallback gas estimation',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
 
     // Pass the error logger to the engine
@@ -785,34 +790,46 @@ export class GovLstProfitabilityEngineWrapper
           const gasCost = group.gas_estimate;
           const depositCount = BigInt(group.deposit_ids.length);
           const profitMargin = this.engine.config.minProfitMargin;
-          
+
           // Scale profit margin based on deposit count
           // Convert to basis points (0.05% = 5 basis points per deposit, max 20 basis points)
-          const depositScalingBasisPoints = BigInt(Math.min(20, Number(depositCount) * 5));
+          const depositScalingBasisPoints = BigInt(
+            Math.min(20, Number(depositCount) * 5),
+          );
           // Start with the minimum profit margin in basis points
-          const minProfitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
+          const minProfitMarginBasisPoints = BigInt(
+            Math.floor(profitMargin * 100),
+          );
           // Add the scaling factor (cap at 1500 basis points = 15%)
           const scaledProfitMarginBasisPoints = BigInt(
-            Math.min(1500, Number(minProfitMarginBasisPoints + depositScalingBasisPoints))
+            Math.min(
+              1500,
+              Number(minProfitMarginBasisPoints + depositScalingBasisPoints),
+            ),
           );
-          
+
           // Apply profit margin to payout amount
-          const profitMarginAmount = (payoutAmount * scaledProfitMarginBasisPoints) / 10000n;
-          
+          const profitMarginAmount =
+            (payoutAmount * scaledProfitMarginBasisPoints) / 10000n;
+
           // Calculate final threshold
-          const minExpectedReward = payoutAmount + 
-            (CONFIG.profitability.includeGasCost ? gasCost : 0n) + 
+          const minExpectedReward =
+            payoutAmount +
+            (CONFIG.profitability.includeGasCost ? gasCost : 0n) +
             profitMarginAmount;
-          
-          this.logger.info('Calculated minimum expected reward for transaction', {
-            payoutAmount: payoutAmount.toString(),
-            gasEstimate: gasCost.toString(),
-            profitMargin: `${Number(scaledProfitMarginBasisPoints) / 100}%`,
-            profitMarginAmount: profitMarginAmount.toString(),
-            minExpectedReward: minExpectedReward.toString(),
-            depositCount: group.deposit_ids.length,
-          });
-          
+
+          this.logger.info(
+            'Calculated minimum expected reward for transaction',
+            {
+              payoutAmount: payoutAmount.toString(),
+              gasEstimate: gasCost.toString(),
+              profitMargin: `${Number(scaledProfitMarginBasisPoints) / 100}%`,
+              profitMarginAmount: profitMarginAmount.toString(),
+              minExpectedReward: minExpectedReward.toString(),
+              depositCount: group.deposit_ids.length,
+            },
+          );
+
           const profitabilityCheck = {
             is_profitable: true,
             constraints: {

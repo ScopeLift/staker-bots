@@ -77,11 +77,10 @@ export async function simulateTransaction(
 
   try {
     // Get the contract data for the transaction
-    const data = lstContract.interface.encodeFunctionData('claimAndDistributeReward', [
-      finalSignerAddress,
-      minExpectedReward,
-      depositIds,
-    ]);
+    const data = lstContract.interface.encodeFunctionData(
+      'claimAndDistributeReward',
+      [finalSignerAddress, minExpectedReward, depositIds],
+    );
 
     const contractAddress = lstContract.target.toString();
 
@@ -114,9 +113,12 @@ export async function simulateTransaction(
     // First try to get gas estimation (faster)
     let gasEstimate: bigint | null = null;
     try {
-      const gasEstimation = await simulationService.estimateGasCosts(simulationTx, {
-        networkId: CONFIG.tenderly.networkId || '1',
-      });
+      const gasEstimation = await simulationService.estimateGasCosts(
+        simulationTx,
+        {
+          networkId: CONFIG.tenderly.networkId || '1',
+        },
+      );
 
       gasEstimate = BigInt(Math.ceil(gasEstimation.gasUnits * 1.3)); // Add 30% buffer
       logger.info('Transaction gas estimation successful', {
@@ -125,16 +127,25 @@ export async function simulateTransaction(
         bufferedGas: gasEstimate.toString(),
       });
     } catch (estimateError) {
-      logger.warn('Failed to estimate gas via simulation, will fall back to simulation', {
-        error: estimateError instanceof Error ? estimateError.message : String(estimateError),
-        txId: tx.id,
-      });
+      logger.warn(
+        'Failed to estimate gas via simulation, will fall back to simulation',
+        {
+          error:
+            estimateError instanceof Error
+              ? estimateError.message
+              : String(estimateError),
+          txId: tx.id,
+        },
+      );
     }
 
     // Then run full simulation to check for other issues
-    const simulationResult = await simulationService.simulateTransaction(simulationTx, {
-      networkId: CONFIG.tenderly.networkId || '1',
-    });
+    const simulationResult = await simulationService.simulateTransaction(
+      simulationTx,
+      {
+        networkId: CONFIG.tenderly.networkId || '1',
+      },
+    );
 
     // If simulation fails but the error is gas-related, try again with higher gas
     if (
@@ -155,9 +166,12 @@ export async function simulateTransaction(
         newGasLimit: newGasLimit.toString(),
       });
 
-      const retryResult = await simulationService.simulateTransaction(retrySimulationTx, {
-        networkId: CONFIG.tenderly.networkId || '1',
-      });
+      const retryResult = await simulationService.simulateTransaction(
+        retrySimulationTx,
+        {
+          networkId: CONFIG.tenderly.networkId || '1',
+        },
+      );
 
       if (retryResult.success) {
         logger.info('Transaction simulation succeeded with higher gas limit', {
@@ -168,7 +182,8 @@ export async function simulateTransaction(
 
         return {
           success: true,
-          gasEstimate: gasEstimate || BigInt(Math.ceil(retryResult.gasUsed * 1.2)),
+          gasEstimate:
+            gasEstimate || BigInt(Math.ceil(retryResult.gasUsed * 1.2)),
           optimizedGasLimit: newGasLimit,
         };
       }
@@ -212,7 +227,7 @@ export async function simulateTransaction(
     // Enhance error logging
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : undefined;
-    
+
     logger.error('Transaction simulation preparation failed', {
       error: errorMessage,
       stack: errorStack,
@@ -263,11 +278,14 @@ export async function estimateGasUsingSimulation(
       });
       finalRecipient = fallbackAddress;
     } else {
-      logger.error('Gas estimation failed - invalid recipient address and no valid fallback', {
-        recipient,
-        fallbackAddress,
-        depositCount: depositIds.length,
-      });
+      logger.error(
+        'Gas estimation failed - invalid recipient address and no valid fallback',
+        {
+          recipient,
+          fallbackAddress,
+          depositCount: depositIds.length,
+        },
+      );
       return null;
     }
   }
@@ -294,11 +312,10 @@ export async function estimateGasUsingSimulation(
     });
 
     // Encode transaction data
-    const data = lstContract.interface.encodeFunctionData('claimAndDistributeReward', [
-      finalRecipient,
-      reward,
-      depositIds,
-    ]);
+    const data = lstContract.interface.encodeFunctionData(
+      'claimAndDistributeReward',
+      [finalRecipient, reward, depositIds],
+    );
 
     // Create simulation transaction with a high gas limit to ensure it doesn't fail due to gas
     const simulationTx: SimulationTransaction = {
@@ -310,9 +327,12 @@ export async function estimateGasUsingSimulation(
     };
 
     // Get gas estimation
-    const gasEstimation = await simulationService.estimateGasCosts(simulationTx, {
-      networkId: CONFIG.tenderly.networkId || '1',
-    });
+    const gasEstimation = await simulationService.estimateGasCosts(
+      simulationTx,
+      {
+        networkId: CONFIG.tenderly.networkId || '1',
+      },
+    );
 
     // Add 30% buffer to the estimate
     const gasEstimate = BigInt(Math.ceil(gasEstimation.gasUnits * 1.3));
@@ -347,4 +367,4 @@ function isValidAddress(address: string): boolean {
   } catch {
     return false;
   }
-} 
+}

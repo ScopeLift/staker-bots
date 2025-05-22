@@ -19,7 +19,10 @@ export async function swapTokensForEth(
   logger: Logger,
   errorLogger: ErrorLogger,
 ): Promise<void> {
-  if (!CONFIG.executor.swap.enabled || !CONFIG.executor.swap.uniswapRouterAddress) {
+  if (
+    !CONFIG.executor.swap.enabled ||
+    !CONFIG.executor.swap.uniswapRouterAddress
+  ) {
     logger.warn('Token swap not configured properly');
     return;
   }
@@ -50,7 +53,9 @@ export async function swapTokensForEth(
       // Fallback to config value
       rewardTokenAddress = CONFIG.profitability.rewardTokenAddress;
       if (!rewardTokenAddress) {
-        throw new Error('No reward token address available in contract or config');
+        throw new Error(
+          'No reward token address available in contract or config',
+        );
       }
       logger.info('Using reward token address from config for swap', {
         address: rewardTokenAddress,
@@ -73,7 +78,10 @@ export async function swapTokensForEth(
       relaySigner,
     ) as ethers.Contract & {
       balanceOf(account: string): Promise<bigint>;
-      approve(spender: string, amount: bigint): Promise<ethers.ContractTransactionResponse>;
+      approve(
+        spender: string,
+        amount: bigint,
+      ): Promise<ethers.ContractTransactionResponse>;
       decimals(): Promise<number>;
     };
 
@@ -122,7 +130,8 @@ export async function swapTokensForEth(
 
     // Calculate how much we can swap
     // We want to keep at least max(minKeepAmount, payoutAmount)
-    const keepAmount = minKeepAmount > payoutAmount ? minKeepAmount : payoutAmount;
+    const keepAmount =
+      minKeepAmount > payoutAmount ? minKeepAmount : payoutAmount;
     const availableToSwap = tokenBalance - keepAmount;
 
     // Use half of available tokens, but not more than maxAmountIn
@@ -135,14 +144,18 @@ export async function swapTokensForEth(
     if (swapAmount < CONFIG.executor.swap.minAmountIn) {
       logger.info('Swap amount below minimum threshold', {
         amount: ethers.formatUnits(swapAmount, decimals),
-        minAmount: ethers.formatUnits(CONFIG.executor.swap.minAmountIn, decimals),
+        minAmount: ethers.formatUnits(
+          CONFIG.executor.swap.minAmountIn,
+          decimals,
+        ),
       });
       return;
     }
 
     // Set up the swap path and parameters
     const path = [rewardTokenAddress, ethers.ZeroAddress]; // Token -> ETH
-    const deadline = Math.floor(Date.now() / 1000) + CONFIG.executor.swap.deadlineMinutes * 60;
+    const deadline =
+      Math.floor(Date.now() / 1000) + CONFIG.executor.swap.deadlineMinutes * 60;
 
     // Get expected ETH output
     const amountsOut = await uniswapRouter.getAmountsOut(swapAmount, path);
@@ -162,7 +175,8 @@ export async function swapTokensForEth(
     // Apply slippage tolerance
     const slippageTolerance = CONFIG.executor.swap.slippageTolerance;
     const minOutputWithSlippage =
-      (expectedEthAmount * BigInt(Math.floor((1 - slippageTolerance) * 1000))) / 1000n;
+      (expectedEthAmount * BigInt(Math.floor((1 - slippageTolerance) * 1000))) /
+      1000n;
 
     logger.info('Preparing token swap', {
       swapAmount: ethers.formatUnits(swapAmount, decimals),
@@ -182,7 +196,12 @@ export async function swapTokensForEth(
     });
 
     // Wait for receipt
-    const approvalReceipt = await pollForReceipt(approveTx.hash, relayProvider, logger, 1);
+    const approvalReceipt = await pollForReceipt(
+      approveTx.hash,
+      relayProvider,
+      logger,
+      1,
+    );
 
     if (!approvalReceipt || approvalReceipt.status !== 1) {
       throw new Error('Approval transaction failed');
@@ -207,7 +226,12 @@ export async function swapTokensForEth(
     });
 
     // Wait for swap to be mined
-    const swapReceipt = await pollForReceipt(swapTx.hash, relayProvider, logger, 1);
+    const swapReceipt = await pollForReceipt(
+      swapTx.hash,
+      relayProvider,
+      logger,
+      1,
+    );
 
     if (!swapReceipt) {
       throw new Error('No receipt returned from swap transaction');
@@ -226,9 +250,12 @@ export async function swapTokensForEth(
     });
 
     if (errorLogger) {
-      errorLogger.error(error instanceof Error ? error : new Error(String(error)), {
-        stage: 'relayer-executor-token-swap-error',
-      });
+      errorLogger.error(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          stage: 'relayer-executor-token-swap-error',
+        },
+      );
     }
   }
 }
@@ -250,7 +277,9 @@ export async function checkAndSwapTokensIfNeeded(
 
   try {
     // Check relayer ETH balance
-    const relayerBalance = await relayProvider.getBalance(await relaySigner.getAddress());
+    const relayerBalance = await relayProvider.getBalance(
+      await relaySigner.getAddress(),
+    );
 
     if (!relayerBalance) {
       logger.warn('Unable to get relayer balance');
@@ -260,12 +289,21 @@ export async function checkAndSwapTokensIfNeeded(
     const minEthBalance = ethers.parseEther('0.1'); // 0.1 ETH threshold
 
     if (relayerBalance < minEthBalance) {
-      logger.info('Relayer ETH balance below threshold, attempting to swap tokens', {
-        currentBalance: ethers.formatEther(relayerBalance),
-        threshold: '0.1 ETH',
-      });
+      logger.info(
+        'Relayer ETH balance below threshold, attempting to swap tokens',
+        {
+          currentBalance: ethers.formatEther(relayerBalance),
+          threshold: '0.1 ETH',
+        },
+      );
 
-      await swapTokensForEth(lstContract, relaySigner, relayProvider, logger, errorLogger);
+      await swapTokensForEth(
+        lstContract,
+        relaySigner,
+        relayProvider,
+        logger,
+        errorLogger,
+      );
     }
   } catch (error) {
     logger.error('Failed to check ETH balance', {
@@ -273,9 +311,12 @@ export async function checkAndSwapTokensIfNeeded(
     });
 
     if (errorLogger) {
-      errorLogger.error(error instanceof Error ? error : new Error(String(error)), {
-        stage: 'relayer-executor-check-eth-balance',
-      });
+      errorLogger.error(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          stage: 'relayer-executor-check-eth-balance',
+        },
+      );
     }
   }
-} 
+}

@@ -103,6 +103,7 @@ isProfileable = totalRewards >= minExpectedReward;
 ```
 
 Where:
+
 - `payoutAmount`: Base payout from contract
 - `gasCost`: Estimated gas cost (from simulation or fallback)
 - `depositCount`: Number of deposits in batch
@@ -114,6 +115,7 @@ Where:
 The engine now supports two methods of gas estimation:
 
 1. **Simulation-Based Estimation**
+
    - Uses Tenderly simulation when available
    - Provides more accurate gas estimates
    - Handles complex contract interactions
@@ -136,6 +138,7 @@ Implements a robust error handling system:
 ## Performance Optimizations
 
 1. **Caching System**
+
    - Gas price caching with TTL
    - Reward calculation memoization
    - Batch processing of RPC calls

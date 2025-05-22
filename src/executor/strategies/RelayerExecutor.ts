@@ -39,9 +39,19 @@ import {
   processTransactionReceipt,
   processQueue,
 } from './helpers/helpers';
-import { pollForReceipt, calculateGasLimit, calculateQueueStats } from '@/configuration/helpers';
-import { simulateTransaction, estimateGasUsingSimulation } from './helpers/simulation-helpers';
-import { handlePendingRelayerTransactions, cleanupStaleTransactions as cleanupStaleDefenderTransactions } from './helpers/defender-helpers';
+import {
+  pollForReceipt,
+  calculateGasLimit,
+  calculateQueueStats,
+} from '@/configuration/helpers';
+import {
+  simulateTransaction,
+  estimateGasUsingSimulation,
+} from './helpers/simulation-helpers';
+import {
+  handlePendingRelayerTransactions,
+  cleanupStaleTransactions as cleanupStaleDefenderTransactions,
+} from './helpers/defender-helpers';
 import { checkAndSwapTokensIfNeeded } from './helpers/token-swap-helpers';
 import { Defender } from '@openzeppelin/defender-sdk';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
@@ -56,7 +66,7 @@ const AUTH_ERROR_MESSAGES = [
 
 const isAuthError = (error: unknown): boolean => {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  return AUTH_ERROR_MESSAGES.some(msg => errorMessage.includes(msg));
+  return AUTH_ERROR_MESSAGES.some((msg) => errorMessage.includes(msg));
 };
 
 // Add these constants at the top with other constants
@@ -68,7 +78,7 @@ async function withAuthErrorHandling<T>(
   operation: () => Promise<T>,
   logger: Logger,
   context: string,
-  retryCount = 0
+  retryCount = 0,
 ): Promise<T> {
   try {
     return await operation();
@@ -83,17 +93,28 @@ async function withAuthErrorHandling<T>(
       // If we haven't exceeded max retries, wait and try again
       if (retryCount < MAX_AUTH_RETRIES) {
         const delayMs = AUTH_RETRY_DELAY * Math.pow(2, retryCount);
-        logger.info(`Retrying operation in ${delayMs}ms...`, { context, retryAttempt: retryCount + 1 });
-        
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        return withAuthErrorHandling(operation, logger, context, retryCount + 1);
+        logger.info(`Retrying operation in ${delayMs}ms...`, {
+          context,
+          retryAttempt: retryCount + 1,
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return withAuthErrorHandling(
+          operation,
+          logger,
+          context,
+          retryCount + 1,
+        );
       } else {
         // Log and throw to trigger PM2 restart
-        logger.error('Max auth retries exceeded - crashing service for PM2 restart', {
-          context,
-          maxRetries: MAX_AUTH_RETRIES,
-          error: error instanceof Error ? error.message : String(error)
-        });
+        logger.error(
+          'Max auth retries exceeded - crashing service for PM2 restart',
+          {
+            context,
+            maxRetries: MAX_AUTH_RETRIES,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
         throw error;
       }
     } else {
@@ -125,7 +146,9 @@ export class RelayerExecutor implements IExecutor {
   };
   protected readonly stakerContract: ethers.Contract & {
     balanceOf(account: string): Promise<bigint>;
-    deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>;
+    deposits(
+      depositId: bigint,
+    ): Promise<[string, bigint, bigint, string, string]>;
     unclaimedReward(depositId: bigint): Promise<bigint>;
   };
   protected db?: DatabaseWrapper;
@@ -171,11 +194,16 @@ export class RelayerExecutor implements IExecutor {
     // Initialize simulation service (with fallback)
     try {
       this.simulationService = new SimulationService();
-      this.logger.info('Initialized simulation service for transaction validation');
+      this.logger.info(
+        'Initialized simulation service for transaction validation',
+      );
     } catch (error) {
-      this.logger.warn('Failed to initialize simulation service, will use fallback gas estimation', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      this.logger.warn(
+        'Failed to initialize simulation service, will use fallback gas estimation',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
       this.simulationService = null;
     }
 
@@ -238,9 +266,13 @@ export class RelayerExecutor implements IExecutor {
         apiSecret: config.apiSecret,
       });
     } catch (error) {
-      const executorError = new ExecutorError('Failed to initialize Defender SDK', {
-        error: error instanceof Error ? error.message : String(error),
-      }, false);
+      const executorError = new ExecutorError(
+        'Failed to initialize Defender SDK',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+        false,
+      );
       this.logger.error('Failed to initialize Defender SDK:', { error });
       this.errorLogger.error(executorError);
       throw executorError;
@@ -371,7 +403,8 @@ export class RelayerExecutor implements IExecutor {
       if (this.simulationService) {
         try {
           const signerAddress = await this.relaySigner.getAddress();
-          const payoutAmount = profitability.estimates.payout_amount || BigInt(0);
+          const payoutAmount =
+            profitability.estimates.payout_amount || BigInt(0);
 
           // Use a minimal expected reward for estimation
           const simulatedGas = await estimateGasUsingSimulation(
@@ -383,7 +416,10 @@ export class RelayerExecutor implements IExecutor {
             this.logger,
           );
 
-          if (simulatedGas !== null && simulatedGas > profitability.estimates.gas_estimate) {
+          if (
+            simulatedGas !== null &&
+            simulatedGas > profitability.estimates.gas_estimate
+          ) {
             this.logger.info('Updated gas estimate from simulation', {
               originalEstimate: profitability.estimates.gas_estimate.toString(),
               simulatedEstimate: simulatedGas.toString(),
@@ -395,10 +431,13 @@ export class RelayerExecutor implements IExecutor {
           }
         } catch (error) {
           // Just log and continue with original estimate if simulation fails
-          this.logger.warn('Simulation-based gas estimation failed during validation', {
-            error: error instanceof Error ? error.message : String(error),
-            depositIds: depositIds.map(String),
-          });
+          this.logger.warn(
+            'Simulation-based gas estimation failed during validation',
+            {
+              error: error instanceof Error ? error.message : String(error),
+              depositIds: depositIds.map(String),
+            },
+          );
         }
       }
 
@@ -430,10 +469,13 @@ export class RelayerExecutor implements IExecutor {
     return this.queue.get(id) || null;
   }
 
-  async getTransactionReceipt(hash: string): Promise<TransactionReceipt | null> {
-    const receipt = (await this.lstContract.runner?.provider?.getTransactionReceipt(
-      hash,
-    )) as unknown as EthersTransactionReceipt | null;
+  async getTransactionReceipt(
+    hash: string,
+  ): Promise<TransactionReceipt | null> {
+    const receipt =
+      (await this.lstContract.runner?.provider?.getTransactionReceipt(
+        hash,
+      )) as unknown as EthersTransactionReceipt | null;
     if (!receipt) return null;
 
     return {
@@ -494,23 +536,30 @@ export class RelayerExecutor implements IExecutor {
     // STEP 1: Before doing anything else, check the relayer for on-chain pending transactions.
     try {
       const pendingHandled = await withAuthErrorHandling(
-        () => handlePendingRelayerTransactions(
-          this.defenderClient,
-          this.logger,
-          CONFIG.govlst.address,
-        ),
+        () =>
+          handlePendingRelayerTransactions(
+            this.defenderClient,
+            this.logger,
+            CONFIG.govlst.address,
+          ),
         this.logger,
-        'handlePendingRelayerTransactions'
+        'handlePendingRelayerTransactions',
       );
-      
+
       if (pendingHandled) {
-        this.logger.info('Exiting executeTransaction early – pending transactions were replaced');
+        this.logger.info(
+          'Exiting executeTransaction early – pending transactions were replaced',
+        );
         return;
       }
     } catch (checkErr) {
-      this.logger.error('Failed to inspect/replace pending transactions (continuing execution)', {
-        error: checkErr instanceof Error ? checkErr.message : String(checkErr),
-      });
+      this.logger.error(
+        'Failed to inspect/replace pending transactions (continuing execution)',
+        {
+          error:
+            checkErr instanceof Error ? checkErr.message : String(checkErr),
+        },
+      );
     }
 
     // Check for existing pending transaction first
@@ -534,7 +583,11 @@ export class RelayerExecutor implements IExecutor {
 
     try {
       if (!this.lstContract) {
-        const error = new ExecutorError('LST contract not initialized', {}, false);
+        const error = new ExecutorError(
+          'LST contract not initialized',
+          {},
+          false,
+        );
         this.errorLogger.error(error, {
           stage: 'executeTransaction',
           txId: tx.id,
@@ -543,9 +596,14 @@ export class RelayerExecutor implements IExecutor {
       }
 
       try {
-        const hasRewardToken = typeof this.lstContract.REWARD_TOKEN !== 'undefined';
+        const hasRewardToken =
+          typeof this.lstContract.REWARD_TOKEN !== 'undefined';
         if (!hasRewardToken) {
-          const error = new ExecutorError('LST contract missing REWARD_TOKEN property or method', {}, false);
+          const error = new ExecutorError(
+            'LST contract missing REWARD_TOKEN property or method',
+            {},
+            false,
+          );
           this.errorLogger.error(error, {
             stage: 'executeTransaction',
             txId: tx.id,
@@ -554,9 +612,13 @@ export class RelayerExecutor implements IExecutor {
           throw error;
         }
       } catch (error) {
-        const execError = new ExecutorError('Failed to access REWARD_TOKEN on LST contract', {
-          error: error instanceof Error ? error.message : String(error),
-        }, false);
+        const execError = new ExecutorError(
+          'Failed to access REWARD_TOKEN on LST contract',
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+          false,
+        );
         this.errorLogger.error(execError, {
           stage: 'executeTransaction_checkRewardToken',
           txId: tx.id,
@@ -570,19 +632,19 @@ export class RelayerExecutor implements IExecutor {
 
       // Get queue item ID from txData
       let queueItemId: string | undefined;
-      let queueDepositIds: string[] = [];
       if (tx.tx_data) {
         try {
           const txData = JSON.parse(tx.tx_data);
           queueItemId = txData.queueItemId;
-          queueDepositIds = txData.depositIds?.map(String) || [];
         } catch (error) {
           this.logger.error('Failed to parse txData for queue item ID', {
             error: error instanceof Error ? error.message : String(error),
             txData: tx.tx_data,
           });
           this.errorLogger.error(
-            error instanceof Error ? error : new Error(`Failed to parse txData: ${String(error)}`),
+            error instanceof Error
+              ? error
+              : new Error(`Failed to parse txData: ${String(error)}`),
             {
               stage: 'executeTransaction',
               txId: tx.id,
@@ -598,17 +660,24 @@ export class RelayerExecutor implements IExecutor {
           await this.db.updateTransactionQueueItem(queueItemId, {
             status: TransactionQueueStatus.PENDING,
           });
-          this.logger.info(`Updated transaction queue item status to PENDING: ${queueItemId}`, {
-            txId: tx.id,
-            queueItemId,
-          });
+          this.logger.info(
+            `Updated transaction queue item status to PENDING: ${queueItemId}`,
+            {
+              txId: tx.id,
+              queueItemId,
+            },
+          );
         } catch (error) {
           this.logger.error('Failed to update transaction queue item status', {
             error: error instanceof Error ? error.message : String(error),
             queueItemId,
           });
           this.errorLogger.error(
-            error instanceof Error ? error : new Error(`Failed to update queue item status: ${String(error)}`),
+            error instanceof Error
+              ? error
+              : new Error(
+                  `Failed to update queue item status: ${String(error)}`,
+                ),
             {
               stage: 'executeTransaction',
               txId: tx.id,
@@ -634,11 +703,12 @@ export class RelayerExecutor implements IExecutor {
         if (!rewardTokenAddress) {
           throw new Error('REWARD_TOKEN not found on contract');
         }
-
       } catch (error) {
         rewardTokenAddress = CONFIG.profitability.rewardTokenAddress;
         if (!rewardTokenAddress) {
-          throw new Error('No reward token address available in contract or config');
+          throw new Error(
+            'No reward token address available in contract or config',
+          );
         }
         this.logger.info('Using reward token address from config', {
           address: rewardTokenAddress,
@@ -654,8 +724,13 @@ export class RelayerExecutor implements IExecutor {
         rewardTokenAddress,
         rewardTokenAbi,
         this.lstContract.runner,
-      ).connect(this.relaySigner as unknown as ethers.Signer) as ethers.Contract & {
-        approve(spender: string, amount: bigint): Promise<ethers.ContractTransactionResponse>;
+      ).connect(
+        this.relaySigner as unknown as ethers.Signer,
+      ) as ethers.Contract & {
+        approve(
+          spender: string,
+          amount: bigint,
+        ): Promise<ethers.ContractTransactionResponse>;
         allowance(owner: string, spender: string): Promise<bigint>;
       };
 
@@ -680,15 +755,20 @@ export class RelayerExecutor implements IExecutor {
             value: payoutAmount.toString(),
             type: typeof payoutAmount,
           });
-          this.logger.info(`Retrieved payout amount: ${payoutAmount.toString()}`, {
-            txId: tx.id,
-          });
+          this.logger.info(
+            `Retrieved payout amount: ${payoutAmount.toString()}`,
+            {
+              txId: tx.id,
+            },
+          );
         } catch (error) {
           this.logger.error('Failed to get payout amount for allowance check', {
             error: error instanceof Error ? error.message : String(error),
           });
           this.errorLogger.error(
-            error instanceof Error ? error : new Error(`Failed to get payout amount: ${String(error)}`),
+            error instanceof Error
+              ? error
+              : new Error(`Failed to get payout amount: ${String(error)}`),
             {
               stage: 'executeTransaction_payoutAmount',
               txId: tx.id,
@@ -702,7 +782,10 @@ export class RelayerExecutor implements IExecutor {
         const lstContractAddress = this.lstContract.target.toString();
 
         const allowance = BigInt(
-          await rewardTokenContract.allowance(signerAddress, lstContractAddress),
+          await rewardTokenContract.allowance(
+            signerAddress,
+            lstContractAddress,
+          ),
         );
 
         this.logger.info('Current allowance', {
@@ -723,17 +806,28 @@ export class RelayerExecutor implements IExecutor {
             approvalAmount: approvalAmount.toString(),
           });
 
-          const approveTx = await rewardTokenContract.approve(lstContractAddress, approvalAmount);
+          const approveTx = await rewardTokenContract.approve(
+            lstContractAddress,
+            approvalAmount,
+          );
           // Wait for the transaction to be mined
           try {
             this.logger.info('Waiting for approval transaction...');
             let receipt;
             try {
-              receipt = await pollForReceipt(approveTx.hash, this.relayProvider as unknown as ethers.Provider, this.logger, 3);
+              receipt = await pollForReceipt(
+                approveTx.hash,
+                this.relayProvider as unknown as ethers.Provider,
+                this.logger,
+                3,
+              );
             } catch (confirmError: unknown) {
               // If polling fails, just log the error
               this.logger.warn('Standard wait for approval failed', {
-                error: confirmError instanceof Error ? confirmError.message : String(confirmError),
+                error:
+                  confirmError instanceof Error
+                    ? confirmError.message
+                    : String(confirmError),
                 hash: approveTx.hash,
                 errorType:
                   typeof confirmError === 'object' && confirmError !== null
@@ -741,7 +835,9 @@ export class RelayerExecutor implements IExecutor {
                     : typeof confirmError,
               });
 
-              this.logger.info('Continuing execution despite wait error - approval may still have succeeded');
+              this.logger.info(
+                'Continuing execution despite wait error - approval may still have succeeded',
+              );
 
               // Skip polling and consider it a warning rather than error
               this.logger.debug('Transaction details for debugging', {
@@ -760,12 +856,22 @@ export class RelayerExecutor implements IExecutor {
             });
           } catch (waitError) {
             this.logger.error('Failed waiting for approval transaction', {
-              error: waitError instanceof Error ? waitError.message : String(waitError),
+              error:
+                waitError instanceof Error
+                  ? waitError.message
+                  : String(waitError),
               hash: approveTx.hash,
             });
-            throw new ExecutorError('Failed waiting for approval confirmation', {
-              error: waitError instanceof Error ? waitError.message : String(waitError),
-            }, false);
+            throw new ExecutorError(
+              'Failed waiting for approval confirmation',
+              {
+                error:
+                  waitError instanceof Error
+                    ? waitError.message
+                    : String(waitError),
+              },
+              false,
+            );
           }
         }
       } catch (error) {
@@ -775,9 +881,13 @@ export class RelayerExecutor implements IExecutor {
           rewardToken: rewardTokenAddress,
           contractAddress: this.lstContract.target.toString(),
         });
-        throw new ExecutorError('Failed to approve reward token spend', {
-          error: error instanceof Error ? error.message : String(error),
-        }, false);
+        throw new ExecutorError(
+          'Failed to approve reward token spend',
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+          false,
+        );
       }
 
       // Get the payout amount from contract before executing claim
@@ -806,12 +916,17 @@ export class RelayerExecutor implements IExecutor {
         const gasEstimate = tx.profitability.estimates.gas_estimate;
 
         // Use sensible gas limit based on deposit count
-        const baseGasLimit = gasEstimate < 300000n ? 1200000n : gasEstimate * 2n;
-        const calculatedGasLimit = calculateGasLimit(baseGasLimit, depositIds.length, this.logger);
-        
+        const baseGasLimit =
+          gasEstimate < 300000n ? 1200000n : gasEstimate * 2n;
+        const calculatedGasLimit = calculateGasLimit(
+          baseGasLimit,
+          depositIds.length,
+          this.logger,
+        );
+
         // Get the pre-calculated minExpectedReward threshold from profitability module
         let finalThreshold: bigint;
-        
+
         if (tx.profitability.estimates.minExpectedReward) {
           finalThreshold = tx.profitability.estimates.minExpectedReward;
           this.logger.info('Using pre-calculated minimum expected reward', {
@@ -820,23 +935,27 @@ export class RelayerExecutor implements IExecutor {
           });
         } else {
           // Fallback to a safe value if minExpectedReward is missing (should never happen)
-          this.logger.error('Missing minExpectedReward from profitability - using safe fallback', { 
-            depositCount: depositIds.length 
-          });
+          this.logger.error(
+            'Missing minExpectedReward from profitability - using safe fallback',
+            {
+              depositCount: depositIds.length,
+            },
+          );
           // Use payout + 20% as a safe fallback
           finalThreshold = payoutAmount + (payoutAmount * 20n) / 100n;
         }
-        
+
         // Get network gas parameters
-        const { maxFeePerGas, maxPriorityFeePerGas } = await this.getGasParameters();
-        
+        const { maxFeePerGas, maxPriorityFeePerGas } =
+          await this.getGasParameters();
+
         // Get signer address for reward recipient
         const signerAddress = await this.relaySigner.getAddress();
-        
+
         // Run simulation to validate transaction will succeed
         try {
           let receipt: EthersTransactionReceipt | null = null;
-          
+
           const simulationResult = await simulateTransaction(
             tx,
             depositIds,
@@ -847,48 +966,63 @@ export class RelayerExecutor implements IExecutor {
             this.simulationService,
             this.logger,
           );
-          
+
           // Handle simulation failure - don't proceed with transaction
           if (!simulationResult.success) {
-            this.logger.error('Transaction simulation failed, removing from queue', {
-              txId: tx.id,
-              error: simulationResult.error,
-            });
-            
+            this.logger.error(
+              'Transaction simulation failed, removing from queue',
+              {
+                txId: tx.id,
+                error: simulationResult.error,
+              },
+            );
+
             // Update transaction status and clean up
             tx.status = TransactionStatus.FAILED;
-            tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
+            tx.error = new Error(
+              `Simulation failed: ${simulationResult.error}`,
+            );
             this.queue.set(tx.id, tx);
-            await cleanupQueueItems(tx, '', this.db, this.logger, this.errorLogger);
+            await cleanupQueueItems(
+              tx,
+              '',
+              this.db,
+              this.logger,
+              this.errorLogger,
+            );
             this.queue.delete(tx.id);
             return;
           }
-          
+
           // Use simulation gas estimate if available
-          const finalGasLimit = simulationResult.optimizedGasLimit || 
-                               simulationResult.gasEstimate || 
-                               calculatedGasLimit;
-          
+          const finalGasLimit =
+            simulationResult.optimizedGasLimit ||
+            simulationResult.gasEstimate ||
+            calculatedGasLimit;
+
           // Create database record for the transaction
           const transactionDetailsId = await this.saveTransactionDetails(
-            tx, 
-            signerAddress, 
-            finalThreshold, 
+            tx,
+            signerAddress,
+            finalThreshold,
             payoutAmount,
-            finalGasLimit, 
-            maxFeePerGas, 
+            finalGasLimit,
+            maxFeePerGas,
             maxPriorityFeePerGas,
-            txStartTime
+            txStartTime,
           );
-          
+
           // Execute the transaction
-          this.logger.info('Submitting transaction after successful simulation', {
-            recipient: signerAddress,
-            minExpectedReward: finalThreshold.toString(),
-            depositCount: depositIds.length,
-            gasLimit: finalGasLimit.toString(),
-          });
-          
+          this.logger.info(
+            'Submitting transaction after successful simulation',
+            {
+              recipient: signerAddress,
+              minExpectedReward: finalThreshold.toString(),
+              depositCount: depositIds.length,
+              gasLimit: finalGasLimit.toString(),
+            },
+          );
+
           // Submit transaction to chain
           const response = await this.submitTransaction(
             signerAddress,
@@ -896,9 +1030,9 @@ export class RelayerExecutor implements IExecutor {
             depositIds,
             finalGasLimit,
             maxFeePerGas,
-            maxPriorityFeePerGas
+            maxPriorityFeePerGas,
           );
-          
+
           // Track the pending transaction
           this.pendingTransactions.set(tx.id, {
             id: tx.id,
@@ -912,74 +1046,141 @@ export class RelayerExecutor implements IExecutor {
             maxPriorityFeePerGas: maxPriorityFeePerGas || 0n,
             status: 'submitted',
           });
-          
+
           // Wait for transaction to be mined
           try {
-            receipt = await pollForReceipt(response.hash, this.relayProvider as unknown as ethers.Provider, this.logger, 3);
+            receipt = await pollForReceipt(
+              response.hash,
+              this.relayProvider as unknown as ethers.Provider,
+              this.logger,
+              3,
+            );
             this.logger.info(`Transaction confirmed: ${response.hash}`, {
               txId: tx.id,
               blockNumber: receipt?.blockNumber?.toString() || 'unknown',
               status: receipt?.status?.toString() || 'unknown',
             });
-            
+
             // Update transaction details with receipt
             if (this.db && transactionDetailsId && receipt) {
-              await this.updateTransactionDetailsWithReceipt(transactionDetailsId, receipt, tx, txStartTime);
+              await this.updateTransactionDetailsWithReceipt(
+                transactionDetailsId,
+                receipt,
+                tx,
+                txStartTime,
+              );
             }
           } catch (waitError) {
-            this.logger.warn('Failed to get receipt, transaction may still succeed', {
-              error: waitError instanceof Error ? waitError.message : String(waitError),
-              hash: response.hash,
-            });
-          }
-          
-          // Process receipt and clean up
-          await processTransactionReceipt(tx, response, receipt, this.logger, this.errorLogger, async (txArg, txHashArg) => {
-            await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
-            this.pendingTransactions.delete(txArg.id);
-            
-            // Check if we need to swap tokens after transaction
-            await checkAndSwapTokensIfNeeded(
-              this.lstContract, 
-              this.relaySigner as unknown as Signer, 
-              this.relayProvider as unknown as Provider, 
-              this.logger, 
-              this.errorLogger
+            this.logger.warn(
+              'Failed to get receipt, transaction may still succeed',
+              {
+                error:
+                  waitError instanceof Error
+                    ? waitError.message
+                    : String(waitError),
+                hash: response.hash,
+              },
             );
-          });
-          
+          }
+
+          // Process receipt and clean up
+          await processTransactionReceipt(
+            tx,
+            response,
+            receipt,
+            this.logger,
+            this.errorLogger,
+            async (txArg, txHashArg) => {
+              await cleanupQueueItems(
+                txArg,
+                txHashArg,
+                this.db,
+                this.logger,
+                this.errorLogger,
+              );
+              this.pendingTransactions.delete(txArg.id);
+
+              // Check if we need to swap tokens after transaction
+              await checkAndSwapTokensIfNeeded(
+                this.lstContract,
+                this.relaySigner as unknown as Signer,
+                this.relayProvider as unknown as Provider,
+                this.logger,
+                this.errorLogger,
+              );
+            },
+          );
         } catch (error) {
-          await handleExecutionError(tx, error, this.logger, this.errorLogger, this.queue, async (txArg, txHashArg) => {
-            await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
+          await handleExecutionError(
+            tx,
+            error,
+            this.logger,
+            this.errorLogger,
+            this.queue,
+            async (txArg, txHashArg) => {
+              await cleanupQueueItems(
+                txArg,
+                txHashArg,
+                this.db,
+                this.logger,
+                this.errorLogger,
+              );
+              if (txArg && txArg.id) {
+                this.pendingTransactions.delete(txArg.id);
+              }
+            },
+          );
+        }
+      } catch (error) {
+        await handleExecutionError(
+          tx,
+          error,
+          this.logger,
+          this.errorLogger,
+          this.queue,
+          async (txArg, txHashArg) => {
+            await cleanupQueueItems(
+              txArg,
+              txHashArg,
+              this.db,
+              this.logger,
+              this.errorLogger,
+            );
             if (txArg && txArg.id) {
               this.pendingTransactions.delete(txArg.id);
             }
-          });
-        }
-      } catch (error) {
-        await handleExecutionError(tx, error, this.logger, this.errorLogger, this.queue, async (txArg, txHashArg) => {
-          await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
+          },
+        );
+      }
+    } catch (error) {
+      await handleExecutionError(
+        tx,
+        error,
+        this.logger,
+        this.errorLogger,
+        this.queue,
+        async (txArg, txHashArg) => {
+          await cleanupQueueItems(
+            txArg,
+            txHashArg,
+            this.db,
+            this.logger,
+            this.errorLogger,
+          );
           if (txArg && txArg.id) {
             this.pendingTransactions.delete(txArg.id);
           }
-        });
-      }
-    } catch (error) {
-      await handleExecutionError(tx, error, this.logger, this.errorLogger, this.queue, async (txArg, txHashArg) => {
-        await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
-        if (txArg && txArg.id) {
-          this.pendingTransactions.delete(txArg.id);
-        }
-      });
+        },
+      );
     }
   }
-  
+
   /**
    * Gets gas parameters from the network or configuration
    */
-  private async getGasParameters(): Promise<{ 
-    maxFeePerGas: bigint | undefined; 
-    maxPriorityFeePerGas: bigint | undefined 
+  private async getGasParameters(): Promise<{
+    maxFeePerGas: bigint | undefined;
+    maxPriorityFeePerGas: bigint | undefined;
   }> {
     try {
       // Get fee data from provider
@@ -1002,28 +1203,32 @@ export class RelayerExecutor implements IExecutor {
 
       // Use the higher of network fee data or configured values
       const configuredMaxFeePerGas = this.config.gasPolicy?.maxFeePerGas;
-      const configuredMaxPriorityFeePerGas = this.config.gasPolicy?.maxPriorityFeePerGas;
+      const configuredMaxPriorityFeePerGas =
+        this.config.gasPolicy?.maxPriorityFeePerGas;
 
-      const finalMaxFeePerGas = configuredMaxFeePerGas && maxFeePerGas
-        ? maxFeePerGas > configuredMaxFeePerGas
-          ? maxFeePerGas
-          : configuredMaxFeePerGas
-        : configuredMaxFeePerGas || maxFeePerGas;
+      const finalMaxFeePerGas =
+        configuredMaxFeePerGas && maxFeePerGas
+          ? maxFeePerGas > configuredMaxFeePerGas
+            ? maxFeePerGas
+            : configuredMaxFeePerGas
+          : configuredMaxFeePerGas || maxFeePerGas;
 
-      const finalMaxPriorityFeePerGas = configuredMaxPriorityFeePerGas && maxPriorityFeePerGas
-        ? maxPriorityFeePerGas > configuredMaxPriorityFeePerGas
-          ? maxPriorityFeePerGas
-          : configuredMaxPriorityFeePerGas
-        : configuredMaxPriorityFeePerGas || maxPriorityFeePerGas;
+      const finalMaxPriorityFeePerGas =
+        configuredMaxPriorityFeePerGas && maxPriorityFeePerGas
+          ? maxPriorityFeePerGas > configuredMaxPriorityFeePerGas
+            ? maxPriorityFeePerGas
+            : configuredMaxPriorityFeePerGas
+          : configuredMaxPriorityFeePerGas || maxPriorityFeePerGas;
 
       this.logger.info('Gas parameters calculated', {
         maxFeePerGas: finalMaxFeePerGas?.toString() || 'undefined',
-        maxPriorityFeePerGas: finalMaxPriorityFeePerGas?.toString() || 'undefined',
+        maxPriorityFeePerGas:
+          finalMaxPriorityFeePerGas?.toString() || 'undefined',
       });
 
-      return { 
-        maxFeePerGas: finalMaxFeePerGas, 
-        maxPriorityFeePerGas: finalMaxPriorityFeePerGas 
+      return {
+        maxFeePerGas: finalMaxFeePerGas,
+        maxPriorityFeePerGas: finalMaxPriorityFeePerGas,
       };
     } catch (error) {
       this.logger.error('Failed to get gas parameters', {
@@ -1033,7 +1238,7 @@ export class RelayerExecutor implements IExecutor {
       return { maxFeePerGas: undefined, maxPriorityFeePerGas: undefined };
     }
   }
-  
+
   /**
    * Saves transaction details to database
    */
@@ -1045,22 +1250,25 @@ export class RelayerExecutor implements IExecutor {
     gasLimit: bigint,
     maxFeePerGas: bigint | undefined,
     maxPriorityFeePerGas: bigint | undefined,
-    startTime: Date
+    startTime: Date,
   ): Promise<string | undefined> {
     if (!this.db) return undefined;
-    
+
     try {
       // Get chain ID
       const chainId = await this.lstContract.runner?.provider
         ?.getNetwork()
         .then((network) => network.chainId.toString())
         .catch(() => 'unknown');
-      
+
       // Get queue item ID
       const queueItemId = tx.metadata?.queueItemId;
-        
+
       // Create transaction details
-      const txDetails: Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'> = {
+      const txDetails: Omit<
+        TransactionDetails,
+        'id' | 'created_at' | 'updated_at'
+      > = {
         transaction_id: tx.id,
         status: TransactionDetailsStatus.PENDING,
         deposit_ids: tx.depositIds.map(String),
@@ -1080,7 +1288,7 @@ export class RelayerExecutor implements IExecutor {
         reward_token_price_usd: undefined,
         eth_price_usd: undefined,
       };
-      
+
       const savedDetails = await this.db.createTransactionDetails(txDetails);
       this.logger.info('Transaction details saved', { id: savedDetails.id });
       return savedDetails.id;
@@ -1091,7 +1299,7 @@ export class RelayerExecutor implements IExecutor {
       return undefined;
     }
   }
-  
+
   /**
    * Updates transaction details with receipt information
    */
@@ -1099,10 +1307,10 @@ export class RelayerExecutor implements IExecutor {
     transactionDetailsId: string,
     receipt: EthersTransactionReceipt,
     tx: QueuedTransaction,
-    startTime: Date
+    startTime: Date,
   ): Promise<void> {
     if (!this.db) return;
-    
+
     try {
       // Calculate gas costs and duration
       const gasUsed = BigInt(receipt.gasUsed.toString());
@@ -1112,7 +1320,7 @@ export class RelayerExecutor implements IExecutor {
       const gasCostEth = gasUsed * effectiveGasPrice;
       const txEndTime = new Date();
       const durationMs = txEndTime.getTime() - startTime.getTime();
-      
+
       // Update transaction details
       await this.db.updateTransactionDetails(transactionDetailsId, {
         status: TransactionDetailsStatus.CONFIRMED,
@@ -1123,7 +1331,7 @@ export class RelayerExecutor implements IExecutor {
         end_time: txEndTime.toISOString(),
         duration_ms: durationMs,
       });
-      
+
       this.logger.info('Transaction details updated with receipt', {
         id: transactionDetailsId,
         gasUsed: gasUsed.toString(),
@@ -1135,7 +1343,7 @@ export class RelayerExecutor implements IExecutor {
       });
     }
   }
-  
+
   /**
    * Submits transaction to the blockchain
    */
@@ -1145,7 +1353,7 @@ export class RelayerExecutor implements IExecutor {
     depositIds: bigint[],
     gasLimit: bigint,
     maxFeePerGas: bigint | undefined,
-    maxPriorityFeePerGas: bigint | undefined
+    maxPriorityFeePerGas: bigint | undefined,
   ): Promise<ethers.ContractTransactionResponse> {
     return withAuthErrorHandling(
       async () => {
@@ -1155,7 +1363,7 @@ export class RelayerExecutor implements IExecutor {
           depositIds: depositIds.length,
           gasLimit: gasLimit.toString(),
         });
-        
+
         const txOptions = {
           gasLimit,
           maxFeePerGas,
@@ -1166,16 +1374,16 @@ export class RelayerExecutor implements IExecutor {
           validForSeconds: 900,
           validUntil: new Date(Date.now() + 1000 * 60 * 15).toISOString(),
         } as DefenderTransactionRequest;
-        
+
         return await this.lstContract.claimAndDistributeReward(
-          recipient, 
-          minExpectedReward, 
-          depositIds, 
-          txOptions
+          recipient,
+          minExpectedReward,
+          depositIds,
+          txOptions,
         );
       },
       this.logger,
-      'submitTransaction'
+      'submitTransaction',
     );
   }
 }

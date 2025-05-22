@@ -93,7 +93,10 @@ const profitability: GovLstProfitabilityCheck = {
 };
 
 // Validate transaction first
-const validation = await executor.validateTransaction(depositIds, profitability);
+const validation = await executor.validateTransaction(
+  depositIds,
+  profitability,
+);
 if (validation.isValid) {
   const tx = await executor.queueTransaction(depositIds, profitability);
 }
@@ -201,34 +204,42 @@ The executor implements a robust, type-safe error handling system with dedicated
 ### Error Classes
 
 - `ExecutorError`: Base error class for executor-related errors
+
   - Includes context and retryable flag
   - Used for general executor state errors
 
 - `TransactionExecutionError`: For transaction execution failures
+
   - Includes transaction ID and deposit details
   - Most transaction errors are retryable
 
 - `GasEstimationError`: For gas estimation failures
+
   - Includes estimation parameters
   - Generally retryable
 
 - `SimulationError`: For simulation failures
+
   - Includes simulation context
   - Falls back to standard estimation
 
 - `ContractMethodError`: For missing/invalid contract methods
+
   - Includes method name
   - Non-retryable, requires code fix
 
 - `QueueOperationError`: For queue operation failures
+
   - Includes queue state information
   - Generally retryable
 
 - `TransactionValidationError`: For invalid transaction parameters
+
   - Includes validation context
   - Non-retryable, requires valid input
 
 - `InsufficientBalanceError`: For low wallet/relayer balance
+
   - Includes current and required balance
   - Retryable once funds are added
 
@@ -240,7 +251,10 @@ The executor implements a robust, type-safe error handling system with dedicated
 
 ```typescript
 try {
-  const validation = await executor.validateTransaction(depositIds, profitability);
+  const validation = await executor.validateTransaction(
+    depositIds,
+    profitability,
+  );
   if (validation.isValid) {
     await executor.queueTransaction(depositIds, profitability);
   } else {

@@ -3,7 +3,10 @@ import { Defender } from '@openzeppelin/defender-sdk';
 import { RelayerTransactionState } from '../../interfaces/types';
 import { ethers } from 'ethers';
 import { CONFIG } from '@/configuration';
-import { RelayerTransaction, RelayerTransactionPayload } from '@openzeppelin/defender-sdk-relay-signer-client';
+import {
+  RelayerTransaction,
+  RelayerTransactionPayload,
+} from '@openzeppelin/defender-sdk-relay-signer-client';
 
 // Add transaction state tracking
 export type TransactionStateMap = {
@@ -13,7 +16,7 @@ export type TransactionStateMap = {
     lastChecked: number;
     replacementHash?: string;
     attempts: number;
-  }
+  };
 };
 
 // Add type for Defender transaction response
@@ -32,6 +35,19 @@ type FlashbotsResponse = {
     to: string;
   };
 };
+
+interface RelayerListOptions {
+  status: 'pending' | 'sent' | 'submitted' | 'mined' | 'confirmed' | 'failed';
+  limit: number;
+  sort?: 'asc' | 'desc';
+}
+
+interface RelayerTransactionResponse {
+  transactionId: string;
+  hash: string;
+  nonce: number;
+  status: string;
+}
 
 /**
  * Inspect the Defender relayer for any on-chain *pending* transactions. If any are found we
@@ -55,7 +71,7 @@ export async function handlePendingRelayerTransactions(
       status: 'pending',
       limit: 50,
       sort: 'desc',
-    } as any);
+    } as RelayerListOptions);
 
     if (!pending || pending.length === 0) return false;
 
@@ -77,18 +93,17 @@ export async function handlePendingRelayerTransactions(
       try {
         // Replace by ID keeps the same nonce but cancels the transaction.
         await defenderClient.relaySigner.replaceTransactionById(
-          // `transactionId` is guaranteed on items returned by `list()`
-          (tx as any).transactionId,
+          (tx as RelayerTransactionResponse).transactionId,
           baseReplacement,
         );
 
         logger.info('Replaced pending transaction', {
-          transactionId: (tx as any).transactionId,
+          transactionId: (tx as RelayerTransactionResponse).transactionId,
           nonce: tx.nonce,
         });
       } catch (replaceErr) {
         logger.error('Failed to replace pending transaction', {
-          transactionId: (tx as any).transactionId,
+          transactionId: (tx as RelayerTransactionResponse).transactionId,
           error:
             replaceErr instanceof Error
               ? replaceErr.message
@@ -123,16 +138,22 @@ export async function cleanupStaleTransactions(
     const transactionStates: TransactionStateMap = {};
 
     // First, get all pending transactions from Defender
-    const pendingDefenderTxs = defenderClient ? await defenderClient.relaySigner.list({
-      status: 'pending',
-      limit: 50,
-      sort: 'asc', // Get oldest first
-    } as any).then((txs: unknown) => (txs as any[]).map(tx => ({
-      nonce: Number(tx.nonce),
-      hash: String(tx.hash),
-      transactionId: String(tx.transactionId),
-      status: String(tx.status),
-    }))) : [];
+    const pendingDefenderTxs = defenderClient
+      ? await defenderClient.relaySigner
+          .list({
+            status: 'pending',
+            limit: 50,
+            sort: 'asc', // Get oldest first
+          } as RelayerListOptions)
+          .then((txs: RelayerTransactionResponse[]) =>
+            txs.map((tx) => ({
+              nonce: Number(tx.nonce),
+              hash: String(tx.hash),
+              transactionId: String(tx.transactionId),
+              status: String(tx.status),
+            })),
+          )
+      : [];
 
     logger.info('Current pending transactions state:', {
       inMemoryCount: pendingTransactions.size,
@@ -142,20 +163,26 @@ export async function cleanupStaleTransactions(
     // Map out all transaction states
     for (const [id, state] of pendingTransactions.entries()) {
       const isStale = now - state.submittedAt > txTimeout;
-      
+
       if (isStale) {
         staleIds.push(id);
       }
 
       // Check Flashbots status for each transaction
       try {
-        const response = await fetch(`https://protect.flashbots.net/tx/${state.hash}`);
-        const data = await response.json() as FlashbotsResponse;
-        
+        const response = await fetch(
+          `https://protect.flashbots.net/tx/${state.hash}`,
+        );
+        const data = (await response.json()) as FlashbotsResponse;
+
         // Get nonce from Defender transaction if available
-        const defenderTx = pendingDefenderTxs.find((tx: DefenderTransaction) => tx.hash === state.hash);
-        
-        const txStatus = ((data.status || 'unknown').toLowerCase()) as TransactionStateMap[string]['status'];
+        const defenderTx = pendingDefenderTxs.find(
+          (tx: DefenderTransaction) => tx.hash === state.hash,
+        );
+
+        const txStatus = (
+          data.status || 'unknown'
+        ).toLowerCase() as TransactionStateMap[string]['status'];
         if (state.hash) {
           transactionStates[state.hash] = {
             status: txStatus,
@@ -177,7 +204,7 @@ export async function cleanupStaleTransactions(
           hash: state.hash,
           error: error instanceof Error ? error.message : String(error),
         });
-        
+
         // Add unknown state for failed checks
         if (state.hash) {
           transactionStates[state.hash] = {
@@ -193,11 +220,14 @@ export async function cleanupStaleTransactions(
     if (staleIds.length === 0) {
       logger.info('No stale transactions found', {
         totalTracked: pendingTransactions.size,
-        states: Object.values(transactionStates).reduce((acc, curr) => {
-          const status = curr.status;
-          acc[status] = (acc[status] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>),
+        states: Object.values(transactionStates).reduce(
+          (acc, curr) => {
+            const status = curr.status;
+            acc[status] = (acc[status] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>,
+        ),
       });
       return;
     }
@@ -210,21 +240,27 @@ export async function cleanupStaleTransactions(
     }
 
     // Group transactions by nonce
-    const byNonce = Object.entries(transactionStates).reduce((acc, [hash, state]) => {
-      const nonce = state.nonce;
-      if (!acc[nonce]) {
-        acc[nonce] = [];
-      }
-      acc[nonce].push({ hash, ...state });
-      return acc;
-    }, {} as Record<number, Array<{ hash: string; status: string; nonce: number; attempts: number }>>);
+    const byNonce = Object.entries(transactionStates).reduce(
+      (acc, [hash, state]) => {
+        const nonce = state.nonce;
+        if (!acc[nonce]) {
+          acc[nonce] = [];
+        }
+        acc[nonce].push({ hash, ...state });
+        return acc;
+      },
+      {} as Record<
+        number,
+        Array<{ hash: string; status: string; nonce: number; attempts: number }>
+      >,
+    );
 
     logger.info('Transaction nonce distribution:', {
       nonceGroups: Object.keys(byNonce).length,
       nonceDetails: Object.entries(byNonce).map(([nonce, txs]) => ({
         nonce,
         count: txs.length,
-        statuses: txs.map(tx => tx.status),
+        statuses: txs.map((tx) => tx.status),
       })),
     });
 
@@ -236,7 +272,10 @@ export async function cleanupStaleTransactions(
       try {
         // Only replace if transaction is not already included or replaced
         const txState = transactionStates[state.hash];
-        if (txState && (txState.status === 'included' || txState.status === 'replaced')) {
+        if (
+          txState &&
+          (txState.status === 'included' || txState.status === 'replaced')
+        ) {
           logger.info('Skipping already processed transaction:', {
             hash: state.hash,
             status: txState.status,
@@ -300,11 +339,14 @@ export async function cleanupStaleTransactions(
     logger.info('Cleanup cycle completed:', {
       processedCount: staleIds.length,
       remainingCount: pendingTransactions.size,
-      statesSummary: Object.values(transactionStates).reduce((acc, curr) => {
-        const status = curr.status;
-        acc[status] = (acc[status] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>),
+      statesSummary: Object.values(transactionStates).reduce(
+        (acc, curr) => {
+          const status = curr.status;
+          acc[status] = (acc[status] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
       nonceGroups: Object.keys(byNonce).length,
     });
   } catch (error) {
@@ -362,10 +404,10 @@ export async function handleFlashbotsSimulationAndReplacement(
 
       // Encode approve function call with max uint256 value
       const maxApproval = ethers.MaxUint256;
-      const approveData = tokenContract.interface.encodeFunctionData('approve', [
-        govLstAddress,
-        maxApproval,
-      ]);
+      const approveData = tokenContract.interface.encodeFunctionData(
+        'approve',
+        [govLstAddress, maxApproval],
+      );
 
       // Prepare replacement transaction with approve call
       const replacement = {
@@ -395,7 +437,9 @@ export async function handleFlashbotsSimulationAndReplacement(
       const maxRetries = 10;
 
       while (!isIncluded && retries < maxRetries) {
-        const replacementStatus = await fetch(`https://protect.flashbots.net/tx/${result.hash}`);
+        const replacementStatus = await fetch(
+          `https://protect.flashbots.net/tx/${result.hash}`,
+        );
         const replacementData = await replacementStatus.json();
 
         if (replacementData.status === 'INCLUDED') {
@@ -407,7 +451,7 @@ export async function handleFlashbotsSimulationAndReplacement(
         }
 
         // Wait 3 seconds between checks
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise((resolve) => setTimeout(resolve, 3000));
         retries++;
       }
 
@@ -471,9 +515,11 @@ export async function handleStartupCleanup(
     });
 
     // Handle both array and paginated response types
-    const pendingTxs = (Array.isArray(pendingTxsResponse) 
-      ? pendingTxsResponse 
-      : pendingTxsResponse.items || []) as DefenderTransaction[];
+    const pendingTxs = (
+      Array.isArray(pendingTxsResponse)
+        ? pendingTxsResponse
+        : pendingTxsResponse.items || []
+    ) as DefenderTransaction[];
 
     if (pendingTxs.length === 0) {
       logger.info('No pending transactions found during startup');
@@ -485,16 +531,21 @@ export async function handleStartupCleanup(
     });
 
     // Group transactions by nonce
-    const byNonce = pendingTxs.reduce((acc: Record<number, DefenderTransaction[]>, tx: DefenderTransaction) => {
-      const nonce = tx.nonce;
-      acc[nonce] = acc[nonce] || [];
-      acc[nonce].push(tx);
-      return acc;
-    }, {} as Record<number, DefenderTransaction[]>);
+    const byNonce = pendingTxs.reduce(
+      (acc: Record<number, DefenderTransaction[]>, tx: DefenderTransaction) => {
+        const nonce = tx.nonce;
+        acc[nonce] = acc[nonce] || [];
+        acc[nonce].push(tx);
+        return acc;
+      },
+      {} as Record<number, DefenderTransaction[]>,
+    );
 
     // Process each nonce group, starting from lowest nonce
-    const nonces = Object.keys(byNonce).map(Number).sort((a, b) => a - b);
-    
+    const nonces = Object.keys(byNonce)
+      .map(Number)
+      .sort((a, b) => a - b);
+
     logger.info('Processing nonce groups:', {
       nonceCount: nonces.length,
       nonces: nonces.join(', '),
@@ -504,14 +555,18 @@ export async function handleStartupCleanup(
       const transactions = byNonce[nonce] || [];
       logger.info(`Processing transactions for nonce ${nonce}:`, {
         count: transactions.length,
-        hashes: transactions.map((tx: DefenderTransaction) => tx.hash).join(', '),
+        hashes: transactions
+          .map((tx: DefenderTransaction) => tx.hash)
+          .join(', '),
       });
 
       // Check each transaction's status
       for (const tx of transactions) {
         try {
           const status = await checkFlashbotsStatus(tx.hash);
-          const createdAt = tx.createdAt ? new Date(tx.createdAt).getTime() : Date.now() - ageThresholdMs - 1;
+          const createdAt = tx.createdAt
+            ? new Date(tx.createdAt).getTime()
+            : Date.now() - ageThresholdMs - 1;
           const age = Date.now() - createdAt;
 
           logger.info('Transaction status:', {
@@ -522,8 +577,10 @@ export async function handleStartupCleanup(
           });
 
           // Only process old transactions that are pending or cancelled
-          if (age > ageThresholdMs && 
-             (status.status === 'PENDING' || status.status === 'CANCELLED')) {
+          if (
+            age > ageThresholdMs &&
+            (status.status === 'PENDING' || status.status === 'CANCELLED')
+          ) {
             logger.info('Replacing old transaction:', {
               hash: tx.hash,
               status: status.status,
@@ -546,10 +603,10 @@ export async function handleStartupCleanup(
 
             // Encode approve function call with max uint256 value
             const maxApproval = ethers.MaxUint256;
-            const approveData = tokenContract.interface.encodeFunctionData('approve', [
-              govLstAddress,
-              maxApproval,
-            ]);
+            const approveData = tokenContract.interface.encodeFunctionData(
+              'approve',
+              [govLstAddress, maxApproval],
+            );
 
             // Prepare replacement transaction
             const replacement: RelayerTransactionPayload = {
@@ -580,7 +637,7 @@ export async function handleStartupCleanup(
 
             while (!isIncluded && retries < maxRetries) {
               const replacementStatus = await checkFlashbotsStatus(result.hash);
-              
+
               if (replacementStatus.status === 'INCLUDED') {
                 isIncluded = true;
                 logger.info('Replacement transaction included:', {
@@ -591,15 +648,18 @@ export async function handleStartupCleanup(
               }
 
               // Wait 3 seconds between checks
-              await new Promise(resolve => setTimeout(resolve, 3000));
+              await new Promise((resolve) => setTimeout(resolve, 3000));
               retries++;
             }
 
             if (!isIncluded) {
-              logger.warn('Replacement transaction not included after max retries:', {
-                hash: result.hash,
-                nonce: result.nonce,
-              });
+              logger.warn(
+                'Replacement transaction not included after max retries:',
+                {
+                  hash: result.hash,
+                  nonce: result.nonce,
+                },
+              );
             }
 
             // Break after processing one transaction per nonce
@@ -622,4 +682,4 @@ export async function handleStartupCleanup(
       stack: error instanceof Error ? error.stack : undefined,
     });
   }
-} 
+}

@@ -706,6 +706,7 @@ GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
    - Monitor for suspicious activity
 
 3. **Database Security**
+
    - Use strong Supabase API keys
    - Implement proper access controls
    - Regular backup procedures
@@ -718,6 +719,7 @@ GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
 ### Deployment Checklist
 
 1. **Pre-deployment**
+
    - [ ] Verify all contract addresses
    - [ ] Test RPC connection
    - [ ] Check executor balance
@@ -726,6 +728,7 @@ GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
    - [ ] Configure simulation settings
 
 2. **Deployment**
+
    - [ ] Set production environment variables
    - [ ] Enable health monitoring
    - [ ] Configure logging
@@ -742,6 +745,7 @@ GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
 ### Maintenance Procedures
 
 1. **Regular Checks**
+
    ```bash
    # Check component health
    pnpm run health-check
@@ -757,6 +761,7 @@ GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
    ```
 
 2. **Database Maintenance**
+
    ```bash
    # Prune old data
    pnpm run db:cleanup
@@ -766,6 +771,7 @@ GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
    ```
 
 3. **Performance Optimization**
+
    ```bash
    # Analyze transaction history
    pnpm run analyze-tx
