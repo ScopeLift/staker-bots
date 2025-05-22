@@ -40,20 +40,198 @@ sequenceDiagram
 
 ---
 
-## Core Functionality
+## Core Features
 
-The engine performs two primary functions:
+- Single-bin accumulation strategy for optimal deposit grouping
+- Real-time profitability analysis with advanced gas cost estimation
+- Dynamic profit margin scaling based on deposit count
+- Simulation-based gas estimation with fallback
+- Batch processing of unclaimed rewards
+- Automatic threshold optimization
+- Resilient error handling and retry mechanisms
 
-1. Analyzing individual deposit groups for profitability
-2. Optimizing deposit batches for maximum profit
+## Architecture Overview
 
-## Architecture
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Analyzing: New deposits
+    Analyzing --> GasEstimation: Process deposits
+    GasEstimation --> BinAccumulation: Estimate costs
+    BinAccumulation --> ThresholdCheck: Add to bin
+    ThresholdCheck --> Queueing: Threshold met
+    ThresholdCheck --> BinAccumulation: Continue accumulating
+    Queueing --> Idle
+```
 
-- **ProfitabilityEngineWrapper**: Orchestrates analysis, manages cache, and handles queueing
-- **GovLstProfitabilityEngine**: Core logic for profitability, gas, and batch optimization
-- **Integration**: Receives events from Monitor, queues claims for Executor
+## Single-Bin Accumulation Algorithm
 
----
+The engine implements a novel single-bin accumulation strategy that:
+
+1. Maintains one active bin for collecting deposits
+2. Sorts deposits by reward amount in descending order
+3. Uses simulation-based gas estimation when available
+4. Accumulates deposits until reaching optimal threshold
+5. Automatically queues full bins for execution
+
+### Optimization Parameters
+
+- **Optimal Threshold**: Dynamic based on deposit count and gas costs
+- **Gas Cost Buffer**: Configurable safety margin for gas estimates
+- **Batch Size**: 100 deposits per processing batch
+- **Profit Margin**: Dynamic scaling based on deposit count (0.05% per deposit)
+- **Maximum Profit Margin**: Capped at 15% (1500 basis points)
+
+### Profitability Calculation
+
+The engine calculates profitability using:
+
+```typescript
+// Calculate base amount
+baseAmount = payoutAmount + (includeGasCost ? gasCost : 0n);
+
+// Scale profit margin based on deposit count
+depositScalingBasisPoints = min(20, depositCount * 5); // 0.05% per deposit
+scaledMargin = min(1500, baseMarginBps + depositScalingBasisPoints);
+
+// Calculate minimum expected reward
+profitMarginAmount = (baseAmount * scaledMarginBps) / 10000n;
+minExpectedReward = baseAmount + profitMarginAmount;
+
+// Final profitability check
+isProfileable = totalRewards >= minExpectedReward;
+```
+
+Where:
+
+- `payoutAmount`: Base payout from contract
+- `gasCost`: Estimated gas cost (from simulation or fallback)
+- `depositCount`: Number of deposits in batch
+- `baseMarginBps`: Base profit margin in basis points
+- `scaledMarginBps`: Final margin after deposit count scaling
+
+## Gas Estimation
+
+The engine now supports two methods of gas estimation:
+
+1. **Simulation-Based Estimation**
+
+   - Uses Tenderly simulation when available
+   - Provides more accurate gas estimates
+   - Handles complex contract interactions
+
+2. **Fallback Estimation**
+   - Uses historical gas data
+   - Applies configurable safety buffer
+   - Cached with TTL for efficiency
+
+## Error Handling
+
+Implements a robust error handling system:
+
+- Automatic retries for transient failures
+- Exponential backoff for RPC calls
+- Detailed error context and logging
+- Graceful degradation on partial failures
+- Simulation fallback mechanisms
+
+## Performance Optimizations
+
+1. **Caching System**
+
+   - Gas price caching with TTL
+   - Reward calculation memoization
+   - Batch processing of RPC calls
+   - Simulation results caching
+
+2. **Smart Batching**
+   - Parallel reward fetching
+   - Sorted deposit processing
+   - Dynamic threshold calculation
+   - Simulation-aware batch sizing
+
+## Configuration
+
+```typescript
+interface ProfitabilityConfig {
+  rewardTokenAddress: string;
+  minProfitMargin: number;
+  gasPriceBuffer: number;
+  maxBatchSize: number;
+  defaultTipReceiver: string;
+  includeGasCost: boolean;
+  priceFeed: {
+    cacheDuration: number;
+  };
+}
+```
+
+## Usage Example
+
+```typescript
+const engine = new GovLstProfitabilityEngine(
+  govLstContract,
+  stakerContract,
+  provider,
+  {
+    rewardTokenAddress: '0x...',
+    minProfitMargin: 1, // 1% base margin
+    gasPriceBuffer: 20, // 20% buffer
+    maxBatchSize: 50,
+    defaultTipReceiver: '0x...',
+    includeGasCost: true,
+    priceFeed: {
+      cacheDuration: 300_000, // 5 minutes
+    },
+  },
+  simulationService, // Optional simulation service
+);
+
+// Start the engine
+await engine.start();
+
+// Analyze deposits
+const analysis = await engine.analyzeAndGroupDeposits(deposits);
+
+// Check if bin is ready
+const isReady = await engine.isActiveBinReady();
+```
+
+## Monitoring
+
+The engine provides detailed monitoring capabilities:
+
+- Real-time bin status
+- Gas price trends and simulation results
+- Processing metrics
+- Error rates and types
+- Profitability statistics
+- Simulation success rates
+
+## Error Types
+
+```typescript
+-ProfitabilityError - // Base error class
+  GasEstimationError - // Gas calculation issues
+  SimulationError - // Simulation failures
+  BatchFetchError - // Batch processing failures
+  QueueProcessingError; // Queue operation errors
+```
+
+## Future Improvements
+
+1. Machine learning for gas price prediction
+2. Multi-bin optimization strategies
+3. Advanced profit maximization algorithms
+4. Enhanced monitoring and alerting systems
+5. Improved simulation integration
+6. Dynamic gas cost modeling
+
+## See Also
+
+- [Contract Documentation](./docs/contracts.md)
+- [API Reference](./docs/api.md)
+- [Configuration Guide](./docs/config.md)
 
 ## Inputs & Outputs
 

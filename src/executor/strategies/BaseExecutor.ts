@@ -35,7 +35,7 @@ import {
   cleanupQueueItems,
   calculateOptimalThreshold,
   cleanupStaleTransactions,
-} from './helpers';
+} from './helpers/helpers';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
 import { ErrorLogger } from '@/configuration/errorLogger';
 import { BASE_EVENTS, BASE_QUEUE } from './constants';

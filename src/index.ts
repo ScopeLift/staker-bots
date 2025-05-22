@@ -286,6 +286,9 @@ async function initializeExecutor(
           staleTransactionThresholdMinutes:
             CONFIG.executor.staleTransactionThresholdMinutes,
           errorLogger, // Pass the error logger to the config
+          defaultTipReceiver: CONFIG.executor.tipReceiver || ethers.ZeroAddress,
+          minProfitMargin: CONFIG.profitability.minProfitMargin || 10,
+          isPrivate: CONFIG.defender.relayer.isPrivate || false,
         }
       : {
           wallet: {
@@ -429,8 +432,6 @@ async function main() {
   try {
     // Load staker ABI
     const stakerAbi = await loadStakerAbi();
-
-    // Database already initialized at top of file
 
     // Check and update checkpoints if needed
     await ensureCheckpointsAtStartBlock(database, mainLogger, mainErrorLogger);

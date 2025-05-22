@@ -18,6 +18,8 @@ import { CONFIG } from '@/configuration';
 import { ErrorLogger } from '@/configuration/errorLogger';
 import { CoinMarketCapFeed } from '@/prices/CoinmarketcapFeed';
 import { TokenPrice } from '@/prices/interface';
+import { SimulationService } from '@/simulation';
+import { estimateGasUsingSimulation } from '@/executor/strategies/helpers/simulation-helpers';
 
 /**
  * Updated ProfitabilityConfig to include errorLogger
@@ -48,6 +50,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   public readonly config: ProfitabilityConfig;
   private static readonly BATCH_SIZE = 100; // Number of deposits to fetch in a single batch
   private activeBin: GovLstDepositGroup | null = null; // Current active bin being filled
+  private readonly simulationService: SimulationService | null;
 
   /**
    * Creates a new GovLstProfitabilityEngine instance
@@ -76,6 +79,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     },
     private readonly provider: ethers.Provider,
     config: EnhancedProfitabilityConfig,
+    simulationService: SimulationService | null,
   ) {
     this.logger = new ConsoleLogger('info');
     this.errorLogger = config.errorLogger;
@@ -83,6 +87,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     this.lastGasPrice = BigInt(0);
     this.lastUpdateTimestamp = 0;
     this.config = config;
+    this.simulationService = simulationService;
 
     // Initialize price feed
     this.priceFeed = new CoinMarketCapFeed(
@@ -266,6 +271,12 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       // Calculate gas cost in reward token
       const gasCostInRewardToken = await this.estimateGasCostInRewardToken();
 
+      // Try to get a better gas estimate using simulation
+      const enhancedGasCost = await this.estimateGasWithSimulation(
+        depositIds,
+        gasCostInRewardToken,
+      );
+
       // Calculate total shares for qualified deposits
       const totalShares = qualifiedDeposits.reduce(
         (sum, deposit) => sum + (deposit.earning_power || BigInt(0)),
@@ -274,15 +285,30 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
       // Check constraints
       const meetsMinReward = totalRewards >= this.config.minProfitMargin;
-      const meetsMinProfit = totalRewards > gasCostInRewardToken;
+      const meetsMinProfit = totalRewards > enhancedGasCost;
       const hasEnoughShares =
         totalShares >= CONTRACT_CONSTANTS.MIN_SHARES_THRESHOLD;
 
       // Calculate expected profit (total rewards minus gas cost)
       const expectedProfit =
-        totalRewards > gasCostInRewardToken
-          ? totalRewards - gasCostInRewardToken
+        totalRewards > enhancedGasCost
+          ? totalRewards - enhancedGasCost
           : BigInt(0);
+
+      // Calculate minimum expected reward threshold
+      const minExpectedReward = this.calculateMinExpectedReward(
+        payoutAmount,
+        enhancedGasCost,
+        BigInt(deposits.length),
+      );
+
+      this.logProfitabilityThreshold(
+        'minimum expected reward threshold',
+        payoutAmount,
+        enhancedGasCost,
+        deposits.length,
+        minExpectedReward,
+      );
 
       return {
         is_profitable: meetsMinReward && meetsMinProfit && hasEnoughShares,
@@ -295,8 +321,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           total_shares: totalShares,
           payout_amount: payoutAmount,
           gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
-          gas_cost: gasCostInRewardToken,
+          gas_cost: enhancedGasCost,
           expected_profit: expectedProfit,
+          minExpectedReward: minExpectedReward,
         },
         deposit_details: depositDetails,
       };
@@ -325,50 +352,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     maxRetries = 3,
     delayMs = 1000,
   ): Promise<T> {
-    let lastError: Error | null = null;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        return await operation();
-      } catch (error) {
-        lastError = error as Error;
-        this.logger.warn(
-          `${context} attempt ${attempt}/${maxRetries} failed:`,
-          {
-            error: lastError.message,
-            attempt,
-            maxRetries,
-          },
-        );
-
-        if (this.errorLogger) {
-          await this.errorLogger.warn(lastError, {
-            context,
-            attempt,
-            maxRetries,
-            method: 'getContractDataWithRetry',
-          });
-        }
-
-        if (attempt < maxRetries) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, delayMs * attempt),
-          );
-        }
-      }
-    }
-
-    const errorMessage = `${context} failed after ${maxRetries} attempts: ${lastError?.message}`;
-
-    if (this.errorLogger) {
-      await this.errorLogger.error(new Error(errorMessage), {
-        context,
-        maxRetries,
-        method: 'getContractDataWithRetry',
-      });
-    }
-
-    throw new Error(errorMessage);
+    return this.withRetry(operation, context, maxRetries, delayMs);
   }
 
   // Add these helper functions at the top of the class
@@ -444,16 +428,51 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         'Estimating gas cost',
       );
 
+      // Try to get a better gas estimate using simulation
+      const enhancedGasCost = await this.estimateGasWithSimulation(
+        normalizedDeposits.map((d) => d.deposit_id),
+        gasCost,
+      );
+
       const profitMargin = this.config.minProfitMargin;
+
+      // Get all deposit IDs
+      const depositIds = normalizedDeposits.map((d) => d.deposit_id);
 
       // Calculate optimal threshold based on payout amount, gas cost and profit margin percentage
       const effectiveGasCost = CONFIG.profitability.includeGasCost
-        ? gasCost
+        ? enhancedGasCost
         : BigInt(0);
       const baseAmount = payoutAmount + effectiveGasCost;
+
+      // Scale profit margin based on deposit count
+      const depositCount = BigInt(depositIds.length);
+      // Convert to basis points (0.02% = 2 basis points per deposit, max 10 basis points)
+      const depositScalingBasisPoints = BigInt(
+        Math.min(10, Number(depositCount) * 2),
+      );
+      // Start with the minimum profit margin in basis points (convert percentage to basis points)
+      const minProfitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
+      // Add the scaling factor (cap at 500 basis points = 5%)
+      const scaledProfitMarginBasisPoints = BigInt(
+        Math.min(
+          500,
+          Number(minProfitMarginBasisPoints + depositScalingBasisPoints),
+        ),
+      );
+
+      // Apply profit margin to base amount
       const profitMarginAmount =
-        (baseAmount * BigInt(profitMargin)) / BigInt(100);
+        (baseAmount * scaledProfitMarginBasisPoints) / 10000n;
       const optimalThreshold = baseAmount + profitMarginAmount;
+
+      this.logProfitabilityThreshold(
+        'optimal threshold for deposit group analysis',
+        payoutAmount,
+        enhancedGasCost,
+        depositIds.length,
+        optimalThreshold,
+      );
 
       // Always create a new bin - don't reuse the active bin
       this.activeBin = {
@@ -466,7 +485,6 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       };
 
       // Fetch unclaimed rewards for all deposits in batch with retry
-      const depositIds = normalizedDeposits.map((d) => d.deposit_id);
       const rewardsMap = await this.getContractDataWithRetry(
         () => this.batchFetchUnclaimedRewards(depositIds),
         'Fetching unclaimed rewards',
@@ -606,6 +624,12 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       const gasCost = await this.estimateGasCostInRewardToken();
       const payoutAmount = await this.govLstContract.payoutAmount();
 
+      // Try to get a better gas estimate using simulation
+      const enhancedGasCost = await this.estimateGasWithSimulation(
+        this.activeBin.deposit_ids,
+        gasCost,
+      );
+
       // Expected profit should be equal to total rewards
       const expectedProfit = this.activeBin.total_rewards;
 
@@ -624,10 +648,25 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         }),
       );
 
+      // Calculate minimum expected reward threshold
+      const minExpectedReward = this.calculateMinExpectedReward(
+        payoutAmount,
+        enhancedGasCost,
+        BigInt(this.activeBin.deposit_ids.length),
+      );
+
+      this.logProfitabilityThreshold(
+        'minimum expected reward threshold for active bin',
+        payoutAmount,
+        enhancedGasCost,
+        this.activeBin.deposit_ids.length,
+        minExpectedReward,
+      );
+
       // Check profitability constraints
       const meetsMinReward =
         this.activeBin.total_rewards >= this.config.minProfitMargin;
-      const meetsMinProfit = this.activeBin.total_rewards > gasCost; // Compare total rewards with gas cost
+      const meetsMinProfit = this.activeBin.total_rewards > enhancedGasCost; // Compare total rewards with gas cost
       const hasEnoughShares =
         this.activeBin.total_shares >= CONTRACT_CONSTANTS.MIN_SHARES_THRESHOLD;
 
@@ -642,8 +681,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           total_shares: this.activeBin.total_shares,
           payout_amount: payoutAmount,
           gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
-          gas_cost: gasCost, // Add gas cost as separate field
+          gas_cost: enhancedGasCost, // Add gas cost as separate field
           expected_profit: expectedProfit,
+          minExpectedReward: minExpectedReward,
         },
         deposit_details: depositDetails,
       };
@@ -706,7 +746,6 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     try {
       const rewardsMap = new Map<string, bigint>();
       const batchSize = GovLstProfitabilityEngine.BATCH_SIZE;
-      const maxRetries = 3;
 
       this.logger.info('Starting batch fetch of unclaimed rewards:', {
         totalDeposits: depositIds.length,
@@ -714,9 +753,10 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       });
 
       // Function to process a batch with retries
-      const processBatchWithRetry = async (batchIds: bigint[]) => {
-        for (let attempt = 0; attempt < maxRetries; attempt++) {
-          try {
+      const processBatch = async (batchIds: bigint[]) => {
+        // Process batch with retries
+        const results = await this.withRetry(
+          async () => {
             const results = await Promise.all(
               batchIds.map(async (id) => {
                 const reward = await this.stakerContract.unclaimedReward(id);
@@ -726,57 +766,39 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
             // Check if all rewards are 0, might indicate we need to wait for chain update
             const allZero = results.every(({ reward }) => reward === BigInt(0));
-            if (allZero && attempt < maxRetries - 1) {
+            if (allZero) {
               this.logger.info(
                 'All rewards are 0, waiting for chain update...',
-                {
-                  attempt: attempt + 1,
-                  batchIds: batchIds.map((id) => id.toString()),
-                },
               );
-              await new Promise((resolve) =>
-                setTimeout(resolve, 2000 * (attempt + 1)),
-              ); // Exponential backoff
-              continue;
+              // Throw to trigger retry
+              throw new Error(
+                'All rewards are zero - waiting for chain update',
+              );
             }
 
-            // Store results
-            results.forEach(({ id, reward }) => {
-              rewardsMap.set(id.toString(), reward);
-              if (reward > BigInt(0)) {
-                this.logger.info('Fetched non-zero reward:', {
-                  depositId: id.toString(),
-                  reward: ethers.formatEther(reward),
-                });
-              }
-            });
-            break; // Success, exit retry loop
-          } catch (error) {
-            if (this.errorLogger) {
-              await this.errorLogger.warn(error as Error, {
-                context: 'batchFetchUnclaimedRewards.processBatchWithRetry',
-                attempt: attempt + 1,
-                batchSize: batchIds.length,
-                method: 'batchFetchUnclaimedRewards',
-              });
-            }
+            return results;
+          },
+          `Batch fetch rewards for ${batchIds.length} deposits`,
+          3,
+          2000,
+        );
 
-            if (attempt === maxRetries - 1) throw error;
-            this.logger.warn('Error fetching rewards, retrying...', {
-              attempt: attempt + 1,
-              error: error instanceof Error ? error.message : String(error),
+        // Store results
+        results.forEach(({ id, reward }) => {
+          rewardsMap.set(id.toString(), reward);
+          if (reward > BigInt(0)) {
+            this.logger.info('Fetched non-zero reward:', {
+              depositId: id.toString(),
+              reward: ethers.formatEther(reward),
             });
-            await new Promise((resolve) =>
-              setTimeout(resolve, 1000 * (attempt + 1)),
-            );
           }
-        }
+        });
       };
 
       // Process batches
       for (let i = 0; i < depositIds.length; i += batchSize) {
         const batchIds = depositIds.slice(i, i + batchSize);
-        await processBatchWithRetry(batchIds);
+        await processBatch(batchIds);
 
         // Small delay between batches
         if (i + batchSize < depositIds.length) {
@@ -862,56 +884,96 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   }
 
   /**
+   * Calculates the scaled profit margin based on deposit count and base margin
+   * @param depositCount Number of deposits
+   * @param baseMargin Base profit margin percentage
+   * @returns Scaled profit margin in basis points
+   */
+  private calculateScaledProfitMargin(
+    depositCount: bigint,
+    baseMargin: number,
+  ): bigint {
+    // Convert to basis points (0.02% = 2 basis points per deposit, max 10 basis points)
+    const depositScalingBasisPoints = BigInt(
+      Math.min(10, Number(depositCount) * 2),
+    );
+    // Start with the minimum profit margin in basis points
+    const minProfitMarginBasisPoints = BigInt(Math.floor(baseMargin * 100));
+    // Add the scaling factor (cap at 500 basis points = 5%)
+    return BigInt(
+      Math.min(
+        500,
+        Number(minProfitMarginBasisPoints + depositScalingBasisPoints),
+      ),
+    );
+  }
+
+  /**
+   * Calculates the minimum expected reward threshold
+   * @param payoutAmount Base payout amount
+   * @param gasCost Estimated gas cost
+   * @param depositCount Number of deposits
+   * @returns Minimum expected reward threshold
+   */
+  private calculateMinExpectedReward(
+    payoutAmount: bigint,
+    gasCost: bigint,
+    depositCount: bigint,
+  ): bigint {
+    const scaledProfitMarginBasisPoints = this.calculateScaledProfitMargin(
+      depositCount,
+      this.config.minProfitMargin,
+    );
+
+    const effectiveGasCost = CONFIG.profitability.includeGasCost
+      ? gasCost
+      : BigInt(0);
+    const baseAmount = payoutAmount + effectiveGasCost;
+
+    // Apply profit margin to base amount
+    const profitMarginAmount =
+      (baseAmount * scaledProfitMarginBasisPoints) / 10000n;
+
+    return baseAmount + profitMarginAmount;
+  }
+
+  /**
+   * Converts gas cost to reward tokens using current prices
+   * @param gasCost Gas cost in wei
+   * @returns Gas cost in reward tokens
+   */
+  private async convertGasCostToRewardTokens(gasCost: bigint): Promise<bigint> {
+    const prices = await this.getPrices();
+
+    const ethPriceScaled = BigInt(Math.floor(prices.gasToken.usd * 1e18));
+    const rewardTokenPriceScaled = BigInt(
+      Math.floor(prices.rewardToken.usd * 1e18),
+    );
+
+    return (gasCost * ethPriceScaled) / rewardTokenPriceScaled;
+  }
+
+  /**
    * Estimates the gas cost of claiming rewards in terms of reward tokens
    * Uses current gas price and configured price assumptions
    * @returns Estimated gas cost denominated in reward tokens
    */
-  private async estimateGasCostInRewardToken(): Promise<bigint> {
+  async estimateGasCostInRewardToken(): Promise<bigint> {
     try {
-      // Get current gas price and estimate gas cost
       const gasPrice = await this.getGasPriceWithBuffer();
-      const gasLimit = BigInt(300000); // Estimated gas limit for claim
+      const gasLimit = BigInt(300000);
       const gasCost = gasPrice * gasLimit;
 
-      this.logger.info('Gas cost calculation:', {
-        gasPriceGwei: ethers.formatUnits(gasPrice, 'gwei'),
-        gasLimit: gasLimit.toString(),
-        gasCostWei: gasCost.toString(),
-        gasCostEther: ethers.formatEther(gasCost),
-      });
-
-      // Get real-time price data from cache or CoinMarketCap
-      const prices = await this.getPrices();
-
-      // Log raw price data for verification
-      this.logger.info('Price data from CoinMarketCap:', {
-        gasToken: {
-          address: 'ETH',
-          priceUsd: prices.gasToken.usd,
-          lastUpdated: prices.gasToken.lastUpdated,
-        },
-        rewardToken: {
-          address: CONFIG.priceFeed.coinmarketcap.rewardTokenAddress,
-          priceUsd: prices.rewardToken.usd,
-          lastUpdated: prices.rewardToken.lastUpdated,
-        },
-      });
-
-      // Convert prices to scaled values (18 decimals)
-      const ethPriceScaled = BigInt(Math.floor(prices.gasToken.usd * 1e18));
-      const rewardTokenPriceScaled = BigInt(
-        Math.floor(prices.rewardToken.usd * 1e18),
-      );
-
-      // Calculate gas cost in reward tokens
       const gasCostInRewardTokens =
-        (gasCost * ethPriceScaled) / rewardTokenPriceScaled;
+        await this.convertGasCostToRewardTokens(gasCost);
 
-      this.logger.info('Gas cost in reward tokens:', {
-        ethPriceUSD: prices.gasToken.usd.toFixed(2),
-        tokenPriceUSD: prices.rewardToken.usd.toFixed(8),
-        gasCostInTokens: ethers.formatEther(gasCostInRewardTokens),
-      });
+      this.logGasCost(
+        'reward token conversion',
+        gasPrice,
+        gasLimit,
+        gasCost,
+        gasCostInRewardTokens,
+      );
 
       return gasCostInRewardTokens;
     } catch (error) {
@@ -1017,5 +1079,243 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     };
 
     return prices;
+  }
+
+  /**
+   * Estimates gas costs for a transaction using simulation if available
+   * Falls back to standard gas estimation if simulation fails
+   *
+   * @param depositIds Array of deposit IDs
+   * @param gasCostInRewardToken Initial gas cost estimate in reward token
+   * @returns Updated gas cost estimate
+   */
+  private async estimateGasWithSimulation(
+    depositIds: bigint[],
+    gasCostInRewardToken: bigint,
+  ): Promise<bigint> {
+    // Early return if simulation service is not available
+    if (!this.simulationService) {
+      this.logger.info(
+        'Simulation service not available, using default gas estimate',
+      );
+      return gasCostInRewardToken;
+    }
+
+    try {
+      // Get relevant data for simulation
+      const payoutAmount = await this.govLstContract.payoutAmount();
+
+      // Use a mock address for simulation - can be any valid address since we're only estimating gas
+      const mockRecipientAddress = CONFIG.profitability.defaultTipReceiver;
+
+      // Get simulation-based gas estimate
+      const simulatedGas = await estimateGasUsingSimulation(
+        depositIds,
+        mockRecipientAddress,
+        payoutAmount,
+        this.govLstContract,
+        this.simulationService,
+        this.logger,
+      );
+
+      if (simulatedGas !== null) {
+        this.logger.info('Updated gas estimate from simulation', {
+          originalGasEstimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE.toString(),
+          simulatedGasEstimate: simulatedGas.toString(),
+          depositCount: depositIds.length,
+        });
+
+        // Convert gas units to reward tokens
+        const simulatedGasCostInRewardToken =
+          await this.convertGasUnitsToRewardToken(simulatedGas);
+
+        this.logger.info('Converted simulated gas to reward tokens', {
+          gasUnits: simulatedGas.toString(),
+          gasCostInRewardToken: simulatedGasCostInRewardToken.toString(),
+        });
+
+        // Return the higher of the two estimates for safety
+        return simulatedGasCostInRewardToken > gasCostInRewardToken
+          ? simulatedGasCostInRewardToken
+          : gasCostInRewardToken;
+      }
+    } catch (error) {
+      this.logger.warn('Simulation-based gas estimation failed', {
+        error: error instanceof Error ? error.message : String(error),
+        depositIds: depositIds.map(String),
+      });
+
+      if (this.errorLogger) {
+        await this.errorLogger.warn(error as Error, {
+          context: 'estimateGasWithSimulation',
+          depositCount: depositIds.length,
+        });
+      }
+    }
+
+    // Return original estimate if simulation fails
+    return gasCostInRewardToken;
+  }
+
+  /**
+   * Converts gas units to reward token value
+   *
+   * @param gasUnits Gas units to convert
+   * @returns Equivalent value in reward tokens
+   */
+  private async convertGasUnitsToRewardToken(
+    gasUnits: bigint,
+  ): Promise<bigint> {
+    try {
+      const gasPrice = await this.getGasPriceWithBuffer();
+      const gasCost = gasPrice * gasUnits;
+
+      const gasCostInRewardTokens =
+        await this.convertGasCostToRewardTokens(gasCost);
+
+      this.logGasCost(
+        'gas units conversion',
+        gasPrice,
+        gasUnits,
+        gasCost,
+        gasCostInRewardTokens,
+      );
+
+      return gasCostInRewardTokens;
+    } catch (error) {
+      this.logger.error('Failed to convert gas units to reward token', {
+        error: error instanceof Error ? error.message : String(error),
+        gasUnits: gasUnits.toString(),
+      });
+
+      if (this.errorLogger) {
+        await this.errorLogger.error(error as Error, {
+          context: 'convertGasUnitsToRewardToken',
+          gasUnits: gasUnits.toString(),
+        });
+      }
+
+      return gasUnits * BigInt(5000);
+    }
+  }
+
+  /**
+   * Standardized logging for gas cost calculations
+   * @param operation Description of the operation
+   * @param gasPrice Gas price in wei
+   * @param gasUnits Gas units
+   * @param gasCost Total gas cost in wei
+   * @param gasCostInRewardTokens Gas cost converted to reward tokens
+   */
+  private logGasCost(
+    operation: string,
+    gasPrice: bigint,
+    gasUnits: bigint,
+    gasCost: bigint,
+    gasCostInRewardTokens: bigint,
+  ): void {
+    this.logger.info(`Gas cost calculation for ${operation}:`, {
+      gasPriceGwei: ethers.formatUnits(gasPrice, 'gwei'),
+      gasUnits: gasUnits.toString(),
+      gasCostWei: gasCost.toString(),
+      gasCostEther: ethers.formatEther(gasCost),
+      gasCostInRewardTokens: ethers.formatEther(gasCostInRewardTokens),
+    });
+  }
+
+  /**
+   * Standardized logging for profitability thresholds
+   * @param context Context description
+   * @param payoutAmount Payout amount
+   * @param gasEstimate Gas estimate
+   * @param depositCount Deposit count
+   * @param minExpectedReward Minimum expected reward
+   */
+  private logProfitabilityThreshold(
+    context: string,
+    payoutAmount: bigint,
+    gasEstimate: bigint,
+    depositCount: number | bigint,
+    minExpectedReward: bigint,
+  ): void {
+    const profitMarginPercentage = `${
+      Number(
+        this.calculateScaledProfitMargin(
+          typeof depositCount === 'number'
+            ? BigInt(depositCount)
+            : depositCount,
+          this.config.minProfitMargin,
+        ),
+      ) / 100
+    }%`;
+
+    this.logger.info(`Calculated ${context}:`, {
+      payoutAmount: payoutAmount.toString(),
+      gasEstimate: gasEstimate.toString(),
+      profitMargin: profitMarginPercentage,
+      minExpectedReward: minExpectedReward.toString(),
+      depositCount:
+        typeof depositCount === 'number' ? depositCount : Number(depositCount),
+    });
+  }
+
+  /**
+   * Generic retry wrapper for any async operation
+   * @param operation Function to retry
+   * @param context Context description
+   * @param maxRetries Maximum number of retry attempts
+   * @param delayMs Base delay between retries in milliseconds
+   * @returns Result of the operation
+   */
+  private async withRetry<T>(
+    operation: () => Promise<T>,
+    context: string,
+    maxRetries = 3,
+    delayMs = 1000,
+  ): Promise<T> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error as Error;
+        this.logger.warn(
+          `${context} attempt ${attempt}/${maxRetries} failed:`,
+          {
+            error: lastError.message,
+            attempt,
+            maxRetries,
+          },
+        );
+
+        if (this.errorLogger) {
+          await this.errorLogger.warn(lastError, {
+            context,
+            attempt,
+            maxRetries,
+            method: 'withRetry',
+          });
+        }
+
+        if (attempt < maxRetries) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, delayMs * attempt),
+          );
+        }
+      }
+    }
+
+    const errorMessage = `${context} failed after ${maxRetries} attempts: ${lastError?.message}`;
+
+    if (this.errorLogger) {
+      await this.errorLogger.error(new Error(errorMessage), {
+        context,
+        maxRetries,
+        method: 'withRetry',
+      });
+    }
+
+    throw new Error(errorMessage);
   }
 }
