@@ -69,10 +69,19 @@ sequenceDiagram
 
 ### 2. Profitability Engine
 
-- Analyzes deposits for claim profitability
-- Optimizes batch size and timing
-- Uses price feeds and gas estimates
-- Queues profitable claims for execution
+- **Purpose**: Analyzes deposits for profitable actions
+- **Key Features**:
+  - Calculates potential rewards
+  - Dynamic profit margin scaling
+  - Simulation-based gas estimation
+  - Determines profitability
+  - Queues profitable transactions
+- **Configuration Focus**:
+  - `GOVLST_MIN_PROFIT_MARGIN_PERCENT`: Base profit margin
+  - `GOVLST_GAS_PRICE_BUFFER`: Gas price safety margin
+  - `PROFITABILITY_CHECK_INTERVAL`: Analysis frequency
+  - `INCLUDE_GAS_COST`: Include gas in profitability
+  - `TENDERLY_USE_SIMULATE`: Enable simulation
 
 ### 3. Executor
 
@@ -299,19 +308,24 @@ The service consists of four main components that can be run independently or to
 - **Purpose**: Analyzes deposits for profitable actions
 - **Key Features**:
   - Calculates potential rewards
-  - Estimates gas costs
+  - Dynamic profit margin scaling
+  - Simulation-based gas estimation
   - Determines profitability
   - Queues profitable transactions
 - **Configuration Focus**:
-  - `GOVLST_MIN_PROFIT_MARGIN_PERCENT`: Minimum profit threshold
+  - `GOVLST_MIN_PROFIT_MARGIN_PERCENT`: Base profit margin
   - `GOVLST_GAS_PRICE_BUFFER`: Gas price safety margin
   - `PROFITABILITY_CHECK_INTERVAL`: Analysis frequency
+  - `INCLUDE_GAS_COST`: Include gas in profitability
+  - `TENDERLY_USE_SIMULATE`: Enable simulation
 
 ### 3. Executor Component
 
 - **Purpose**: Executes on-chain transactions
 - **Key Features**:
   - Manages transaction queue
+  - Transaction validation
+  - Simulation-based gas estimation
   - Handles gas optimization
   - Supports multiple execution strategies
   - Implements retry logic
@@ -319,19 +333,22 @@ The service consists of four main components that can be run independently or to
   - `EXECUTOR_TYPE`: Wallet or Defender
   - `EXECUTOR_MIN_BALANCE`: Minimum balance threshold
   - `EXECUTOR_MAX_PENDING_TXS`: Concurrent transaction limit
+  - `TENDERLY_ACCESS_KEY`: Simulation API key
 
 ### 4. GovLst Component
 
 - **Purpose**: Manages GovLst reward claiming
 - **Key Features**:
   - Monitors unclaimed rewards
-  - Batches claim transactions
+  - Dynamic batch optimization
   - Optimizes claim timing
   - Tracks claim history
+  - Simulation-aware execution
 - **Configuration Focus**:
   - `GOVLST_ADDRESSES`: Contract addresses to monitor
   - `GOVLST_CLAIM_INTERVAL`: Check frequency
   - `GOVLST_MAX_BATCH_SIZE`: Maximum claims per transaction
+  - `GOVLST_PROFIT_SCALING`: Profit margin scaling
 
 ## Running the Service
 
@@ -448,7 +465,7 @@ TENDERLY_USE_SIMULATE=true
 TENDERLY_ACCESS_KEY=your_tenderly_access_key
 TENDERLY_ACCOUNT_NAME=your_tenderly_account_name
 TENDERLY_PROJECT_NAME=your_tenderly_project_name
-TENDERLY_NETWORK_ID=1  # Default is 1 for mainnet, use appropriate ID for other networks
+TENDERLY_NETWORK_ID=1  # Default is 1 for mainnet
 ```
 
 Benefits of transaction simulation:
@@ -490,7 +507,11 @@ MAX_BLOCK_RANGE=500
 CONFIRMATIONS=1
 GOVLST_MAX_BATCH_SIZE=2
 GOVLST_MIN_PROFIT_MARGIN_PERCENT=5
+INCLUDE_GAS_COST=true
 LOG_LEVEL=debug
+
+# Simulation (Optional)
+TENDERLY_USE_SIMULATE=false
 ```
 
 #### 2. Production Environment
@@ -529,7 +550,14 @@ REORG_DEPTH=64
 GOVLST_MAX_BATCH_SIZE=5
 GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
 GOVLST_GAS_PRICE_BUFFER=30
+INCLUDE_GAS_COST=true
 LOG_LEVEL=info
+
+# Simulation
+TENDERLY_USE_SIMULATE=true
+TENDERLY_ACCESS_KEY=your_key
+TENDERLY_ACCOUNT_NAME=your_account
+TENDERLY_PROJECT_NAME=your_project
 ```
 
 ### Advanced Configuration
@@ -547,9 +575,32 @@ DEFENDER_PRIORITY_FEE=2000000000
 # Batch Processing
 GOVLST_MAX_BATCH_SIZE=5
 EXECUTOR_MAX_PENDING_TXS=10
+
+# Simulation Settings
+TENDERLY_USE_SIMULATE=true
+TENDERLY_SIMULATION_TIMEOUT=30000
 ```
 
-#### 2. Health Monitoring
+#### 2. Profitability Settings
+
+Configure profitability calculation parameters:
+
+```env
+# Base Settings
+GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
+INCLUDE_GAS_COST=true
+
+# Dynamic Scaling
+GOVLST_PROFIT_SCALING_FACTOR=0.05
+GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
+GOVLST_MIN_BATCH_SIZE=2
+
+# Simulation
+TENDERLY_USE_SIMULATE=true
+TENDERLY_GAS_PRICE_MULTIPLIER=1.1
+```
+
+#### 3. Health Monitoring
 
 Configure health checks and monitoring:
 
@@ -563,18 +614,7 @@ CIRCUIT_BREAKER_MIN_SUCCESS_RATE=0.8
 # Monitoring Thresholds
 EXECUTOR_MIN_BALANCE=0.1
 DEFENDER_MIN_BALANCE=0.01
-```
-
-#### 3. Database Optimization
-
-Optimize database performance:
-
-```env
-# Database Performance
-DATABASE_BATCH_TIMEOUT=3600
-DATABASE_MAX_QUEUE_SIZE=1000
-DATABASE_PRUNE_INTERVAL=86400
-DATABASE_MAX_ARCHIVE_AGE=604800
+SIMULATION_SUCCESS_RATE_THRESHOLD=0.9
 ```
 
 ### Component-Specific Configuration
@@ -600,9 +640,18 @@ MONITOR_HEALTH_CHECK_INTERVAL=60
 GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
 PROFITABILITY_CHECK_INTERVAL=300
 PROFITABILITY_MAX_BATCH_SIZE=50
+INCLUDE_GAS_COST=true
+
+# Dynamic Scaling
+GOVLST_PROFIT_SCALING_FACTOR=0.05
+GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
 
 # Price Feed
 COINMARKETCAP_API_KEY=your_api_key
+
+# Simulation
+TENDERLY_USE_SIMULATE=true
+TENDERLY_ACCESS_KEY=your_key
 ```
 
 #### 3. Executor Component
@@ -617,6 +666,11 @@ EXECUTOR_GAS_LIMIT_BUFFER=1.3
 EXECUTOR_QUEUE_POLL_INTERVAL=60
 EXECUTOR_RETRY_DELAY=60
 EXECUTOR_MAX_RETRIES=3
+
+# Simulation
+TENDERLY_USE_SIMULATE=true
+TENDERLY_SIMULATION_TIMEOUT=30000
+TENDERLY_GAS_PRICE_MULTIPLIER=1.1
 ```
 
 #### 4. GovLst Component
@@ -630,6 +684,11 @@ GOVLST_PAYOUT_AMOUNT=1000000000000000000
 # Profitability
 GOVLST_MIN_PROFIT_MARGIN_PERCENT=10
 GOVLST_GAS_PRICE_BUFFER=30
+INCLUDE_GAS_COST=true
+
+# Dynamic Scaling
+GOVLST_PROFIT_SCALING_FACTOR=0.05
+GOVLST_MAX_PROFIT_MARGIN_PERCENT=15
 ```
 
 ### Security Considerations
@@ -651,33 +710,38 @@ GOVLST_GAS_PRICE_BUFFER=30
    - Implement proper access controls
    - Regular backup procedures
 
+4. **Simulation Security**
+   - Use dedicated API keys for simulation
+   - Monitor simulation usage
+   - Implement fallback mechanisms
+
 ### Deployment Checklist
 
 1. **Pre-deployment**
-
    - [ ] Verify all contract addresses
    - [ ] Test RPC connection
    - [ ] Check executor balance
    - [ ] Validate database connection
    - [ ] Set appropriate gas limits
+   - [ ] Configure simulation settings
 
 2. **Deployment**
-
    - [ ] Set production environment variables
    - [ ] Enable health monitoring
    - [ ] Configure logging
    - [ ] Set up alerts
+   - [ ] Test simulation integration
 
 3. **Post-deployment**
    - [ ] Monitor initial transactions
    - [ ] Verify profitability calculations
    - [ ] Check component health status
    - [ ] Review logs for errors
+   - [ ] Monitor simulation success rate
 
 ### Maintenance Procedures
 
 1. **Regular Checks**
-
    ```bash
    # Check component health
    pnpm run health-check
@@ -687,10 +751,12 @@ GOVLST_GAS_PRICE_BUFFER=30
 
    # Monitor gas usage
    pnpm run gas-report
+
+   # Check simulation stats
+   pnpm run simulation-stats
    ```
 
 2. **Database Maintenance**
-
    ```bash
    # Prune old data
    pnpm run db:cleanup
@@ -700,13 +766,15 @@ GOVLST_GAS_PRICE_BUFFER=30
    ```
 
 3. **Performance Optimization**
-
    ```bash
    # Analyze transaction history
    pnpm run analyze-tx
 
    # Optimize gas settings
    pnpm run optimize-gas
+
+   # Review simulation performance
+   pnpm run analyze-simulations
    ```
 
 ## Configuration

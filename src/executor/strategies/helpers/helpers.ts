@@ -8,7 +8,7 @@ import {
   EthersTransactionReceipt,
   GovLstExecutorError,
   RelayerExecutorConfig,
-} from '../interfaces/types';
+} from '@/executor/interfaces/types';
 import {
   calculateGasLimit,
   extractQueueItemInfo,
@@ -26,7 +26,7 @@ import {
   TransactionValidationError,
   BaseError,
 } from '@/configuration/errors';
-import { RELAYER_EVENTS, RELAYER_PROFITABILITY } from './constants';
+import { RELAYER_EVENTS, RELAYER_PROFITABILITY } from '../constants';
 import { v4 as uuidv4 } from 'uuid';
 
 /**

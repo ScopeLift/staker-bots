@@ -1,6 +1,6 @@
 import { Logger } from '@/monitor/logging';
 import { Defender } from '@openzeppelin/defender-sdk';
-import { RelayerTransactionState } from '../interfaces/types';
+import { RelayerTransactionState } from '../../interfaces/types';
 import { ethers } from 'ethers';
 import { CONFIG } from '@/configuration';
 import { RelayerTransaction, RelayerTransactionPayload } from '@openzeppelin/defender-sdk-relay-signer-client';

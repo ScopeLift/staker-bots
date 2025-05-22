@@ -22,10 +22,7 @@ import {
   serializeProfitabilityCheck,
   getCurrentBlockNumberWithRetry,
   sleep,
-} from './strategies/helpers';
-
-// Basic sleep function implementation if not available in utils
-// const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+} from './strategies/helpers/helpers';
 
 /**
  * Supported executor types
@@ -120,7 +117,13 @@ export class ExecutorWrapper {
         errorLogger: this.errorLogger,
       };
 
-      this.executor = new RelayerExecutor(lstContract, provider, fullConfig);
+      // Create a dummy staker contract since we need one for the RelayerExecutor constructor
+      // This is a temporary fix - ideally the stakerContract should be passed to the constructor
+      const stakerContractAddress = lstContract.target as string;
+      const stakerContractAbi = ['function balanceOf(address) view returns (uint256)', 'function deposits(uint256) view returns (address, uint256, uint256, address, address)', 'function unclaimedReward(uint256) view returns (uint256)'];
+      const stakerContract = new ethers.Contract(stakerContractAddress, stakerContractAbi, provider);
+      
+      this.executor = new RelayerExecutor(lstContract, stakerContract, provider, fullConfig);
       this.lastDefenderValidationTimestamp = Date.now(); // Initialize timestamp
     } else {
       throw new ExecutorError(

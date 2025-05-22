@@ -1,5 +1,5 @@
 import { Logger } from '@/monitor/logging';
-import { QueuedTransaction } from '../interfaces/types';
+import { QueuedTransaction } from '@/executor/interfaces/types';
 import { SimulationService } from '@/simulation';
 import { SimulationTransaction } from '@/simulation/interfaces';
 import { ethers } from 'ethers';
@@ -34,26 +34,69 @@ export async function simulateTransaction(
   error?: string;
   optimizedGasLimit?: bigint;
 }> {
+  // Validate and potentially use fallback address
+  let finalSignerAddress = signerAddress;
+  if (!isValidAddress(signerAddress)) {
+    // Use the executor address from config as fallback
+    const fallbackAddress = CONFIG.executor.tipReceiver;
+    if (isValidAddress(fallbackAddress)) {
+      logger.info('Using fallback executor address for simulation', {
+        originalAddress: signerAddress,
+        fallbackAddress,
+        txId: tx.id,
+      });
+      finalSignerAddress = fallbackAddress;
+    } else {
+      const error = `Invalid signer address and no valid fallback available: ${signerAddress}`;
+      logger.error('Simulation validation failed', {
+        error,
+        txId: tx.id,
+        signerAddress,
+        fallbackAddress,
+      });
+      return { success: false, gasEstimate: null, error };
+    }
+  }
+
+  if (!isValidAddress(lstContract.target.toString())) {
+    const error = `Invalid contract address: ${lstContract.target.toString()}`;
+    logger.error('Simulation validation failed', {
+      error,
+      txId: tx.id,
+      contractAddress: lstContract.target.toString(),
+    });
+    return { success: false, gasEstimate: null, error };
+  }
+
   if (!simulationService) {
     logger.warn('Simulation service not available, skipping simulation', {
       txId: tx.id,
     });
-    return { success: true, gasEstimate: null }; // Default to success if service not available
+    return { success: true, gasEstimate: null };
   }
 
   try {
     // Get the contract data for the transaction
     const data = lstContract.interface.encodeFunctionData('claimAndDistributeReward', [
-      signerAddress,
+      finalSignerAddress,
       minExpectedReward,
       depositIds,
     ]);
 
     const contractAddress = lstContract.target.toString();
 
+    // Add debug logging
+    logger.debug('Preparing simulation transaction', {
+      txId: tx.id,
+      signerAddress,
+      contractAddress,
+      minExpectedReward: minExpectedReward.toString(),
+      depositCount: depositIds.length,
+    });
+
     // Create simulation transaction object
     const simulationTx: SimulationTransaction = {
-      from: signerAddress,
+      from: finalSignerAddress,
       to: contractAddress,
       data,
       gas: Number(gasLimit),
@@ -64,7 +107,7 @@ export async function simulateTransaction(
       txId: tx.id,
       depositIds: depositIds.map(String),
       minExpectedReward: minExpectedReward.toString(),
-      recipient: signerAddress,
+      recipient: finalSignerAddress,
       gasLimit: gasLimit.toString(),
     });
 
@@ -166,17 +209,23 @@ export async function simulateTransaction(
       gasEstimate,
     };
   } catch (error) {
-    logger.error('Transaction simulation error', {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
+    // Enhance error logging
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    
+    logger.error('Transaction simulation preparation failed', {
+      error: errorMessage,
+      stack: errorStack,
       txId: tx.id,
+      signerAddress,
+      contractAddress: lstContract.target.toString(),
+      depositCount: depositIds.length,
     });
 
-    // Return success true with null gasEstimate to allow fallback to normal gas estimation
     return {
-      success: true,
+      success: false,
       gasEstimate: null,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
     };
   }
 }
@@ -201,24 +250,62 @@ export async function estimateGasUsingSimulation(
   simulationService: SimulationService | null,
   logger: Logger,
 ): Promise<bigint | null> {
+  // Validate and potentially use fallback address
+  let finalRecipient = recipient;
+  if (!isValidAddress(recipient)) {
+    // Use the executor address from config as fallback
+    const fallbackAddress = CONFIG.executor.tipReceiver;
+    if (isValidAddress(fallbackAddress)) {
+      logger.info('Using fallback executor address for gas estimation', {
+        originalAddress: recipient,
+        fallbackAddress,
+        depositCount: depositIds.length,
+      });
+      finalRecipient = fallbackAddress;
+    } else {
+      logger.error('Gas estimation failed - invalid recipient address and no valid fallback', {
+        recipient,
+        fallbackAddress,
+        depositCount: depositIds.length,
+      });
+      return null;
+    }
+  }
+
+  if (!isValidAddress(lstContract.target.toString())) {
+    logger.error('Gas estimation failed - invalid contract address', {
+      contractAddress: lstContract.target.toString(),
+      depositCount: depositIds.length,
+    });
+    return null;
+  }
+
   if (!simulationService) {
-    return null; // Simulation service not available
+    return null;
   }
 
   try {
+    // Add debug logging
+    logger.debug('Preparing gas estimation', {
+      recipient,
+      contractAddress: lstContract.target.toString(),
+      reward: reward.toString(),
+      depositCount: depositIds.length,
+    });
+
     // Encode transaction data
     const data = lstContract.interface.encodeFunctionData('claimAndDistributeReward', [
-      recipient,
+      finalRecipient,
       reward,
       depositIds,
     ]);
 
     // Create simulation transaction with a high gas limit to ensure it doesn't fail due to gas
     const simulationTx: SimulationTransaction = {
-      from: recipient,
+      from: finalRecipient,
       to: lstContract.target.toString(),
       data,
-      gas: 5000000, // 10M gas as a high limit for estimation
+      gas: 5000000, // 5M gas as a high limit for estimation
       value: '0',
     };
 
@@ -234,14 +321,30 @@ export async function estimateGasUsingSimulation(
       depositCount: depositIds.length,
       rawEstimate: gasEstimation.gasUnits,
       bufferedEstimate: gasEstimate.toString(),
+      recipient: finalRecipient,
+      contractAddress: lstContract.target.toString(),
     });
 
     return gasEstimate;
   } catch (error) {
-    logger.warn('Failed to estimate gas using simulation', {
+    // Enhance error logging
+    logger.error('Gas estimation simulation failed', {
       error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
       depositCount: depositIds.length,
+      recipient: finalRecipient,
+      contractAddress: lstContract.target.toString(),
+      reward: reward.toString(),
     });
     return null;
+  }
+}
+
+// Add this helper at the top after imports
+function isValidAddress(address: string): boolean {
+  try {
+    return ethers.isAddress(address) && address !== ethers.ZeroAddress;
+  } catch {
+    return false;
   }
 } 

@@ -25,12 +25,10 @@ import {
 import {
   ContractMethodError,
   ExecutorError,
-  InsufficientBalanceError,
   TransactionValidationError,
 } from '@/configuration/errors';
 import { CONFIG } from '@/configuration';
 import { ErrorLogger, createErrorLogger } from '@/configuration/errorLogger';
-import { DefenderError, GasEstimationError } from '../interfaces/types';
 import { RELAYER_QUEUE } from './constants';
 import {
   cleanupQueueItems,
@@ -40,16 +38,72 @@ import {
   transferOutTips,
   processTransactionReceipt,
   processQueue,
-} from './helpers';
+} from './helpers/helpers';
 import { pollForReceipt, calculateGasLimit, calculateQueueStats } from '@/configuration/helpers';
-import { simulateTransaction, estimateGasUsingSimulation } from './simulation-helpers';
-import { handlePendingRelayerTransactions, cleanupStaleTransactions as cleanupStaleDefenderTransactions } from './defender-helpers';
-import { checkAndSwapTokensIfNeeded } from './token-swap-helpers';
+import { simulateTransaction, estimateGasUsingSimulation } from './helpers/simulation-helpers';
+import { handlePendingRelayerTransactions, cleanupStaleTransactions as cleanupStaleDefenderTransactions } from './helpers/defender-helpers';
+import { checkAndSwapTokensIfNeeded } from './helpers/token-swap-helpers';
 import { Defender } from '@openzeppelin/defender-sdk';
 import { GasCostEstimator } from '@/prices/GasCostEstimator';
 import { SimulationService } from '@/simulation';
-import { handleFlashbotsSimulationAndReplacement } from './defender-helpers';
-import { handleStartupCleanup } from './defender-helpers';
+import { handleStartupCleanup } from './helpers/defender-helpers';
+
+const AUTH_ERROR_MESSAGES = [
+  'Request failed with status code 403',
+  'User is not authorized to access this resource',
+  'Forbidden',
+];
+
+const isAuthError = (error: unknown): boolean => {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  return AUTH_ERROR_MESSAGES.some(msg => errorMessage.includes(msg));
+};
+
+// Add these constants at the top with other constants
+const MAX_AUTH_RETRIES = 3;
+const AUTH_RETRY_DELAY = 5000; // 5 seconds
+
+// Replace the withAuthErrorHandling function
+async function withAuthErrorHandling<T>(
+  operation: () => Promise<T>,
+  logger: Logger,
+  context: string,
+  retryCount = 0
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (isAuthError(error)) {
+      logger.info('Defender authentication error', {
+        context,
+        retryCount,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // If we haven't exceeded max retries, wait and try again
+      if (retryCount < MAX_AUTH_RETRIES) {
+        const delayMs = AUTH_RETRY_DELAY * Math.pow(2, retryCount);
+        logger.info(`Retrying operation in ${delayMs}ms...`, { context, retryAttempt: retryCount + 1 });
+        
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        return withAuthErrorHandling(operation, logger, context, retryCount + 1);
+      } else {
+        // Log and throw to trigger PM2 restart
+        logger.error('Max auth retries exceeded - crashing service for PM2 restart', {
+          context,
+          maxRetries: MAX_AUTH_RETRIES,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        throw error;
+      }
+    } else {
+      logger.error(`Error in ${context}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+}
 
 export class RelayerExecutor implements IExecutor {
   protected readonly logger: Logger;
@@ -59,6 +113,7 @@ export class RelayerExecutor implements IExecutor {
   protected readonly relaySigner: DefenderRelaySigner;
   protected isRunning: boolean;
   protected processingInterval: NodeJS.Timeout | null;
+  protected readonly config: RelayerExecutorConfig;
   protected lstContract: ethers.Contract & {
     claimAndDistributeReward(
       _recipient: string,
@@ -67,6 +122,11 @@ export class RelayerExecutor implements IExecutor {
       options?: ethers.Overrides,
     ): Promise<ethers.ContractTransactionResponse>;
     payoutAmount(): Promise<bigint>;
+  };
+  protected readonly stakerContract: ethers.Contract & {
+    balanceOf(account: string): Promise<bigint>;
+    deposits(depositId: bigint): Promise<[string, bigint, bigint, string, string]>;
+    unclaimedReward(depositId: bigint): Promise<bigint>;
   };
   protected db?: DatabaseWrapper;
   private cleanupInProgress: Set<string> = new Set();
@@ -82,16 +142,25 @@ export class RelayerExecutor implements IExecutor {
   // Add a property to store the defender client instance
   private defenderClient: Defender | null = null;
 
-  // Track replaced transactions by nonce
-  private replacedNonces: Set<number> = new Set();
-  private lastReplacementTime: number = 0;
-  private readonly REPLACEMENT_COOLDOWN = 30 * 60 * 1000; // 30 minutes
-
   constructor(
     lstContract: ethers.Contract,
+    stakerContract: ethers.Contract,
     provider: ethers.Provider,
-    protected readonly config: RelayerExecutorConfig,
+    config: RelayerExecutorConfig,
   ) {
+    // Validate config first
+    if (!config) {
+      const error = new ExecutorError('Config is required', {}, false);
+      throw error;
+    }
+
+    // Initialize config with defaults
+    this.config = {
+      ...config,
+      maxQueueSize: config.maxQueueSize ?? 100,
+    };
+
+    // Initialize class properties
     this.logger = new ConsoleLogger('info');
     this.errorLogger = createErrorLogger('RelayerExecutor');
     this.queue = new Map();
@@ -116,21 +185,16 @@ export class RelayerExecutor implements IExecutor {
       throw error;
     }
 
-    // Set default maxQueueSize if not provided
-    if (!this.config.maxQueueSize) {
-      this.config.maxQueueSize = 100; // Default value from constants
-    }
-
     try {
       // Initialize Defender Relay Provider and Signer
       this.relayProvider = new DefenderRelayProvider({
-        apiKey: this.config.apiKey,
-        apiSecret: this.config.apiSecret,
+        apiKey: config.apiKey,
+        apiSecret: config.apiSecret,
       });
       this.relaySigner = new DefenderRelaySigner(
         {
-          apiKey: this.config.apiKey,
-          apiSecret: this.config.apiSecret,
+          apiKey: config.apiKey,
+          apiSecret: config.apiSecret,
         },
         this.relayProvider,
         { speed: 'fast' },
@@ -142,6 +206,37 @@ export class RelayerExecutor implements IExecutor {
         lstContract.interface,
         this.relaySigner as unknown as ethers.Signer,
       ) as typeof this.lstContract;
+
+      // Initialize staker contract with signer
+      this.stakerContract = new ethers.Contract(
+        stakerContract.target as string,
+        stakerContract.interface,
+        this.relaySigner as unknown as ethers.Signer,
+      ) as typeof this.stakerContract;
+
+      // Validate LST contract
+      if (!this.lstContract.interface.hasFunction('claimAndDistributeReward')) {
+        const error = new ContractMethodError('claimAndDistributeReward');
+        this.errorLogger.error(error, { contractAddress: lstContract.target });
+        throw error;
+      }
+
+      // Add cleanup interval
+      this.cleanupInterval = setInterval(() => {
+        cleanupStaleDefenderTransactions(
+          this.pendingTransactions,
+          this.TX_TIMEOUT,
+          this.defenderClient,
+          CONFIG.govlst.address,
+          this.logger,
+        );
+      }, this.CLEANUP_INTERVAL);
+
+      // Instantiate a Defender SDK client for auxiliary relayer operations
+      this.defenderClient = new Defender({
+        apiKey: config.apiKey,
+        apiSecret: config.apiSecret,
+      });
     } catch (error) {
       const executorError = new ExecutorError('Failed to initialize Defender SDK', {
         error: error instanceof Error ? error.message : String(error),
@@ -169,10 +264,9 @@ export class RelayerExecutor implements IExecutor {
       );
     }, this.CLEANUP_INTERVAL);
 
-    // Instantiate a Defender SDK client for auxiliary relayer operations
     this.defenderClient = new Defender({
-      apiKey: this.config.apiKey,
-      apiSecret: this.config.apiSecret,
+      apiKey: config.apiKey,
+      apiSecret: config.apiSecret,
     });
   }
 
@@ -375,7 +469,6 @@ export class RelayerExecutor implements IExecutor {
       return;
     }
     this.processingInterval = setInterval(() => {
-      // Run the queue processor
       processQueue(
         true,
         this.isRunning,
@@ -400,13 +493,17 @@ export class RelayerExecutor implements IExecutor {
   protected async executeTransaction(tx: QueuedTransaction): Promise<void> {
     // STEP 1: Before doing anything else, check the relayer for on-chain pending transactions.
     try {
-      const pendingHandled = await handlePendingRelayerTransactions(
-        this.defenderClient,
+      const pendingHandled = await withAuthErrorHandling(
+        () => handlePendingRelayerTransactions(
+          this.defenderClient,
+          this.logger,
+          CONFIG.govlst.address,
+        ),
         this.logger,
-        CONFIG.govlst.address,
+        'handlePendingRelayerTransactions'
       );
+      
       if (pendingHandled) {
-        // We already submitted replacement transactions – exit early to avoid spamming the mempool.
         this.logger.info('Exiting executeTransaction early – pending transactions were replaced');
         return;
       }
@@ -434,7 +531,6 @@ export class RelayerExecutor implements IExecutor {
 
     // Initialize transaction tracking data
     const txStartTime = new Date();
-    let transactionDetailsId: string | undefined;
 
     try {
       if (!this.lstContract) {
@@ -446,9 +542,7 @@ export class RelayerExecutor implements IExecutor {
         throw error;
       }
 
-      // Check for existence of REWARD_TOKEN (either as a property or a function)
       try {
-        // Test if we can access REWARD_TOKEN (without calling it yet)
         const hasRewardToken = typeof this.lstContract.REWARD_TOKEN !== 'undefined';
         if (!hasRewardToken) {
           const error = new ExecutorError('LST contract missing REWARD_TOKEN property or method', {}, false);
@@ -527,7 +621,6 @@ export class RelayerExecutor implements IExecutor {
       // Get reward token address - first try contract, then fallback to config
       let rewardTokenAddress: string;
       try {
-        // Check if REWARD_TOKEN is a function (most likely) or a property
         if (typeof this.lstContract.REWARD_TOKEN === 'function') {
           // Call it as a function
           const contractToken = await this.lstContract.REWARD_TOKEN();
@@ -542,12 +635,7 @@ export class RelayerExecutor implements IExecutor {
           throw new Error('REWARD_TOKEN not found on contract');
         }
 
-        this.logger.info('Retrieved reward token address', {
-          address: rewardTokenAddress,
-          contractAddress: this.lstContract.target.toString(),
-        });
       } catch (error) {
-        // Fallback to config value
         rewardTokenAddress = CONFIG.profitability.rewardTokenAddress;
         if (!rewardTokenAddress) {
           throw new Error('No reward token address available in contract or config');
@@ -586,11 +674,6 @@ export class RelayerExecutor implements IExecutor {
           }
 
           const rawPayoutAmount = await this.lstContract.payoutAmount();
-          this.logger.info('Raw payout amount details:', {
-            value: rawPayoutAmount,
-            type: typeof rawPayoutAmount,
-            stringified: String(rawPayoutAmount),
-          });
 
           payoutAmount = BigInt(rawPayoutAmount);
           this.logger.info('Converted payout amount:', {
@@ -700,7 +783,6 @@ export class RelayerExecutor implements IExecutor {
       // Get the payout amount from contract before executing claim
       let payoutAmount: bigint = BigInt(0);
       try {
-        // Verify the contract has the payoutAmount method
         if (typeof this.lstContract.payoutAmount !== 'function') {
           const error = new ContractMethodError('getPayoutAmount');
           this.errorLogger.error(error, {
@@ -712,11 +794,6 @@ export class RelayerExecutor implements IExecutor {
         }
 
         const rawPayoutAmount = await this.lstContract.payoutAmount();
-        this.logger.info('Raw payout amount details:', {
-          value: rawPayoutAmount,
-          type: typeof rawPayoutAmount,
-          stringified: String(rawPayoutAmount),
-        });
 
         payoutAmount = rawPayoutAmount;
         this.logger.info('Converted payout amount:', {
@@ -728,188 +805,38 @@ export class RelayerExecutor implements IExecutor {
         const depositIds = tx.depositIds;
         const gasEstimate = tx.profitability.estimates.gas_estimate;
 
-        // Significantly increased base gas limit (2x the previous minimum)
+        // Use sensible gas limit based on deposit count
         const baseGasLimit = gasEstimate < 300000n ? 1200000n : gasEstimate * 2n;
-
-        // Calculate gas limit with deposit count scaling
         const calculatedGasLimit = calculateGasLimit(baseGasLimit, depositIds.length, this.logger);
         
-        // Calculate real gas cost in reward tokens
-        let gasCost: bigint;
-
-        try {
-          // Use the GasCostEstimator to get a real gas cost estimate based on calculated gas limit
-          gasCost = await this.gasCostEstimator.estimateGasCostInRewardToken(
-            this.relayProvider as unknown as ethers.Provider,
-            calculatedGasLimit,
-          );
-
-          // Simple safety check - if gas cost is unreasonable, use a flat value
-          if (
-            gasCost < ethers.parseUnits(CONFIG.executor.minGasCost, 18) ||
-            gasCost > ethers.parseUnits(CONFIG.executor.maxGasCost, 18)
-          ) {
-            this.logger.warn('Gas cost outside reasonable range, using flat default', {
-              calculatedGasCost: ethers.formatUnits(gasCost, 18),
-              usingDefaultCost: CONFIG.executor.avgGasCost,
-              calculatedGasLimit: calculatedGasLimit.toString(),
-            });
-            gasCost = ethers.parseUnits(CONFIG.executor.avgGasCost, 18); // Flat avgGasCost tokens
-          }
-
-          this.logger.info('Calculated gas cost in reward tokens:', {
-            gasCost: gasCost.toString(),
-            gasLimit: calculatedGasLimit.toString(),
+        // Get the pre-calculated minExpectedReward threshold from profitability module
+        let finalThreshold: bigint;
+        
+        if (tx.profitability.estimates.minExpectedReward) {
+          finalThreshold = tx.profitability.estimates.minExpectedReward;
+          this.logger.info('Using pre-calculated minimum expected reward', {
+            minExpectedReward: finalThreshold.toString(),
+            depositCount: depositIds.length,
           });
-        } catch (error) {
-          this.logger.error('Failed to estimate gas cost in reward tokens', {
-            error: error instanceof Error ? error.message : String(error),
+        } else {
+          // Fallback to a safe value if minExpectedReward is missing (should never happen)
+          this.logger.error('Missing minExpectedReward from profitability - using safe fallback', { 
+            depositCount: depositIds.length 
           });
-
-          // Use flat default when estimation fails
-          gasCost = ethers.parseUnits(CONFIG.executor.avgGasCost, 18); // Flat avgGasCost tokens
-
-          this.logger.info('Using default gas cost:', {
-            gasCost: gasCost.toString(),
-            gasLimit: calculatedGasLimit.toString(),
-          });
+          // Use payout + 20% as a safe fallback
+          finalThreshold = payoutAmount + (payoutAmount * 20n) / 100n;
         }
-
-        // Get profit margin directly from CONFIG to ensure we use the environment variable value
-        const profitMargin = +CONFIG.profitability.minProfitMargin;
-
-        if (typeof profitMargin !== 'number' || isNaN(profitMargin) || profitMargin <= 0) {
-          const error = new Error(`Invalid profit margin value: ${profitMargin}. Must be a positive number.`);
-          this.errorLogger.error(error, {
-            stage: 'executeTransaction_profitMargin',
-            txId: tx.id,
-            profitMargin,
-            envValue: process.env.PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT,
-          });
-          throw error;
-        }
-
-        // Scale profit margin based on deposit count, but NEVER go below configured minimum
-        // Base rate is the configured minimum profit margin
-        const depositCount = BigInt(depositIds.length);
-        // Convert to basis points (0.05% = 5 basis points per deposit, max 20 basis points)
-        const depositScalingBasisPoints = BigInt(Math.min(20, Number(depositCount) * 5));
-
-        // Start with the minimum profit margin in basis points
-        const minProfitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
-        // Add the scaling factor (cap at 1500 basis points = 15%)
-        const scaledProfitMarginBasisPoints = BigInt(
-          Math.min(1500, Number(minProfitMarginBasisPoints + depositScalingBasisPoints)),
-        );
-
-        // Already in basis points (100 = 1%)
-        const profitMarginBasisPoints = scaledProfitMarginBasisPoints;
-
-        // Simple threshold calculation - always include gas cost if enabled, apply profit margin to payout
-        const profitMarginAmount = (payoutAmount * profitMarginBasisPoints) / 10000n;
-        const finalThreshold =
-          payoutAmount +
-          (CONFIG.profitability.includeGasCost ? gasCost : 0n) +
-          profitMarginAmount;
-
-        // Get current network conditions
-        let maxFeePerGas: bigint | undefined;
-        let maxPriorityFeePerGas: bigint | undefined;
-
-        try {
-          const feeData = await this.relayProvider.getFeeData();
-          maxFeePerGas = feeData.maxFeePerGas
-            ? BigInt(feeData.maxFeePerGas.toString())
-            : undefined;
-          maxPriorityFeePerGas = feeData.maxPriorityFeePerGas
-            ? BigInt(feeData.maxPriorityFeePerGas.toString())
-            : undefined;
-
-          // Apply slight boost to gas values for reliable inclusion
-          if (maxFeePerGas) {
-            maxFeePerGas = (maxFeePerGas * 125n) / 100n;
-          }
-
-          if (maxPriorityFeePerGas) {
-            maxPriorityFeePerGas = (maxPriorityFeePerGas * 125n) / 100n;
-          }
-
-          // NEW: Prefer the higher of network fee data or any configured override
-          const configuredMaxFeePerGas = this.config.gasPolicy?.maxFeePerGas;
-          const configuredMaxPriorityFeePerGas = this.config.gasPolicy?.maxPriorityFeePerGas;
-
-          const finalMaxFeePerGas =
-            configuredMaxFeePerGas && maxFeePerGas
-              ? maxFeePerGas > configuredMaxFeePerGas
-                ? maxFeePerGas
-                : configuredMaxFeePerGas
-              : configuredMaxFeePerGas || maxFeePerGas;
-
-          const finalMaxPriorityFeePerGas =
-            configuredMaxPriorityFeePerGas && maxPriorityFeePerGas
-              ? maxPriorityFeePerGas > configuredMaxPriorityFeePerGas
-                ? maxPriorityFeePerGas
-                : configuredMaxPriorityFeePerGas
-              : configuredMaxPriorityFeePerGas || maxPriorityFeePerGas;
-
-          maxFeePerGas = finalMaxFeePerGas;
-          maxPriorityFeePerGas = finalMaxPriorityFeePerGas;
-
-          this.logger.info('Calculated final gas parameters', {
-            txId: tx.id,
-            finalMaxFeePerGas: finalMaxFeePerGas?.toString() || 'undefined',
-            finalMaxPriorityFeePerGas: finalMaxPriorityFeePerGas?.toString() || 'undefined',
-            configuredMaxFeePerGas: configuredMaxFeePerGas?.toString() || 'undefined',
-            configuredMaxPriorityFeePerGas: configuredMaxPriorityFeePerGas?.toString() || 'undefined',
-          });
-        } catch (error) {
-          this.logger.error('Failed to get fee data', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-          this.errorLogger.error(
-            error instanceof Error ? error : new Error(`Failed to get fee data: ${String(error)}`),
-            {
-              stage: 'executeTransaction_feeData',
-              txId: tx.id,
-            },
-          );
-        }
-
-        // Get the relayer's address for reward recipient
+        
+        // Get network gas parameters
+        const { maxFeePerGas, maxPriorityFeePerGas } = await this.getGasParameters();
+        
+        // Get signer address for reward recipient
         const signerAddress = await this.relaySigner.getAddress();
-
-        // Verify the contract has the claimAndDistributeReward method
-        if (typeof this.lstContract.claimAndDistributeReward !== 'function') {
-          const error = new ContractMethodError('claimAndDistributeReward');
-          this.errorLogger.error(error, {
-            stage: 'executeTransaction_contractMethod',
-            txId: tx.id,
-            contractAddress: this.lstContract.target?.toString(),
-          });
-          throw error;
-        }
-
-        // Log transaction parameters before execution
-        this.logger.info('Executing claimAndDistributeReward', {
-          recipient: signerAddress,
-          minExpectedReward: finalThreshold.toString(),
-          depositIds: depositIds.map((id) => id.toString()),
-          gasEstimate: tx.profitability.estimates.gas_estimate.toString(),
-          calculatedGasLimit: calculatedGasLimit.toString(),
-          maxFeePerGas: maxFeePerGas?.toString() || 'undefined',
-          maxPriorityFeePerGas: maxPriorityFeePerGas?.toString() || 'undefined',
-        });
-
-        // Store depositIds in tx object for later use in receipt processing
-        tx.metadata = {
-          queueItemId,
-          depositIds: queueDepositIds,
-        };
-
-        // Run transaction simulation before submitting to chain
-        // This will validate if the transaction will likely succeed and provide optimal gas estimates
-        let simulationGasLimit: bigint | null = null;
+        
+        // Run simulation to validate transaction will succeed
         try {
+          let receipt: EthersTransactionReceipt | null = null;
+          
           const simulationResult = await simulateTransaction(
             tx,
             depositIds,
@@ -920,548 +847,59 @@ export class RelayerExecutor implements IExecutor {
             this.simulationService,
             this.logger,
           );
-
+          
+          // Handle simulation failure - don't proceed with transaction
           if (!simulationResult.success) {
-            // If simulation explicitly failed (not due to service error), reject the transaction
-            this.logger.error('Transaction simulation explicitly failed, removing from queue', {
+            this.logger.error('Transaction simulation failed, removing from queue', {
               txId: tx.id,
               error: simulationResult.error,
             });
-            this.errorLogger.error(
-              new TransactionValidationError(`Transaction simulation failed: ${simulationResult.error}`, {
-                depositIds: depositIds.map(String),
-              }),
-              {
-                stage: 'executeTransaction_simulation',
-                txId: tx.id,
-                error: simulationResult.error,
-              },
-            );
-
-            // Update transaction status to failed
+            
+            // Update transaction status and clean up
             tx.status = TransactionStatus.FAILED;
             tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
             this.queue.set(tx.id, tx);
-
-            // Cleanup the queue item
             await cleanupQueueItems(tx, '', this.db, this.logger, this.errorLogger);
-
-            // Remove from queue and exit
             this.queue.delete(tx.id);
             return;
           }
-
-          // If simulation succeeded and provided gas estimate, use it if it's better
-          if (simulationResult.gasEstimate) {
-            this.logger.info('Using gas limit from simulation', {
-              txId: tx.id,
-              originalLimit: calculatedGasLimit.toString(),
-              simulationEstimate: simulationResult.gasEstimate.toString(),
-              optimizedLimit: simulationResult.optimizedGasLimit?.toString() || 'N/A',
-            });
-
-            // If optimized gas limit is available and higher than our calculated limit, use it
-            if (simulationResult.optimizedGasLimit && simulationResult.optimizedGasLimit > calculatedGasLimit) {
-              simulationGasLimit = simulationResult.optimizedGasLimit;
-            } else if (simulationResult.gasEstimate) {
-              // Otherwise use the gas estimate with buffer
-              simulationGasLimit = simulationResult.gasEstimate;
-            }
-          }
-        } catch (simError) {
-          // If simulation fails with an exception, log but continue with original gas parameters
-          this.logger.warn('Transaction simulation error, continuing with standard parameters', {
-            error: simError instanceof Error ? simError.message : String(simError),
-            txId: tx.id,
-          });
-          this.errorLogger.warn(
-            simError instanceof Error ? simError : new Error(`Simulation error: ${String(simError)}`),
-            {
-              stage: 'executeTransaction_simulationError',
-              txId: tx.id,
-            },
-          );
-
-          // Instead of continuing, treat simulation errors as a failure
-          this.logger.error('Treating simulation error as a failure, removing from queue', {
-            txId: tx.id,
-            error: simError instanceof Error ? simError.message : String(simError),
-          });
-
-          // Update transaction status to failed
-          tx.status = TransactionStatus.FAILED;
-          tx.error = new Error(`Simulation error: ${simError instanceof Error ? simError.message : String(simError)}`);
-          this.queue.set(tx.id, tx);
-
-          // Cleanup the queue item
-          await cleanupQueueItems(tx, '', this.db, this.logger, this.errorLogger);
-
-          // Remove from queue and exit
-          this.queue.delete(tx.id);
-          return;
-        }
-
-        // Select the final gas limit to use
-        const finalSimulatedGasLimit = simulationGasLimit || calculatedGasLimit;
-
-        // Use the limit from simulation if available
-        if (simulationGasLimit && simulationGasLimit !== calculatedGasLimit) {
-          this.logger.info('Using gas limit from simulation', {
-            txId: tx.id,
-            originalLimit: calculatedGasLimit.toString(),
-            simulationLimit: simulationGasLimit.toString(),
-            finalLimit: finalSimulatedGasLimit.toString(),
-          });
-        }
-
-        // Save transaction details before execution
-        if (this.db) {
-          try {
-            // Get network information
-            const chainId = await this.lstContract.runner?.provider
-              ?.getNetwork()
-              .then((network) => network.chainId.toString())
-              .catch(() => 'unknown');
-
-            // Create transaction details record
-            const txDetails: Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'> = {
-              transaction_id: tx.id,
-              status: TransactionDetailsStatus.PENDING,
-              deposit_ids: tx.depositIds.map(String),
-              recipient_address: signerAddress,
-              min_expected_reward: finalThreshold.toString(),
-              payout_amount: payoutAmount.toString(),
-              profit_margin_amount: profitMarginAmount.toString(),
-              gas_cost_estimate: gasCost.toString(),
-              gas_limit: finalSimulatedGasLimit.toString(),
-              expected_profit: tx.profitability.estimates.expected_profit.toString(),
-              contract_address: this.lstContract.target.toString(),
-              network_id: chainId || '1', // Default to mainnet if unknown
-              tx_queue_item_id: queueItemId,
-              start_time: txStartTime.toISOString(),
-              max_fee_per_gas: (this.config.gasPolicy?.maxFeePerGas || maxFeePerGas)?.toString(),
-              max_priority_fee_per_gas: (this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas)?.toString(),
-              reward_token_price_usd: undefined,
-              eth_price_usd: undefined,
-            };
-
-            const savedDetails = await this.db.createTransactionDetails(txDetails);
-            transactionDetailsId = savedDetails.id;
-
-            this.logger.info('Created transaction details record', {
-              txId: tx.id,
-              transactionDetailsId: transactionDetailsId,
-            });
-          } catch (dbError) {
-            // Log but continue with transaction execution
-            this.logger.error('Failed to create transaction details record', {
-              error: dbError instanceof Error ? dbError.message : String(dbError),
-              txId: tx.id,
-            });
-            this.errorLogger.error(
-              dbError instanceof Error ? dbError : new Error(`Failed to create transaction details: ${String(dbError)}`),
-              {
-                stage: 'executeTransaction_saveTxDetails',
-                txId: tx.id,
-              },
-            );
-          }
-        }
-
-        // Execute via contract with signer with increased gas parameters
-        this.logger.info('Attempting claimAndDistributeReward with params:', {
-          recipient: signerAddress,
-          minExpectedReward: finalThreshold.toString(),
-          depositIds: depositIds.map(String),
-          gasLimit: finalSimulatedGasLimit.toString(),
-          maxFeePerGas: (
-            this.config.gasPolicy?.maxFeePerGas || maxFeePerGas
-          )?.toString(),
-          maxPriorityFeePerGas: (
-            this.config.gasPolicy?.maxPriorityFeePerGas || maxPriorityFeePerGas
-          )?.toString(),
-          contractAddress: this.lstContract.target.toString(),
-          payoutAmount: payoutAmount.toString(),
-          profitMarginAmount: profitMarginAmount.toString(),
-          gasCost: gasCost.toString(),
-        });
-
-        let response = await this.lstContract
-          .claimAndDistributeReward(signerAddress, finalThreshold, depositIds, {
-            gasLimit: finalSimulatedGasLimit,
-            maxFeePerGas,
+          
+          // Use simulation gas estimate if available
+          const finalGasLimit = simulationResult.optimizedGasLimit || 
+                               simulationResult.gasEstimate || 
+                               calculatedGasLimit;
+          
+          // Create database record for the transaction
+          const transactionDetailsId = await this.saveTransactionDetails(
+            tx, 
+            signerAddress, 
+            finalThreshold, 
+            payoutAmount,
+            finalGasLimit, 
+            maxFeePerGas, 
             maxPriorityFeePerGas,
-            isPrivate: this.config.isPrivate,
-            privateMode: this.config.isPrivate ? 'flashbots-fast' : undefined,
-            // Always use fast mode for Flashbots if private transactions are enabled
-            flashbots: this.config.isPrivate ? 'fast' : undefined,
-            validForSeconds: 900,
-            validUntil: new Date(Date.now() + 1000 * 60 * 15).toISOString(),
-          } as DefenderTransactionRequest)
-          .catch(async (error: Error) => {
-            // Enhanced error handling for Defender 400 errors
-            const defenderError = error as DefenderError;
-            const isDefender400Error =
-              defenderError.message?.includes('status code 400') ||
-              defenderError.response?.status === 400;
-
-            if (isDefender400Error) {
-              // Get current network state for diagnostics
-              const [networkGasPrice, blockNumber, balance] = await Promise.all([
-                this.relayProvider.getFeeData(),
-                this.relayProvider.getBlockNumber(),
-                this.relayProvider.getBalance(signerAddress),
-              ]).catch((e) => {
-                this.logger.error('Failed to get network diagnostics:', {
-                  error: e,
-                });
-                this.errorLogger.error(
-                  e instanceof Error ? e : new Error(`Failed to get network diagnostics: ${String(e)}`),
-                  {
-                    stage: 'executeTransaction_networkDiagnostics',
-                    txId: tx.id,
-                  },
-                );
-                return [null, null, null];
-              });
-
-              // Log detailed diagnostic information
-              this.logger.error('Defender Relayer 400 Error Details:', {
-                error: {
-                  message: defenderError.message,
-                  response: {
-                    status: defenderError.response?.status,
-                    statusText: defenderError.response?.statusText,
-                    data: defenderError.response?.data,
-                  },
-                  request: {
-                    method: defenderError.config?.method,
-                    url: defenderError.config?.url,
-                    data: defenderError.config?.data,
-                  },
-                },
-                transaction: {
-                  recipient: signerAddress,
-                  minExpectedReward: finalThreshold.toString(),
-                  depositIds: depositIds.map(String),
-                  gasLimit: finalSimulatedGasLimit.toString(),
-                  maxFeePerGas: maxFeePerGas?.toString(),
-                  maxPriorityFeePerGas: maxPriorityFeePerGas?.toString(),
-                },
-                networkState: {
-                  currentBlock: blockNumber,
-                  balance: balance?.toString(),
-                  networkGasPrice: {
-                    maxFeePerGas: networkGasPrice?.maxFeePerGas?.toString(),
-                    maxPriorityFeePerGas: networkGasPrice?.maxPriorityFeePerGas?.toString(),
-                    gasPrice: networkGasPrice?.gasPrice?.toString(),
-                  },
-                },
-                relayerConfig: {
-                  address: this.config.address,
-                  minBalance: this.config.minBalance.toString(),
-                  maxPendingTransactions: this.config.maxPendingTransactions,
-                  gasPolicyConfig: this.config.gasPolicy,
-                },
-              });
-              this.errorLogger.error(new Error(`Defender Relayer 400 Error: ${defenderError.message}`), {
-                stage: 'executeTransaction_defender400',
-                txId: tx.id,
-                responseStatus: defenderError.response?.status,
-                responseData: JSON.stringify(defenderError.response?.data),
-                currentBlock: blockNumber,
-                balance: balance?.toString(),
-                networkGasPrice: JSON.stringify({
-                  maxFeePerGas: networkGasPrice?.maxFeePerGas?.toString(),
-                  maxPriorityFeePerGas: networkGasPrice?.maxPriorityFeePerGas?.toString(),
-                  gasPrice: networkGasPrice?.gasPrice?.toString(),
-                }),
-              });
-
-              // Check specific conditions that might cause 400 errors
-              if (balance) {
-                const balanceBigInt = BigInt(balance.toString());
-                if (balanceBigInt < this.config.minBalance) {
-                  const insufficientBalanceError = new InsufficientBalanceError(balanceBigInt, this.config.minBalance);
-                  this.errorLogger.error(insufficientBalanceError, {
-                    stage: 'executeTransaction_insufficientBalance',
-                    txId: tx.id,
-                    balance: balanceBigInt.toString(),
-                    minBalance: this.config.minBalance.toString(),
-                  });
-                  throw insufficientBalanceError;
-                }
-              }
-
-              // Add gas estimation validation
-              try {
-                // Try to estimate gas for the transaction
-                const estimatedGas = await this.lstContract.runner?.provider?.estimateGas({
-                  to: this.lstContract.target,
-                  data: this.lstContract.interface.encodeFunctionData('claimAndDistributeReward', [
-                    signerAddress,
-                    finalThreshold,
-                    depositIds,
-                  ]),
-                  maxFeePerGas: maxFeePerGas,
-                  maxPriorityFeePerGas: maxPriorityFeePerGas,
-                }).catch((estimateError: GasEstimationError) => {
-                  this.logger.error('Gas estimation failed:', {
-                    error: estimateError,
-                    message: estimateError.message,
-                    data: estimateError.data,
-                  });
-                  this.errorLogger.error(
-                    estimateError instanceof Error ? estimateError : new Error(`Gas estimation failed: ${String(estimateError)}`),
-                    {
-                      stage: 'executeTransaction_gasEstimation',
-                      txId: tx.id,
-                      data: JSON.stringify(estimateError.data),
-                    },
-                  );
-                  return null;
-                });
-
-                if (estimatedGas) {
-                  const estimatedGasBigInt = BigInt(estimatedGas.toString());
-                  if (estimatedGasBigInt > finalSimulatedGasLimit) {
-                    // If estimated gas exceeds our limit, increase by 30% over estimated gas
-                    const newGasLimit = (estimatedGasBigInt * 130n) / 100n;
-                    this.logger.info('Increasing gas limit based on estimation', {
-                      originalGasLimit: finalSimulatedGasLimit.toString(),
-                      estimatedGas: estimatedGasBigInt.toString(),
-                      newGasLimit: newGasLimit.toString(),
-                    });
-                    simulationGasLimit = newGasLimit;
-                  }
-                }
-              } catch (gasError) {
-                this.logger.error('Gas estimation error:', {
-                  error: gasError instanceof Error ? gasError.message : String(gasError),
-                  transaction: {
-                    recipient: signerAddress,
-                    minExpectedReward: finalThreshold.toString(),
-                    depositIds: depositIds.map(String),
-                  },
-                });
-                this.errorLogger.error(
-                  gasError instanceof Error ? gasError : new Error(`Gas estimation error: ${String(gasError)}`),
-                  {
-                    stage: 'executeTransaction_gasError',
-                    txId: tx.id,
-                    recipient: signerAddress,
-                    depositIds: depositIds.map(String).join(','),
-                  },
-                );
-              }
-
-              if (networkGasPrice?.maxFeePerGas && maxFeePerGas) {
-                const networkMaxFee = BigInt(networkGasPrice.maxFeePerGas.toString());
-                if (networkMaxFee > maxFeePerGas) {
-                  // If network gas price exceeds our configured max, use a 25% buffer on network price
-                  maxFeePerGas = (networkMaxFee * 125n) / 100n;
-                  this.logger.info('Adjusting maxFeePerGas to current network conditions', {
-                    networkFee: networkMaxFee.toString(),
-                    adjustedFee: maxFeePerGas.toString(),
-                  });
-                }
-              }
-
-              // Check if the error response contains specific Defender error codes
-              const defenderErrorData = defenderError.response?.data?.error;
-              if (defenderErrorData) {
-                switch (defenderErrorData.code) {
-                  case 'NONCE_TOO_LOW': {
-                    const nonceError = new ExecutorError('Nonce too low - transaction would be replaced', {
-                      suggestedNonce: defenderErrorData.suggestedNonce,
-                    }, true);
-                    this.errorLogger.error(nonceError, {
-                      stage: 'executeTransaction_nonceTooLow',
-                      txId: tx.id,
-                      suggestedNonce: defenderErrorData.suggestedNonce,
-                    });
-                    throw nonceError;
-                  }
-                  case 'INSUFFICIENT_FUNDS': {
-                    const fundsError = new InsufficientBalanceError(BigInt(balance?.toString() || '0'), this.config.minBalance);
-                    this.errorLogger.error(fundsError, {
-                      stage: 'executeTransaction_insufficientFunds',
-                      txId: tx.id,
-                      balance: balance?.toString() || '0',
-                      minBalance: this.config.minBalance.toString(),
-                    });
-                    throw fundsError;
-                  }
-                  case 'GAS_LIMIT_TOO_LOW': {
-                    // If suggested gas limit is provided, use it with a buffer
-                    if (defenderErrorData.suggestedGasLimit) {
-                      const suggestedGasLimit = BigInt(String(defenderErrorData.suggestedGasLimit));
-                      const newGasLimit = (suggestedGasLimit * 125n) / 100n; // Add 25% buffer
-
-                      this.logger.info('Adjusting gas limit based on suggested value', {
-                        suggestedGasLimit: suggestedGasLimit.toString(),
-                        newGasLimit: newGasLimit.toString(),
-                      });
-
-                      // Retry with new gas limit
-                      return this.lstContract.claimAndDistributeReward(signerAddress, finalThreshold, depositIds, {
-                        gasLimit: newGasLimit,
-                        maxFeePerGas,
-                        maxPriorityFeePerGas,
-                        isPrivate: this.config.isPrivate,
-                      } as DefenderTransactionRequest);
-                    }
-
-                    const gasLimitError = new ExecutorError('Gas limit too low for complex transaction', {
-                      providedGasLimit: finalSimulatedGasLimit.toString(),
-                      suggestedGasLimit: defenderErrorData.suggestedGasLimit,
-                    }, true);
-                    this.errorLogger.error(gasLimitError, {
-                      stage: 'executeTransaction_gasLimitTooLow',
-                      txId: tx.id,
-                      providedGasLimit: finalSimulatedGasLimit.toString(),
-                      suggestedGasLimit: defenderErrorData.suggestedGasLimit,
-                    });
-                    throw gasLimitError;
-                  }
-                  default: {
-                    const defaultError = new ExecutorError(`Defender API Error: ${defenderErrorData.message}`, {
-                      code: defenderErrorData.code,
-                      details: defenderErrorData,
-                    }, false);
-                    this.errorLogger.error(defaultError, {
-                      stage: 'executeTransaction_defenderApiError',
-                      txId: tx.id,
-                      errorCode: defenderErrorData.code,
-                    });
-                    throw defaultError;
-                  }
-                }
-              }
-
-              // Check if the error message contains "out of gas" or "reentrancy sentry"
-              const errorMessage = defenderError.message || '';
-              if (
-                errorMessage.includes('out of gas') ||
-                errorMessage.includes('reentrancy sentry') ||
-                errorMessage.includes('exceeds block gas limit')
-              ) {
-                this.logger.error('Gas limit too low for reentrancy protection', {
-                  error: errorMessage,
-                  currentGasLimit: finalSimulatedGasLimit.toString(),
-                });
-
-                // Double the gas limit and retry
-                const newGasLimit = finalSimulatedGasLimit * 2n;
-                this.logger.info('Doubling gas limit for reentrancy protection', {
-                  originalGasLimit: finalSimulatedGasLimit.toString(),
-                  newGasLimit: newGasLimit.toString(),
-                });
-
-                // Retry with doubled gas limit
-                return this.lstContract.claimAndDistributeReward(signerAddress, finalThreshold, depositIds, {
-                  gasLimit: newGasLimit,
-                  maxFeePerGas,
-                  maxPriorityFeePerGas,
-                  isPrivate: this.config.isPrivate,
-                } as DefenderTransactionRequest);
-              }
-            }
-
-            // If not a 400 error or no specific error code, throw the original error
-            this.errorLogger.error(
-              error instanceof Error ? error : new Error(`Transaction submission error: ${String(error)}`),
-              {
-                stage: 'executeTransaction_submissionError',
-                txId: tx.id,
-                depositIds: depositIds.map(String).join(','),
-              },
-            );
-            throw error;
-          });
-
-        this.logger.info('Transaction submitted:', {
-          hash: response.hash,
-          nonce: response.nonce,
-          gasLimit: response.gasLimit.toString(),
-          maxFeePerGas: response.maxFeePerGas?.toString(),
-          maxPriorityFeePerGas: response.maxPriorityFeePerGas?.toString(),
-        });
-
-        // Initialize receipt variable
-        let receipt: EthersTransactionReceipt | null = null;
-
-        // NEW: Check Flashbots simulation status and handle replacement if needed
-        try {
-          const { isIncluded, replacementHash } = await handleFlashbotsSimulationAndReplacement(
-            response.hash,
-            this.defenderClient,
-            rewardTokenAddress,
-            CONFIG.govlst.address,
-            this.logger,
+            txStartTime
           );
-
-          if (!isIncluded) {
-            if (replacementHash) {
-              this.logger.info('Original transaction was cancelled and replaced:', {
-                originalHash: response.hash,
-                replacementHash,
-              });
-              
-              // Instead of modifying response, we'll track the replacement hash separately
-              const replacementResponse = await this.defenderClient?.relaySigner.getTransaction(replacementHash);
-              if (replacementResponse) {
-                // Update our tracking with the replacement transaction details
-                this.pendingTransactions.set(tx.id, {
-                  id: tx.id,
-                  transactionId: replacementHash,
-                  hash: replacementHash,
-                  submittedAt: Date.now(),
-                  lastChecked: Date.now(),
-                  retryCount: 0,
-                  gasLimit: BigInt(replacementResponse.gasLimit || 0),
-                  maxFeePerGas: BigInt(replacementResponse.maxFeePerGas || 0),
-                  maxPriorityFeePerGas: BigInt(replacementResponse.maxPriorityFeePerGas || 0),
-                  status: 'submitted',
-                });
-
-                // Wait for the replacement transaction receipt
-                receipt = await pollForReceipt(replacementHash, this.relayProvider as unknown as ethers.Provider, this.logger, 3);
-                
-                // Update response hash for logging purposes
-                this.logger.info('Using replacement transaction for further processing:', {
-                  originalHash: response.hash,
-                  replacementHash,
-                  status: receipt?.status,
-                });
-              }
-            } else {
-              this.logger.error('Transaction was not included and replacement failed:', {
-                hash: response.hash,
-              });
-              throw new Error('Transaction was not included and replacement failed');
-            }
-          } else {
-            // Original transaction was included, proceed with normal tracking
-            this.pendingTransactions.set(tx.id, {
-              id: tx.id,
-              transactionId: response.hash,
-              hash: response.hash,
-              submittedAt: Date.now(),
-              lastChecked: Date.now(),
-              retryCount: 0,
-              gasLimit: finalSimulatedGasLimit,
-              maxFeePerGas: maxFeePerGas || 0n,
-              maxPriorityFeePerGas: maxPriorityFeePerGas || 0n,
-              status: 'submitted',
-            });
-          }
-        } catch (flashbotsError) {
-          this.logger.error('Error checking Flashbots simulation status:', {
-            error: flashbotsError instanceof Error ? flashbotsError.message : String(flashbotsError),
-            hash: response.hash,
+          
+          // Execute the transaction
+          this.logger.info('Submitting transaction after successful simulation', {
+            recipient: signerAddress,
+            minExpectedReward: finalThreshold.toString(),
+            depositCount: depositIds.length,
+            gasLimit: finalGasLimit.toString(),
           });
-          // Continue with normal flow - we'll rely on standard confirmation mechanisms
+          
+          // Submit transaction to chain
+          const response = await this.submitTransaction(
+            signerAddress,
+            finalThreshold,
+            depositIds,
+            finalGasLimit,
+            maxFeePerGas,
+            maxPriorityFeePerGas
+          );
+          
+          // Track the pending transaction
           this.pendingTransactions.set(tx.id, {
             id: tx.id,
             transactionId: response.hash,
@@ -1469,259 +907,275 @@ export class RelayerExecutor implements IExecutor {
             submittedAt: Date.now(),
             lastChecked: Date.now(),
             retryCount: 0,
-            gasLimit: finalSimulatedGasLimit,
+            gasLimit: finalGasLimit,
             maxFeePerGas: maxFeePerGas || 0n,
             maxPriorityFeePerGas: maxPriorityFeePerGas || 0n,
             status: 'submitted',
           });
-        }
-
-        // Update transaction details with transaction hash and status
-        if (this.db && transactionDetailsId) {
-          try {
-            await this.db.updateTransactionDetails(transactionDetailsId, {
-              transaction_hash: response.hash,
-              status: TransactionDetailsStatus.SUBMITTED,
-              gas_price: response.gasPrice?.toString(),
-              max_fee_per_gas: response.maxFeePerGas?.toString(),
-              max_priority_fee_per_gas: response.maxPriorityFeePerGas?.toString(),
-            });
-
-            this.logger.info('Updated transaction details with hash', {
-              txId: tx.id,
-              transactionDetailsId,
-              hash: response.hash,
-            });
-          } catch (dbError) {
-            // Log but continue with transaction execution
-            this.logger.error('Failed to update transaction details with hash', {
-              error: dbError instanceof Error ? dbError.message : String(dbError),
-              txId: tx.id,
-              hash: response.hash,
-            });
-          }
-        }
-
-        // Wait for transaction to be mined
-        this.logger.info('Waiting for transaction...');
-        try {
-          let receipt;
+          
+          // Wait for transaction to be mined
           try {
             receipt = await pollForReceipt(response.hash, this.relayProvider as unknown as ethers.Provider, this.logger, 3);
-            this.logger.info(`Transaction receipt received: ${response.hash}`, {
+            this.logger.info(`Transaction confirmed: ${response.hash}`, {
               txId: tx.id,
               blockNumber: receipt?.blockNumber?.toString() || 'unknown',
               status: receipt?.status?.toString() || 'unknown',
             });
-
-            // Update transaction details with receipt information
+            
+            // Update transaction details with receipt
             if (this.db && transactionDetailsId && receipt) {
-              try {
-                // Calculate actual profit
-                let actualProfit: bigint | undefined;
-                try {
-                  // Actual profit = payout - gas cost
-                  const gasUsed = BigInt(receipt.gasUsed.toString());
-                  const effectiveGasPrice = receipt.effectiveGasPrice
-                    ? BigInt(receipt.effectiveGasPrice.toString())
-                    : response.gasPrice
-                      ? BigInt(response.gasPrice.toString())
-                      : 0n;
-
-                  // Calculate gas cost in ETH
-                  const gasCostEth = gasUsed * effectiveGasPrice;
-
-                  // For now, actual profit is just expected profit (we don't have a way to get actual reward amount)
-                  // This could be refined if we parse event logs for the actual reward amount
-                  actualProfit = tx.profitability.estimates.expected_profit;
-
-                  // Calculate transaction duration
-                  const txEndTime = new Date();
-                  const durationMs = txEndTime.getTime() - txStartTime.getTime();
-
-                  await this.db.updateTransactionDetails(transactionDetailsId, {
-                    status: TransactionDetailsStatus.CONFIRMED,
-                    gas_used: gasUsed.toString(),
-                    gas_price: effectiveGasPrice.toString(),
-                    gas_cost_eth: gasCostEth.toString(),
-                    actual_profit: actualProfit.toString(),
-                    end_time: txEndTime.toISOString(),
-                    duration_ms: durationMs,
-                  });
-
-                  this.logger.info('Updated transaction details with receipt information', {
-                    txId: tx.id,
-                    transactionDetailsId,
-                    gasUsed: gasUsed.toString(),
-                    gasPrice: effectiveGasPrice.toString(),
-                    actualProfit: actualProfit.toString(),
-                    durationMs,
-                  });
-                } catch (calcError) {
-                  this.logger.error('Error calculating actual profit', {
-                    error: calcError instanceof Error ? calcError.message : String(calcError),
-                    txId: tx.id,
-                  });
-
-                  // Still update with available information
-                  await this.db.updateTransactionDetails(transactionDetailsId, {
-                    status: TransactionDetailsStatus.CONFIRMED,
-                    gas_used: receipt.gasUsed.toString(),
-                    end_time: new Date().toISOString(),
-                  });
-                }
-              } catch (dbError) {
-                this.logger.error('Failed to update transaction details with receipt', {
-                  error: dbError instanceof Error ? dbError.message : String(dbError),
-                  txId: tx.id,
-                  hash: response.hash,
-                });
-              }
+              await this.updateTransactionDetailsWithReceipt(transactionDetailsId, receipt, tx, txStartTime);
             }
-          } catch (confirmError: unknown) {
-            // If polling fails, just log the error
-            this.logger.warn('Transaction confirmation failed', {
-              error: confirmError instanceof Error ? confirmError.message : String(confirmError),
+          } catch (waitError) {
+            this.logger.warn('Failed to get receipt, transaction may still succeed', {
+              error: waitError instanceof Error ? waitError.message : String(waitError),
               hash: response.hash,
-              errorType:
-                typeof confirmError === 'object' && confirmError !== null
-                  ? confirmError.constructor?.name || 'Unknown'
-                  : typeof confirmError,
             });
-
-            this.logger.info('Continuing execution despite confirmation error - transaction may still have succeeded');
-
-            // Skip polling and consider it a warning rather than error
-            this.logger.debug('Transaction details for debugging', {
-              transaction: {
-                hash: response.hash,
-                to: response.to,
-                from: response.from,
-                nonce: response.nonce,
-              },
-            });
-
-            // Continue without receipt - transaction might have gone through anyway
-            receipt = null;
           }
-
-          // Process the transaction receipt and clean up queues
+          
+          // Process receipt and clean up
           await processTransactionReceipt(tx, response, receipt, this.logger, this.errorLogger, async (txArg, txHashArg) => {
             await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
-
-            // Remove from pending transactions tracking
+            this.pendingTransactions.delete(txArg.id);
+            
+            // Check if we need to swap tokens after transaction
+            await checkAndSwapTokensIfNeeded(
+              this.lstContract, 
+              this.relaySigner as unknown as Signer, 
+              this.relayProvider as unknown as Provider, 
+              this.logger, 
+              this.errorLogger
+            );
+          });
+          
+        } catch (error) {
+          await handleExecutionError(tx, error, this.logger, this.errorLogger, this.queue, async (txArg, txHashArg) => {
+            await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
             if (txArg && txArg.id) {
               this.pendingTransactions.delete(txArg.id);
-              this.logger.info('Removed from pending transactions tracking', {
-                txId: txArg.id,
-                hash: txHashArg,
-              });
             }
-
-            // Check if we need to swap tokens for ETH after transaction
-            await checkAndSwapTokensIfNeeded(this.lstContract, this.relaySigner as unknown as Signer, this.relayProvider as unknown as Provider, this.logger, this.errorLogger);
           });
-        } catch (waitError) {
-          this.logger.error('Failed waiting for transaction confirmation', {
-            error: waitError instanceof Error ? waitError.message : String(waitError),
-            transactionId: tx.id,
-            depositIds: depositIds.map(String),
-          });
-          this.errorLogger.error(
-            waitError instanceof Error ? waitError : new Error(`Failed waiting for transaction confirmation: ${String(waitError)}`),
-            {
-              stage: 'executeTransaction_waitError',
-              txId: tx.id,
-              hash: response.hash,
-              depositIds: depositIds.map(String).join(','),
-            },
-          );
-          throw new ExecutorError('Failed waiting for transaction confirmation', {
-            error: waitError instanceof Error ? waitError.message : String(waitError),
-          }, false);
         }
       } catch (error) {
         await handleExecutionError(tx, error, this.logger, this.errorLogger, this.queue, async (txArg, txHashArg) => {
           await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
-
-          // Remove from pending transactions tracking
           if (txArg && txArg.id) {
             this.pendingTransactions.delete(txArg.id);
-            this.logger.info('Removed from pending transactions tracking after error', {
-              txId: txArg.id,
-              errorMessage: error instanceof Error ? error.message : String(error),
-            });
           }
-
-          // Update transaction details with error information
-          if (this.db && transactionDetailsId) {
-            try {
-              const txEndTime = new Date();
-              const durationMs = txEndTime.getTime() - txStartTime.getTime();
-
-              await this.db.updateTransactionDetails(transactionDetailsId, {
-                status: TransactionDetailsStatus.FAILED,
-                error: error instanceof Error ? error.message : String(error),
-                end_time: txEndTime.toISOString(),
-                duration_ms: durationMs,
-              });
-
-              this.logger.info('Updated transaction details with error information', {
-                txId: tx.id,
-                transactionDetailsId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            } catch (dbError) {
-              this.logger.error('Failed to update transaction details with error', {
-                error: dbError instanceof Error ? dbError.message : String(dbError),
-                txId: tx.id,
-              });
-            }
-          }
-
-          // Check token swap needs even after error
-          await checkAndSwapTokensIfNeeded(this.lstContract, this.relaySigner as unknown as Signer, this.relayProvider as unknown as Provider, this.logger, this.errorLogger);
         });
       }
     } catch (error) {
       await handleExecutionError(tx, error, this.logger, this.errorLogger, this.queue, async (txArg, txHashArg) => {
         await cleanupQueueItems(txArg, txHashArg, this.db, this.logger, this.errorLogger);
-
-        // Remove from pending transactions tracking
         if (txArg && txArg.id) {
           this.pendingTransactions.delete(txArg.id);
-          this.logger.info('Removed from pending transactions tracking after error', {
-            txId: txArg.id,
-            errorMessage: error instanceof Error ? error.message : String(error),
-          });
-        }
-
-        // Update transaction details with error information for outer error
-        if (this.db && transactionDetailsId) {
-          try {
-            const txEndTime = new Date();
-            const durationMs = txEndTime.getTime() - txStartTime.getTime();
-
-            await this.db.updateTransactionDetails(transactionDetailsId, {
-              status: TransactionDetailsStatus.FAILED,
-              error: error instanceof Error ? error.message : String(error),
-              end_time: txEndTime.toISOString(),
-              duration_ms: durationMs,
-            });
-
-            this.logger.info('Updated transaction details with error information (outer error)', {
-              txId: tx.id,
-              transactionDetailsId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          } catch (dbError) {
-            this.logger.error('Failed to update transaction details with error', {
-              error: dbError instanceof Error ? dbError.message : String(dbError),
-              txId: tx.id,
-            });
-          }
         }
       });
     }
+  }
+  
+  /**
+   * Gets gas parameters from the network or configuration
+   */
+  private async getGasParameters(): Promise<{ 
+    maxFeePerGas: bigint | undefined; 
+    maxPriorityFeePerGas: bigint | undefined 
+  }> {
+    try {
+      // Get fee data from provider
+      const feeData = await this.relayProvider.getFeeData();
+      let maxFeePerGas = feeData.maxFeePerGas
+        ? BigInt(feeData.maxFeePerGas.toString())
+        : undefined;
+      let maxPriorityFeePerGas = feeData.maxPriorityFeePerGas
+        ? BigInt(feeData.maxPriorityFeePerGas.toString())
+        : undefined;
+
+      // Apply slight boost to gas values for reliable inclusion
+      if (maxFeePerGas) {
+        maxFeePerGas = (maxFeePerGas * 125n) / 100n;
+      }
+
+      if (maxPriorityFeePerGas) {
+        maxPriorityFeePerGas = (maxPriorityFeePerGas * 125n) / 100n;
+      }
+
+      // Use the higher of network fee data or configured values
+      const configuredMaxFeePerGas = this.config.gasPolicy?.maxFeePerGas;
+      const configuredMaxPriorityFeePerGas = this.config.gasPolicy?.maxPriorityFeePerGas;
+
+      const finalMaxFeePerGas = configuredMaxFeePerGas && maxFeePerGas
+        ? maxFeePerGas > configuredMaxFeePerGas
+          ? maxFeePerGas
+          : configuredMaxFeePerGas
+        : configuredMaxFeePerGas || maxFeePerGas;
+
+      const finalMaxPriorityFeePerGas = configuredMaxPriorityFeePerGas && maxPriorityFeePerGas
+        ? maxPriorityFeePerGas > configuredMaxPriorityFeePerGas
+          ? maxPriorityFeePerGas
+          : configuredMaxPriorityFeePerGas
+        : configuredMaxPriorityFeePerGas || maxPriorityFeePerGas;
+
+      this.logger.info('Gas parameters calculated', {
+        maxFeePerGas: finalMaxFeePerGas?.toString() || 'undefined',
+        maxPriorityFeePerGas: finalMaxPriorityFeePerGas?.toString() || 'undefined',
+      });
+
+      return { 
+        maxFeePerGas: finalMaxFeePerGas, 
+        maxPriorityFeePerGas: finalMaxPriorityFeePerGas 
+      };
+    } catch (error) {
+      this.logger.error('Failed to get gas parameters', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Return undefined values, transaction will use network defaults
+      return { maxFeePerGas: undefined, maxPriorityFeePerGas: undefined };
+    }
+  }
+  
+  /**
+   * Saves transaction details to database
+   */
+  private async saveTransactionDetails(
+    tx: QueuedTransaction,
+    recipient: string,
+    minExpectedReward: bigint,
+    payoutAmount: bigint,
+    gasLimit: bigint,
+    maxFeePerGas: bigint | undefined,
+    maxPriorityFeePerGas: bigint | undefined,
+    startTime: Date
+  ): Promise<string | undefined> {
+    if (!this.db) return undefined;
+    
+    try {
+      // Get chain ID
+      const chainId = await this.lstContract.runner?.provider
+        ?.getNetwork()
+        .then((network) => network.chainId.toString())
+        .catch(() => 'unknown');
+      
+      // Get queue item ID
+      const queueItemId = tx.metadata?.queueItemId;
+        
+      // Create transaction details
+      const txDetails: Omit<TransactionDetails, 'id' | 'created_at' | 'updated_at'> = {
+        transaction_id: tx.id,
+        status: TransactionDetailsStatus.PENDING,
+        deposit_ids: tx.depositIds.map(String),
+        recipient_address: recipient,
+        min_expected_reward: minExpectedReward.toString(),
+        payout_amount: payoutAmount.toString(),
+        profit_margin_amount: (minExpectedReward - payoutAmount).toString(),
+        gas_cost_estimate: tx.profitability.estimates.gas_cost.toString(),
+        gas_limit: gasLimit.toString(),
+        expected_profit: tx.profitability.estimates.expected_profit.toString(),
+        contract_address: this.lstContract.target.toString(),
+        network_id: chainId || '1',
+        tx_queue_item_id: queueItemId,
+        start_time: startTime.toISOString(),
+        max_fee_per_gas: maxFeePerGas?.toString(),
+        max_priority_fee_per_gas: maxPriorityFeePerGas?.toString(),
+        reward_token_price_usd: undefined,
+        eth_price_usd: undefined,
+      };
+      
+      const savedDetails = await this.db.createTransactionDetails(txDetails);
+      this.logger.info('Transaction details saved', { id: savedDetails.id });
+      return savedDetails.id;
+    } catch (error) {
+      this.logger.error('Failed to save transaction details', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+  
+  /**
+   * Updates transaction details with receipt information
+   */
+  private async updateTransactionDetailsWithReceipt(
+    transactionDetailsId: string,
+    receipt: EthersTransactionReceipt,
+    tx: QueuedTransaction,
+    startTime: Date
+  ): Promise<void> {
+    if (!this.db) return;
+    
+    try {
+      // Calculate gas costs and duration
+      const gasUsed = BigInt(receipt.gasUsed.toString());
+      const effectiveGasPrice = receipt.effectiveGasPrice
+        ? BigInt(receipt.effectiveGasPrice.toString())
+        : 0n;
+      const gasCostEth = gasUsed * effectiveGasPrice;
+      const txEndTime = new Date();
+      const durationMs = txEndTime.getTime() - startTime.getTime();
+      
+      // Update transaction details
+      await this.db.updateTransactionDetails(transactionDetailsId, {
+        status: TransactionDetailsStatus.CONFIRMED,
+        gas_used: gasUsed.toString(),
+        gas_price: effectiveGasPrice.toString(),
+        gas_cost_eth: gasCostEth.toString(),
+        actual_profit: tx.profitability.estimates.expected_profit.toString(),
+        end_time: txEndTime.toISOString(),
+        duration_ms: durationMs,
+      });
+      
+      this.logger.info('Transaction details updated with receipt', {
+        id: transactionDetailsId,
+        gasUsed: gasUsed.toString(),
+        durationMs: durationMs.toString(),
+      });
+    } catch (error) {
+      this.logger.error('Failed to update transaction details with receipt', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  
+  /**
+   * Submits transaction to the blockchain
+   */
+  private async submitTransaction(
+    recipient: string,
+    minExpectedReward: bigint,
+    depositIds: bigint[],
+    gasLimit: bigint,
+    maxFeePerGas: bigint | undefined,
+    maxPriorityFeePerGas: bigint | undefined
+  ): Promise<ethers.ContractTransactionResponse> {
+    return withAuthErrorHandling(
+      async () => {
+        this.logger.info('Submitting transaction', {
+          recipient,
+          minExpectedReward: minExpectedReward.toString(),
+          depositIds: depositIds.length,
+          gasLimit: gasLimit.toString(),
+        });
+        
+        const txOptions = {
+          gasLimit,
+          maxFeePerGas,
+          maxPriorityFeePerGas,
+          isPrivate: this.config.isPrivate,
+          privateMode: this.config.isPrivate ? 'flashbots-fast' : undefined,
+          flashbots: this.config.isPrivate ? 'fast' : undefined,
+          validForSeconds: 900,
+          validUntil: new Date(Date.now() + 1000 * 60 * 15).toISOString(),
+        } as DefenderTransactionRequest;
+        
+        return await this.lstContract.claimAndDistributeReward(
+          recipient, 
+          minExpectedReward, 
+          depositIds, 
+          txOptions
+        );
+      },
+      this.logger,
+      'submitTransaction'
+    );
   }
 }

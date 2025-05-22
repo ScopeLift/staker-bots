@@ -99,6 +99,7 @@ export interface GovLstProfitabilityCheck {
     gas_estimate: bigint;
     gas_cost: bigint;
     expected_profit: bigint;
+    minExpectedReward?: bigint;
   };
   deposit_details: Array<{
     depositId: bigint;
