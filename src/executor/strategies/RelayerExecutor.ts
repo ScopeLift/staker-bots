@@ -436,8 +436,22 @@ export class RelayerExecutor implements IExecutor {
             {
               error: error instanceof Error ? error.message : String(error),
               depositIds: depositIds.map(String),
+              errorType: error instanceof Error ? error.constructor.name : typeof error,
             },
           );
+          
+          // For certain types of simulation errors during low gas periods, add extra buffer
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes('gas') || errorMessage.includes('simulation')) {
+            this.logger.info('Adding extra gas buffer due to simulation issues', {
+              originalEstimate: profitability.estimates.gas_estimate.toString(),
+              bufferMultiplier: 1.5,
+            });
+            
+            // Add 50% buffer to original estimate when simulation fails during potential low-gas periods
+            profitability.estimates.gas_estimate = 
+              (profitability.estimates.gas_estimate * 150n) / 100n;
+          }
         }
       }
 

@@ -139,6 +139,26 @@ export class SimulationService {
     options: SimulationOptions = {},
   ): Promise<SimulationResult> {
     try {
+      // Ensure minimum gas price for simulation to prevent Tenderly failures
+      const MIN_SIMULATION_GAS_PRICE_GWEI = 1; // 1 gwei minimum
+      const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20; // 20 gwei default
+      
+      let gasPrice = transaction.gasPrice;
+      
+      // Handle missing or very low gas price
+      if (!gasPrice || gasPrice === '0') {
+        // Use default gas price for simulation
+        gasPrice = ethers.parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei').toString();
+      } else {
+        // Parse the provided gas price and ensure it meets minimum
+        const gasPriceWei = BigInt(gasPrice);
+        const minGasPriceWei = ethers.parseUnits(MIN_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei');
+        
+        if (gasPriceWei < minGasPriceWei) {
+          gasPrice = minGasPriceWei.toString();
+        }
+      }
+
       const response = await fetch(this.baseUrl, {
         method: 'POST',
         headers: this.headers,
@@ -148,7 +168,7 @@ export class SimulationService {
           to: transaction.to,
           input: transaction.data || '0x',
           gas: transaction.gas,
-          gas_price: transaction.gasPrice || '0',
+          gas_price: gasPrice, // Use processed gas price
           value: transaction.value || '0',
           save: options.save || false,
           save_if_fails: options.saveIfFails || false,
@@ -194,19 +214,44 @@ export class SimulationService {
     options: SimulationOptions = {},
   ): Promise<SimulationResult[]> {
     try {
+      // Ensure minimum gas price for simulation to prevent Tenderly failures
+      const MIN_SIMULATION_GAS_PRICE_GWEI = 1; // 1 gwei minimum
+      const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20; // 20 gwei default
+      
+      // Process gas prices for all transactions
+      const processedTransactions = transactions.map((tx) => {
+        let gasPrice = tx.gasPrice;
+        
+        // Handle missing or very low gas price
+        if (!gasPrice || gasPrice === '0') {
+          // Use default gas price for simulation
+          gasPrice = ethers.parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei').toString();
+        } else {
+          // Parse the provided gas price and ensure it meets minimum
+          const gasPriceWei = BigInt(gasPrice);
+          const minGasPriceWei = ethers.parseUnits(MIN_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei');
+          
+          if (gasPriceWei < minGasPriceWei) {
+            gasPrice = minGasPriceWei.toString();
+          }
+        }
+
+        return {
+          from: tx.from,
+          to: tx.to,
+          input: tx.data || '0x',
+          gas: tx.gas,
+          gas_price: gasPrice, // Use processed gas price
+          value: tx.value || '0',
+        };
+      });
+
       const response = await fetch(this.baseUrl + '-bundle', {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify({
           network_id: options.networkId || '1', // Default to mainnet
-          transactions: transactions.map((tx) => ({
-            from: tx.from,
-            to: tx.to,
-            input: tx.data || '0x',
-            gas: tx.gas,
-            gas_price: tx.gasPrice || '0',
-            value: tx.value || '0',
-          })),
+          transactions: processedTransactions,
           block_number: options.blockNumber || null,
           state_objects: options.overrides
             ? Object.entries(options.overrides).reduce(
@@ -254,6 +299,26 @@ export class SimulationService {
     options: SimulationOptions = {},
   ): Promise<GasCostEstimate> {
     try {
+      // Ensure minimum gas price for simulation to prevent Tenderly failures
+      const MIN_SIMULATION_GAS_PRICE_GWEI = 1; // 1 gwei minimum
+      const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20; // 20 gwei default
+      
+      let gasPrice = transaction.gasPrice;
+      
+      // Handle missing or very low gas price
+      if (!gasPrice || gasPrice === '0') {
+        // Use default gas price for simulation
+        gasPrice = ethers.parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei').toString();
+      } else {
+        // Parse the provided gas price and ensure it meets minimum
+        const gasPriceWei = BigInt(gasPrice);
+        const minGasPriceWei = ethers.parseUnits(MIN_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei');
+        
+        if (gasPriceWei < minGasPriceWei) {
+          gasPrice = minGasPriceWei.toString();
+        }
+      }
+
       const response = await fetch(
         `https://api.tenderly.co/api/v1/account/${CONFIG.tenderly.accountName}/project/${CONFIG.tenderly.projectName}/simulate`,
         {
@@ -271,7 +336,7 @@ export class SimulationService {
             to: transaction.to,
             input: transaction.data || '0x',
             gas: transaction.gas,
-            gas_price: transaction.gasPrice || '0',
+            gas_price: gasPrice, // Use processed gas price
             value: transaction.value || '0',
             // Include any state overrides
             state_objects: options.overrides
@@ -314,11 +379,16 @@ export class SimulationService {
         data.transaction.base_fee ||
         ethers.parseUnits('20', 'gwei').toString(); // fallback to 20 gwei
 
-      const gasPrice = ethers.formatUnits(gasPriceWei, 'gwei');
+      const finalGasPrice = ethers.formatUnits(gasPriceWei, 'gwei');
 
       // Debug information
       // eslint-disable-next-line no-console
       console.log('Debug gas estimation:', {
+        input: {
+          originalGasPrice: transaction.gasPrice,
+          processedGasPrice: gasPrice,
+          processedGasPriceGwei: ethers.formatUnits(gasPrice, 'gwei'),
+        },
         rawData: {
           effective_gas_price: data.transaction.effective_gas_price,
           gas_price: data.transaction.gas_price,
@@ -327,32 +397,32 @@ export class SimulationService {
         },
         calculated: {
           gasPriceWei,
-          gasPrice,
+          gasPrice: finalGasPrice,
           gasUnits,
         },
       });
 
       return {
         gasUnits,
-        gasPrice,
+        gasPrice: finalGasPrice,
         gasPriceDetails: {
           baseFeePerGas: ethers.formatUnits(
             data.transaction.base_fee || gasPriceWei,
             'gwei',
           ),
           low: {
-            maxPriorityFeePerGas: gasPrice,
-            maxFeePerGas: gasPrice,
+            maxPriorityFeePerGas: finalGasPrice,
+            maxFeePerGas: finalGasPrice,
             waitTime: 120, // Default wait time in seconds
           },
           medium: {
-            maxPriorityFeePerGas: gasPrice,
-            maxFeePerGas: gasPrice,
+            maxPriorityFeePerGas: finalGasPrice,
+            maxFeePerGas: finalGasPrice,
             waitTime: 60,
           },
           high: {
-            maxPriorityFeePerGas: gasPrice,
-            maxFeePerGas: gasPrice,
+            maxPriorityFeePerGas: finalGasPrice,
+            maxFeePerGas: finalGasPrice,
             waitTime: 30,
           },
         },

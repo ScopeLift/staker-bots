@@ -62,8 +62,22 @@ export class GasCostEstimator {
       });
 
       if (feeData?.gasPrice) {
+        let currentGasPrice = BigInt(feeData.gasPrice.toString());
+        
+        // Handle very low gas prices (sub 1 gwei) that can cause issues
+        const MIN_GAS_PRICE_GWEI = 1n; // 1 gwei minimum
+        const MIN_GAS_PRICE_WEI = MIN_GAS_PRICE_GWEI * 10n ** 9n;
+        
+        if (currentGasPrice < MIN_GAS_PRICE_WEI) {
+          this.logger.warn('Gas price is very low, using minimum threshold', {
+            actualGasPriceGwei: Number(currentGasPrice) / 1e9,
+            minGasPriceGwei: Number(MIN_GAS_PRICE_GWEI),
+            usingMinimum: true,
+          });
+          currentGasPrice = MIN_GAS_PRICE_WEI;
+        }
+
         // Apply 25% buffer to current gas price
-        const currentGasPrice = BigInt(feeData.gasPrice.toString());
         gasPrice = (currentGasPrice * 125n) / 100n; // Add 25% buffer
 
         // Also get max priority fee if EIP-1559 is active

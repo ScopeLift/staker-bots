@@ -277,6 +277,36 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         gasCostInRewardToken,
       );
 
+      // Get the actual gas units estimate from simulation
+      let actualGasEstimate = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
+      if (this.simulationService) {
+        try {
+          const mockRecipientAddress = CONFIG.profitability.defaultTipReceiver;
+          const simulatedGasUnits = await estimateGasUsingSimulation(
+            depositIds,
+            mockRecipientAddress,
+            payoutAmount,
+            this.govLstContract,
+            this.simulationService,
+            this.logger,
+          );
+          
+          if (simulatedGasUnits !== null) {
+            actualGasEstimate = simulatedGasUnits;
+            this.logger.info('Using simulated gas estimate for profitability calculation', {
+              simulatedGasUnits: simulatedGasUnits.toString(),
+              fallbackEstimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE.toString(),
+              depositCount: depositIds.length,
+            });
+          }
+        } catch (error) {
+          this.logger.warn('Failed to get gas units from simulation for profitability', {
+            error: error instanceof Error ? error.message : String(error),
+            depositIds: depositIds.map(String),
+          });
+        }
+      }
+
       // Calculate total shares for qualified deposits
       const totalShares = qualifiedDeposits.reduce(
         (sum, deposit) => sum + (deposit.earning_power || BigInt(0)),
@@ -305,7 +335,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       this.logProfitabilityThreshold(
         'minimum expected reward threshold',
         payoutAmount,
-        enhancedGasCost,
+        actualGasEstimate,
         deposits.length,
         minExpectedReward,
       );
@@ -320,7 +350,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         estimates: {
           total_shares: totalShares,
           payout_amount: payoutAmount,
-          gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
+          gas_estimate: actualGasEstimate,
           gas_cost: enhancedGasCost,
           expected_profit: expectedProfit,
           minExpectedReward: minExpectedReward,
@@ -434,6 +464,36 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         gasCost,
       );
 
+      // Get the actual gas units estimate from simulation
+      let actualGasEstimate = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
+      if (this.simulationService) {
+        try {
+          const mockRecipientAddress = CONFIG.profitability.defaultTipReceiver;
+          const simulatedGasUnits = await estimateGasUsingSimulation(
+            normalizedDeposits.map((d) => d.deposit_id),
+            mockRecipientAddress,
+            payoutAmount,
+            this.govLstContract,
+            this.simulationService,
+            this.logger,
+          );
+          
+          if (simulatedGasUnits !== null) {
+            actualGasEstimate = simulatedGasUnits;
+            this.logger.info('Using simulated gas estimate for deposit group analysis', {
+              simulatedGasUnits: simulatedGasUnits.toString(),
+              fallbackEstimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE.toString(),
+              depositCount: normalizedDeposits.length,
+            });
+          }
+        } catch (error) {
+          this.logger.warn('Failed to get gas units from simulation for deposit analysis', {
+            error: error instanceof Error ? error.message : String(error),
+            depositIds: normalizedDeposits.map((d) => d.deposit_id.toString()),
+          });
+        }
+      }
+
       const profitMargin = this.config.minProfitMargin;
 
       // Get all deposit IDs
@@ -469,7 +529,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       this.logProfitabilityThreshold(
         'optimal threshold for deposit group analysis',
         payoutAmount,
-        enhancedGasCost,
+        actualGasEstimate,
         depositIds.length,
         optimalThreshold,
       );
@@ -481,7 +541,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         total_shares: BigInt(0),
         expected_profit: BigInt(0),
         total_payout: payoutAmount,
-        gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
+        gas_estimate: actualGasEstimate, // Use actual simulation gas estimate
       };
 
       // Fetch unclaimed rewards for all deposits in batch with retry
@@ -630,11 +690,41 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         gasCost,
       );
 
+      // Get the actual gas units estimate from simulation
+      let actualGasEstimate = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
+      if (this.simulationService) {
+        try {
+          const mockRecipientAddress = CONFIG.profitability.defaultTipReceiver;
+          const simulatedGasUnits = await estimateGasUsingSimulation(
+            this.activeBin.deposit_ids,
+            mockRecipientAddress,
+            payoutAmount,
+            this.govLstContract,
+            this.simulationService,
+            this.logger,
+          );
+          
+          if (simulatedGasUnits !== null) {
+            actualGasEstimate = simulatedGasUnits;
+            this.logger.info('Using simulated gas estimate for active bin profitability', {
+              simulatedGasUnits: simulatedGasUnits.toString(),
+              fallbackEstimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE.toString(),
+              depositCount: this.activeBin.deposit_ids.length,
+            });
+          }
+        } catch (error) {
+          this.logger.warn('Failed to get gas units from simulation for active bin', {
+            error: error instanceof Error ? error.message : String(error),
+            depositIds: this.activeBin.deposit_ids.map(String),
+          });
+        }
+      }
+
       // Expected profit should be equal to total rewards
       const expectedProfit = this.activeBin.total_rewards;
 
       this.activeBin.expected_profit = expectedProfit;
-      this.activeBin.gas_estimate = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
+      this.activeBin.gas_estimate = actualGasEstimate; // Use actual simulation gas estimate
       this.activeBin.total_payout = payoutAmount;
 
       // Generate deposit details for profitability check
@@ -658,7 +748,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       this.logProfitabilityThreshold(
         'minimum expected reward threshold for active bin',
         payoutAmount,
-        enhancedGasCost,
+        actualGasEstimate,
         this.activeBin.deposit_ids.length,
         minExpectedReward,
       );
@@ -680,8 +770,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         estimates: {
           total_shares: this.activeBin.total_shares,
           payout_amount: payoutAmount,
-          gas_estimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE,
-          gas_cost: enhancedGasCost, // Add gas cost as separate field
+          gas_estimate: actualGasEstimate,
+          gas_cost: enhancedGasCost,
           expected_profit: expectedProfit,
           minExpectedReward: minExpectedReward,
         },
@@ -856,9 +946,41 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       }
 
       const feeData = await this.provider.getFeeData();
-      const gasPrice = feeData.gasPrice ?? BigInt(0);
+      let gasPrice = feeData.gasPrice ?? BigInt(0);
+      
+      // Handle very low gas prices (sub 1 gwei) that can cause simulation issues
+      const MIN_GAS_PRICE_GWEI = 1n; // 1 gwei minimum
+      const MIN_GAS_PRICE_WEI = MIN_GAS_PRICE_GWEI * 10n ** 9n;
+      
+      if (gasPrice < MIN_GAS_PRICE_WEI) {
+        this.logger.warn('Gas price is very low, using minimum threshold', {
+          actualGasPriceGwei: Number(gasPrice) / 1e9,
+          minGasPriceGwei: Number(MIN_GAS_PRICE_GWEI),
+          usingMinimum: true,
+        });
+        gasPrice = MIN_GAS_PRICE_WEI;
+      }
+
+      // Handle zero gas price (should not happen but safety check)
+      if (gasPrice === 0n) {
+        const fallbackGasPrice = 3n * 10n ** 9n; // 3 gwei fallback
+        this.logger.warn('Gas price is zero, using fallback', {
+          fallbackGasPriceGwei: 3,
+        });
+        gasPrice = fallbackGasPrice;
+      }
+
       const buffer = BigInt(Math.floor(this.config.gasPriceBuffer));
       const bufferedGasPrice = gasPrice + (gasPrice * buffer) / BigInt(100);
+
+      // Log gas price details for debugging
+      this.logger.debug('Gas price calculation', {
+        rawGasPriceGwei: Number(feeData.gasPrice ?? 0n) / 1e9,
+        adjustedGasPriceGwei: Number(gasPrice) / 1e9,
+        bufferPercent: Number(buffer),
+        finalGasPriceGwei: Number(bufferedGasPrice) / 1e9,
+        isVeryLow: Number(feeData.gasPrice ?? 0n) < Number(MIN_GAS_PRICE_WEI),
+      });
 
       this.gasPriceCache = {
         price: bufferedGasPrice,
@@ -875,11 +997,30 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         method: 'getGasPriceWithBuffer',
       };
 
+      this.logger.warn('Failed to get gas price from provider, using fallback', {
+        error: error instanceof Error ? error.message : String(error),
+        lastGasPrice: this.lastGasPrice.toString(),
+      });
+
+      // Use cached value if available, otherwise use fallback
+      if (this.lastGasPrice > 0n) {
+        this.logger.info('Using cached gas price due to provider error', {
+          cachedGasPriceGwei: Number(this.lastGasPrice) / 1e9,
+        });
+        return this.lastGasPrice;
+      }
+
+      // Final fallback - use 3 gwei
+      const fallbackGasPrice = 3n * 10n ** 9n; // 3 gwei
+      this.logger.warn('Using hardcoded fallback gas price', {
+        fallbackGasPriceGwei: 3,
+      });
+
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, errorContext);
       }
 
-      throw new GasEstimationError(error as Error, errorContext);
+      return fallbackGasPrice;
     }
   }
 
@@ -945,12 +1086,63 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private async convertGasCostToRewardTokens(gasCost: bigint): Promise<bigint> {
     const prices = await this.getPrices();
 
-    const ethPriceScaled = BigInt(Math.floor(prices.gasToken.usd * 1e18));
-    const rewardTokenPriceScaled = BigInt(
-      Math.floor(prices.rewardToken.usd * 1e18),
+    // Use proper decimal handling like GasCostEstimator.ts
+    const ETH_DECIMALS = 18;
+    const TOKEN_DECIMALS = CONFIG.govlst.rewardTokenDecimals || 18;
+
+    // Convert prices to wei/token base units with proper decimals
+    const ethPriceScaled = BigInt(
+      Math.floor(prices.gasToken.usd * 10 ** ETH_DECIMALS),
+    );
+    const tokenPriceScaled = BigInt(
+      Math.floor(prices.rewardToken.usd * 10 ** TOKEN_DECIMALS),
     );
 
-    return (gasCost * ethPriceScaled) / rewardTokenPriceScaled;
+    // Calculate cost in tokens with decimal adjustment
+    // Formula: (gasCostWei * ethPriceUSD) / tokenPriceUSD
+    // Note: We need to adjust for the difference in decimals between ETH and the reward token
+    const decimalAdjustment = 10n ** BigInt(Math.abs(ETH_DECIMALS - TOKEN_DECIMALS));
+    let costInRewardTokens: bigint;
+
+    this.logger.debug('Gas cost conversion details', {
+      gasCost: gasCost.toString(),
+      gasCostEth: ethers.formatEther(gasCost),
+      ethPrice: ethPriceScaled.toString(),
+      tokenPrice: tokenPriceScaled.toString(),
+      ethDecimals: ETH_DECIMALS,
+      tokenDecimals: TOKEN_DECIMALS,
+      decimalAdjustment: decimalAdjustment.toString(),
+      ethPriceUsd: Number(ethPriceScaled) / 10 ** ETH_DECIMALS,
+      tokenPriceUsd: Number(tokenPriceScaled) / 10 ** TOKEN_DECIMALS,
+    });
+
+    if (ETH_DECIMALS >= TOKEN_DECIMALS) {
+      costInRewardTokens = (gasCost * ethPriceScaled) / (tokenPriceScaled * decimalAdjustment);
+    } else {
+      costInRewardTokens = (gasCost * ethPriceScaled * decimalAdjustment) / tokenPriceScaled;
+    }
+
+    // Add check for zero result and apply minimum cost if needed
+    if (costInRewardTokens === 0n) {
+      const minimumCostUSD = 30; // $30 minimum like in GasCostEstimator
+      const minimumCost = (BigInt(minimumCostUSD) * 10n ** BigInt(TOKEN_DECIMALS)) / tokenPriceScaled;
+      
+      this.logger.warn('Gas cost in reward token calculated as zero, using minimum cost', {
+        gasCost: gasCost.toString(),
+        ethPrice: ethPriceScaled.toString(),
+        tokenPrice: tokenPriceScaled.toString(),
+        minimumCost: minimumCost.toString(),
+      });
+      
+      return minimumCost;
+    }
+
+    this.logger.debug('Final gas cost conversion result', {
+      costInRewardTokens: costInRewardTokens.toString(),
+      formattedCost: ethers.formatUnits(costInRewardTokens, TOKEN_DECIMALS),
+    });
+
+    return costInRewardTokens;
   }
 
   /**

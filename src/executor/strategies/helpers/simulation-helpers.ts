@@ -76,6 +76,48 @@ export async function simulateTransaction(
   }
 
   try {
+    // Get current gas price for realistic cost calculations
+    let realGasPrice: bigint = BigInt(0);
+    let simulationGasPrice: string;
+    
+    try {
+      const provider = lstContract.runner?.provider as ethers.Provider;
+      if (provider) {
+        const feeData = await provider.getFeeData();
+        realGasPrice = feeData.gasPrice || BigInt(0);
+        
+        // For simulation: Apply minimum threshold for Tenderly stability
+        const MIN_SIMULATION_GAS_PRICE = ethers.parseUnits('1', 'gwei');
+        let adjustedGasPrice = realGasPrice;
+        
+        if (realGasPrice < MIN_SIMULATION_GAS_PRICE) {
+          adjustedGasPrice = MIN_SIMULATION_GAS_PRICE;
+          logger.info('Using minimum gas price for simulation stability', {
+            realGasPriceGwei: Number(realGasPrice) / 1e9,
+            simulationGasPriceGwei: Number(adjustedGasPrice) / 1e9,
+            reason: 'sub-1-gwei protection for Tenderly',
+          });
+        }
+        
+        simulationGasPrice = adjustedGasPrice.toString();
+        logger.debug('Gas price setup for simulation', {
+          realGasPriceGwei: Number(realGasPrice) / 1e9,
+          simulationGasPriceGwei: Number(adjustedGasPrice) / 1e9,
+          isAdjusted: realGasPrice !== adjustedGasPrice,
+        });
+      } else {
+        simulationGasPrice = ethers.parseUnits('20', 'gwei').toString();
+        realGasPrice = ethers.parseUnits('20', 'gwei');
+        logger.warn('No provider available, using fallback gas price');
+      }
+    } catch (error) {
+      simulationGasPrice = ethers.parseUnits('20', 'gwei').toString();
+      realGasPrice = ethers.parseUnits('20', 'gwei');
+      logger.warn('Failed to get current gas price, using fallback', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     // Get the contract data for the transaction
     const data = lstContract.interface.encodeFunctionData(
       'claimAndDistributeReward',
@@ -84,6 +126,12 @@ export async function simulateTransaction(
 
     const contractAddress = lstContract.target.toString();
 
+    // Ensure minimum gas limit for simulation to avoid failures with very low estimates
+    const MIN_SIMULATION_GAS = 2000000; // 2m gas minimum for complex operations
+    const simulationGasLimit = Number(gasLimit) < MIN_SIMULATION_GAS 
+      ? MIN_SIMULATION_GAS 
+      : Number(gasLimit);
+
     // Add debug logging
     logger.debug('Preparing simulation transaction', {
       txId: tx.id,
@@ -91,6 +139,9 @@ export async function simulateTransaction(
       contractAddress,
       minExpectedReward: minExpectedReward.toString(),
       depositCount: depositIds.length,
+      originalGasLimit: Number(gasLimit),
+      adjustedGasLimit: simulationGasLimit,
+      gasPriceGwei: Number(simulationGasPrice) / 1e9,
     });
 
     // Create simulation transaction object
@@ -98,7 +149,8 @@ export async function simulateTransaction(
       from: finalSignerAddress,
       to: contractAddress,
       data,
-      gas: Number(gasLimit),
+      gas: simulationGasLimit,
+      gasPrice: simulationGasPrice, // Use current network gas price
       value: '0',
     };
 
@@ -107,7 +159,8 @@ export async function simulateTransaction(
       depositIds: depositIds.map(String),
       minExpectedReward: minExpectedReward.toString(),
       recipient: finalSignerAddress,
-      gasLimit: gasLimit.toString(),
+      gasLimit: simulationGasLimit.toString(),
+      gasPriceGwei: Number(simulationGasPrice) / 1e9,
     });
 
     // First try to get gas estimation (faster)
@@ -125,10 +178,11 @@ export async function simulateTransaction(
         txId: tx.id,
         estimatedGas: gasEstimation.gasUnits,
         bufferedGas: gasEstimate.toString(),
+        usedGasPriceGwei: Number(simulationGasPrice) / 1e9,
       });
     } catch (estimateError) {
       logger.warn(
-        'Failed to estimate gas via simulation, will fall back to simulation',
+        'Failed to estimate gas via simulation, will fall back to full simulation',
         {
           error:
             estimateError instanceof Error
@@ -153,17 +207,21 @@ export async function simulateTransaction(
       simulationResult.error?.code === 'GAS_LIMIT_EXCEEDED' &&
       simulationResult.gasUsed > 0
     ) {
-      const newGasLimit = BigInt(Math.ceil(simulationResult.gasUsed * 1.5)); // 50% buffer
+      const newGasLimit = Math.max(
+        Math.ceil(simulationResult.gasUsed * 1.52), // 50% buffer
+        MIN_SIMULATION_GAS // Ensure minimum
+      );
 
       const retrySimulationTx = {
         ...simulationTx,
-        gas: Number(newGasLimit),
+        gas: newGasLimit,
       };
 
       logger.info('Retrying simulation with higher gas limit', {
         txId: tx.id,
-        originalGasLimit: gasLimit.toString(),
-        newGasLimit: newGasLimit.toString(),
+        originalGasLimit: simulationGasLimit,
+        newGasLimit: newGasLimit,
+        gasUsedInFirstAttempt: simulationResult.gasUsed,
       });
 
       const retryResult = await simulationService.simulateTransaction(
@@ -184,7 +242,7 @@ export async function simulateTransaction(
           success: true,
           gasEstimate:
             gasEstimate || BigInt(Math.ceil(retryResult.gasUsed * 1.2)),
-          optimizedGasLimit: newGasLimit,
+          optimizedGasLimit: BigInt(newGasLimit),
         };
       }
     }
@@ -195,6 +253,7 @@ export async function simulateTransaction(
         errorCode: simulationResult.error?.code,
         errorMessage: simulationResult.error?.message,
         errorDetails: simulationResult.error?.details,
+        gasUsed: simulationResult.gasUsed || 0,
       });
 
       return {
@@ -303,12 +362,55 @@ export async function estimateGasUsingSimulation(
   }
 
   try {
+    // Get current gas price for realistic cost calculations
+    let realGasPrice: bigint = BigInt(0);
+    let simulationGasPrice: string;
+    
+    try {
+      const provider = lstContract.runner?.provider as ethers.Provider;
+      if (provider) {
+        const feeData = await provider.getFeeData();
+        realGasPrice = feeData.gasPrice || BigInt(0);
+        
+        // For simulation: Apply minimum threshold for Tenderly stability
+        const MIN_SIMULATION_GAS_PRICE = ethers.parseUnits('1', 'gwei');
+        let adjustedGasPrice = realGasPrice;
+        
+        if (realGasPrice < MIN_SIMULATION_GAS_PRICE) {
+          adjustedGasPrice = MIN_SIMULATION_GAS_PRICE;
+          logger.info('Using minimum gas price for simulation stability', {
+            realGasPriceGwei: Number(realGasPrice) / 1e9,
+            simulationGasPriceGwei: Number(adjustedGasPrice) / 1e9,
+            reason: 'sub-1-gwei protection for Tenderly',
+          });
+        }
+        
+        simulationGasPrice = adjustedGasPrice.toString();
+        logger.debug('Gas price setup for simulation', {
+          realGasPriceGwei: Number(realGasPrice) / 1e9,
+          simulationGasPriceGwei: Number(adjustedGasPrice) / 1e9,
+          isAdjusted: realGasPrice !== adjustedGasPrice,
+        });
+      } else {
+        simulationGasPrice = ethers.parseUnits('20', 'gwei').toString();
+        realGasPrice = ethers.parseUnits('20', 'gwei');
+        logger.warn('No provider available, using fallback gas price');
+      }
+    } catch (error) {
+      simulationGasPrice = ethers.parseUnits('20', 'gwei').toString();
+      realGasPrice = ethers.parseUnits('20', 'gwei');
+      logger.warn('Failed to get current gas price, using fallback', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     // Add debug logging
     logger.debug('Preparing gas estimation', {
       recipient,
       contractAddress: lstContract.target.toString(),
       reward: reward.toString(),
       depositCount: depositIds.length,
+      gasPriceGwei: Number(simulationGasPrice) / 1e9,
     });
 
     // Encode transaction data
@@ -317,14 +419,27 @@ export async function estimateGasUsingSimulation(
       [finalRecipient, reward, depositIds],
     );
 
+    // Use a high gas limit for estimation but ensure it's reasonable
+    const MIN_ESTIMATION_GAS = 1000000; // 1M gas minimum for gas estimation
+    const MAX_ESTIMATION_GAS = 10000000; // 10M gas maximum to avoid excessive costs
+    const estimationGasLimit = Math.min(MAX_ESTIMATION_GAS, Math.max(MIN_ESTIMATION_GAS, 5000000));
+
     // Create simulation transaction with a high gas limit to ensure it doesn't fail due to gas
     const simulationTx: SimulationTransaction = {
       from: finalRecipient,
       to: lstContract.target.toString(),
       data,
-      gas: 5000000, // 5M gas as a high limit for estimation
+      gas: estimationGasLimit,
+      gasPrice: simulationGasPrice, // Use current network gas price
       value: '0',
     };
+
+    logger.debug('Gas estimation transaction details', {
+      from: finalRecipient,
+      to: lstContract.target.toString(),
+      gasLimit: estimationGasLimit,
+      depositCount: depositIds.length,
+    });
 
     // Get gas estimation
     const gasEstimation = await simulationService.estimateGasCosts(
@@ -334,13 +449,15 @@ export async function estimateGasUsingSimulation(
       },
     );
 
-    // Add 30% buffer to the estimate
-    const gasEstimate = BigInt(Math.ceil(gasEstimation.gasUnits * 1.3));
+    // Add 30% buffer to the estimate but ensure it's reasonable
+    const bufferedEstimate = Math.ceil(gasEstimation.gasUnits * 1.3);
+    const gasEstimate = BigInt(Math.max(bufferedEstimate, 300000)); // Minimum 300k gas
 
     logger.info('Estimated gas using simulation', {
       depositCount: depositIds.length,
       rawEstimate: gasEstimation.gasUnits,
-      bufferedEstimate: gasEstimate.toString(),
+      bufferedEstimate: bufferedEstimate,
+      finalEstimate: gasEstimate.toString(),
       recipient: finalRecipient,
       contractAddress: lstContract.target.toString(),
     });
