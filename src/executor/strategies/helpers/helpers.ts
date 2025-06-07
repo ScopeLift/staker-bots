@@ -108,11 +108,25 @@ export async function calculateGasParameters(
   const finalGasLimit = calculateGasLimit(gasEstimate, 1, logger);
   const feeData = await provider.getFeeData();
   const baseGasPrice = feeData.gasPrice || 0n;
+  
+  // Ensure minimum gas price for stability
+  const MIN_GAS_PRICE_WEI = 1000000000n; // 1 gwei
+  const safeGasPrice = baseGasPrice < MIN_GAS_PRICE_WEI ? MIN_GAS_PRICE_WEI : baseGasPrice;
+  
+  if (baseGasPrice < MIN_GAS_PRICE_WEI) {
+    logger.warn('Base gas price is very low, using minimum threshold', {
+      actualGasPriceGwei: Number(baseGasPrice) / 1e9,
+      minGasPriceGwei: 1,
+      usingMinimum: true,
+    });
+  }
+  
   const gasBoostMultiplier = BigInt(100 + gasBoostPercentage);
-  const boostedGasPrice = (baseGasPrice * gasBoostMultiplier) / 100n;
+  const boostedGasPrice = (safeGasPrice * gasBoostMultiplier) / 100n;
 
   logger.info('Gas price calculation', {
     baseGasPrice: baseGasPrice.toString(),
+    safeGasPrice: safeGasPrice.toString(),
     boostPercentage: gasBoostPercentage,
     boostedGasPrice: boostedGasPrice.toString(),
   });
@@ -434,9 +448,13 @@ export async function validateRelayerTransaction(
       ),
     };
   }
-  const estimatedGasCost =
-    BigInt(feeData.maxFeePerGas.toString()) *
-    profitability.estimates.gas_estimate;
+  
+  // Ensure minimum gas price for validation calculations
+  const MIN_GAS_PRICE_WEI = 1000000000n; // 1 gwei
+  const maxFeePerGas = BigInt(feeData.maxFeePerGas.toString());
+  const safeGasPrice = maxFeePerGas < MIN_GAS_PRICE_WEI ? MIN_GAS_PRICE_WEI : maxFeePerGas;
+  
+  const estimatedGasCost = safeGasPrice * profitability.estimates.gas_estimate;
 
   // Get payout amount from contract
   if (!lstContract || typeof lstContract.payoutAmount !== 'function') {
