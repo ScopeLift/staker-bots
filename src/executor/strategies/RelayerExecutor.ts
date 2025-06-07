@@ -1209,10 +1209,32 @@ export class RelayerExecutor implements IExecutor {
       // Apply slight boost to gas values for reliable inclusion
       if (maxFeePerGas) {
         maxFeePerGas = (maxFeePerGas * 125n) / 100n;
+        
+        // Ensure minimum gas price for Flashbots stability
+        const MIN_GAS_PRICE_WEI = 1000000000n; // 1 gwei
+        if (maxFeePerGas < MIN_GAS_PRICE_WEI) {
+          this.logger.warn('Max fee per gas is very low, using minimum threshold', {
+            actualGasPriceGwei: Number(maxFeePerGas) / 1e9,
+            minGasPriceGwei: 1,
+            usingMinimum: true,
+          });
+          maxFeePerGas = MIN_GAS_PRICE_WEI;
+        }
       }
 
       if (maxPriorityFeePerGas) {
         maxPriorityFeePerGas = (maxPriorityFeePerGas * 125n) / 100n;
+        
+        // Ensure minimum priority fee
+        const MIN_PRIORITY_FEE_WEI = 100000000n; // 0.1 gwei minimum priority fee
+        if (maxPriorityFeePerGas < MIN_PRIORITY_FEE_WEI) {
+          this.logger.warn('Max priority fee per gas is very low, using minimum threshold', {
+            actualPriorityFeeGwei: Number(maxPriorityFeePerGas) / 1e9,
+            minPriorityFeeGwei: 0.1,
+            usingMinimum: true,
+          });
+          maxPriorityFeePerGas = MIN_PRIORITY_FEE_WEI;
+        }
       }
 
       // Use the higher of network fee data or configured values
