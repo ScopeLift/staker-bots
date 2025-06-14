@@ -193,10 +193,15 @@ export class RelayerExecutor implements IExecutor {
 
     // Initialize simulation service (with fallback)
     try {
-      this.simulationService = new SimulationService();
-      this.logger.info(
-        'Initialized simulation service for transaction validation',
-      );
+      if (CONFIG.tenderly.useSimulation) {
+        this.simulationService = new SimulationService();
+        this.logger.info(
+          'Initialized simulation service for transaction validation',
+        );
+      } else {
+        this.simulationService = null;
+        this.logger.info('Simulation service disabled by configuration');
+      }
     } catch (error) {
       this.logger.warn(
         'Failed to initialize simulation service, will use fallback gas estimation',
