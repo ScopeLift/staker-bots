@@ -994,8 +994,8 @@ export class RelayerExecutor implements IExecutor {
         // Early check: Skip simulation if expected profit is negative or zero
         const expectedProfit = tx.profitability.estimates.expected_profit || BigInt(0);
         if (expectedProfit <= BigInt(0)) {
-          this.logger.error(
-            'Skipping simulation and transaction - not profitable',
+          this.logger.warn(
+            'Skipping simulation - not profitable, will retry later',
             {
               txId: tx.id,
               expectedProfit: expectedProfit.toString(),
@@ -1003,21 +1003,7 @@ export class RelayerExecutor implements IExecutor {
               depositCount: depositIds.length,
             },
           );
-
-          // Update transaction status and clean up
-          tx.status = TransactionStatus.FAILED;
-          tx.error = new Error(
-            `Transaction not profitable: expected profit is ${expectedProfit}. Skipping expensive simulation.`,
-          );
-          this.queue.set(tx.id, tx);
-          await cleanupQueueItems(
-            tx,
-            '',
-            this.db,
-            this.logger,
-            this.errorLogger,
-          );
-          this.queue.delete(tx.id);
+          // Keep transaction in queue for next processing cycle
           return;
         }
 
