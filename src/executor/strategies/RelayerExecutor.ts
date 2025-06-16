@@ -404,12 +404,32 @@ export class RelayerExecutor implements IExecutor {
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
     try {
+      // Early check: Skip simulation if expected profit is negative or zero
+      const expectedProfit = profitability.estimates.expected_profit || BigInt(0);
+      const payoutAmount = profitability.estimates.payout_amount || BigInt(0);
+      
+      // If expected profit is 0 or negative, it means total rewards < (payout + gas cost)
+      if (expectedProfit <= BigInt(0)) {
+        const error = new TransactionValidationError(
+          `Transaction not profitable: expected profit is ${expectedProfit}. Skipping expensive simulation.`,
+          { 
+            depositIds: depositIds.map(String),
+            expectedProfit: expectedProfit.toString(),
+            payoutAmount: payoutAmount.toString()
+          },
+        );
+        this.logger.warn('Skipping simulation due to non-profitable transaction', {
+          expectedProfit: expectedProfit.toString(),
+          payoutAmount: payoutAmount.toString(),
+          depositCount: depositIds.length,
+        });
+        return { isValid: false, error };
+      }
+
       // Try to get a better gas estimate using simulation if available
       if (this.simulationService) {
         try {
           const signerAddress = await this.relaySigner.getAddress();
-          const payoutAmount =
-            profitability.estimates.payout_amount || BigInt(0);
 
           // Use a minimal expected reward for estimation
           const simulatedGas = await estimateGasUsingSimulation(
@@ -970,6 +990,36 @@ export class RelayerExecutor implements IExecutor {
 
         // Get signer address for reward recipient
         const signerAddress = await this.relaySigner.getAddress();
+
+        // Early check: Skip simulation if expected profit is negative or zero
+        const expectedProfit = tx.profitability.estimates.expected_profit || BigInt(0);
+        if (expectedProfit <= BigInt(0)) {
+          this.logger.error(
+            'Skipping simulation and transaction - not profitable',
+            {
+              txId: tx.id,
+              expectedProfit: expectedProfit.toString(),
+              payoutAmount: payoutAmount.toString(),
+              depositCount: depositIds.length,
+            },
+          );
+
+          // Update transaction status and clean up
+          tx.status = TransactionStatus.FAILED;
+          tx.error = new Error(
+            `Transaction not profitable: expected profit is ${expectedProfit}. Skipping expensive simulation.`,
+          );
+          this.queue.set(tx.id, tx);
+          await cleanupQueueItems(
+            tx,
+            '',
+            this.db,
+            this.logger,
+            this.errorLogger,
+          );
+          this.queue.delete(tx.id);
+          return;
+        }
 
         // Run simulation to validate transaction will succeed
         try {
