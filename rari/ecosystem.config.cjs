@@ -4,6 +4,7 @@ module.exports = {
       name: "rari-staker-bots",
       script: "npx",
       args: "tsx src/index.ts",
+      cwd: "/root/staker-bots/rari", // Add this line to specify working directory
       env: {
         NODE_ENV: "production",
         EXECUTOR_TYPE: "wallet",
