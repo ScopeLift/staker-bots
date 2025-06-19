@@ -1,10 +1,9 @@
 module.exports = {
   apps: [
     {
-      name: "rari-staker-bots",
+      name: "staker-bots",
       script: "npx",
       args: "tsx src/index.ts",
-      cwd: "/root/staker-bots/rari", // Add this line to specify working directory
       env: {
         NODE_ENV: "production",
         EXECUTOR_TYPE: "wallet",
@@ -23,7 +22,7 @@ module.exports = {
       merge_logs: true,
 
       // Process monitoring
-      max_restarts: 0, // Infinite restarts
+      max_restarts: 0, // Changed from 10000 to 0 for infinite restarts
       restart_delay: 4000,
       exp_backoff_restart_delay: 100,
 
@@ -33,3 +32,8 @@ module.exports = {
     }
   ]
 }
+
+
+
+
+
