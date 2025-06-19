@@ -84,7 +84,7 @@ export type ErrorLog = {
   service_name: string;
   error_message: string;
   stack_trace?: string;
-  severity: 'info' | 'warn' | 'error' | 'fatal';
+  severity: 'debug' | 'info' | 'warning' | 'error' | 'critical';
   meta?: Record<string, unknown>;
   context?: Record<string, unknown>;
   created_at?: string;

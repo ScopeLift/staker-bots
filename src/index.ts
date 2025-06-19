@@ -565,7 +565,7 @@ async function initializeRariBumpEarningPowerEngine(
 // Initialize Rari Claim and Distribute Engine
 async function initializeRariClaimDistributeEngine(
   database: DatabaseWrapper,
-  executor: IExecutor,
+  executor: ExecutorWrapper,
   logger: Logger,
 ): Promise<RariClaimDistributeEngine> {
   logger.info('Initializing Rari Claim and Distribute Engine...');
@@ -791,7 +791,7 @@ async function main() {
       runningComponents.claimDistributeEngine =
         await initializeRariClaimDistributeEngine(
           database,
-          runningComponents.executor as IExecutor,
+          runningComponents.executor,
           profitabilityLogger,
         );
 

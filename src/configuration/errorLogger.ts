@@ -7,9 +7,9 @@ import { ErrorLog } from '@/database/interfaces/types';
  */
 export enum ErrorSeverity {
   INFO = 'info',
-  WARN = 'warn',
+  WARN = 'warning',
   ERROR = 'error',
-  FATAL = 'fatal',
+  FATAL = 'critical',
 }
 
 /**
@@ -36,6 +36,33 @@ export class ErrorLogger {
   }
 
   /**
+   * Helper function to serialize BigInt values in objects
+   */
+  private serializeBigIntValues(obj: any): any {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj === 'bigint') {
+      return obj.toString();
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.serializeBigIntValues(item));
+    }
+
+    if (typeof obj === 'object') {
+      const result: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        result[key] = this.serializeBigIntValues(value);
+      }
+      return result;
+    }
+
+    return obj;
+  }
+
+  /**
    * Log an error to the database and optionally to the console
    */
   async logError(
@@ -50,14 +77,14 @@ export class ErrorLogger {
       // Extract context if available (from BaseError)
       const context = error instanceof BaseError ? error.context : undefined;
 
-      // Create error log object
+      // Create error log object with serialized BigInt values
       const errorLog: ErrorLog = {
         service_name: this.serviceName,
         error_message: errorMessage,
         stack_trace: stackTrace,
         severity,
-        meta,
-        context,
+        meta: this.serializeBigIntValues(meta),
+        context: this.serializeBigIntValues(context),
       };
 
       // Log to console if enabled

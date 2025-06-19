@@ -33,10 +33,8 @@ import {
 import {
   calculateGasParameters,
   cleanupQueueItems,
-  calculateOptimalThreshold,
   cleanupStaleTransactions,
 } from './helpers';
-import { GasCostEstimator } from '@/prices/GasCostEstimator';
 import { ErrorLogger } from '@/configuration/errorLogger';
 import { BASE_EVENTS, BASE_QUEUE } from './constants';
 
@@ -46,6 +44,12 @@ export interface ExtendedExecutorConfig extends ExecutorConfig {
 }
 
 interface GovLstContract extends BaseContract {
+  claimAndDistributeReward: (
+    recipient: string,
+    minExpectedReward: bigint,
+    depositIds: bigint[],
+  ) => Promise<ContractTransactionResponse>;
+  payoutAmount(): Promise<bigint>;
   estimateGas: {
     claimAndDistributeReward: (
       recipient: string,
@@ -53,12 +57,6 @@ interface GovLstContract extends BaseContract {
       depositIds: bigint[],
     ) => Promise<bigint>;
   };
-  claimAndDistributeReward: (
-    recipient: string,
-    minExpectedReward: bigint,
-    depositIds: bigint[],
-  ) => Promise<ContractTransactionResponse>;
-  payoutAmount(): Promise<bigint>;
 }
 
 interface GovLstContractMethod {
@@ -94,7 +92,6 @@ export class BaseExecutor implements IExecutor {
   protected readonly govLstContract: GovLstContract;
   private readonly provider: ethers.Provider;
   private readonly config: ExecutorConfig;
-  private readonly gasCostEstimator: GasCostEstimator;
 
   /**
    * Creates a new BaseExecutor instance
@@ -147,8 +144,6 @@ export class BaseExecutor implements IExecutor {
       }
       throw error;
     }
-
-    this.gasCostEstimator = new GasCostEstimator();
   }
 
   /**
@@ -349,8 +344,10 @@ export class BaseExecutor implements IExecutor {
 
       const gasBoostMultiplier = BigInt(100 + this.config.gasBoostPercentage);
       const boostedGasPrice = (feeData.gasPrice * gasBoostMultiplier) / 100n;
-      const estimatedGasCost =
-        boostedGasPrice * profitability.estimates.gas_estimate;
+      const gasEstimate = typeof profitability.estimates.gas_estimate === 'bigint' 
+        ? profitability.estimates.gas_estimate 
+        : BigInt(String(profitability.estimates.gas_estimate));
+      const estimatedGasCost = boostedGasPrice * gasEstimate;
 
       // Get payout amount - with fallback
       let payoutAmount: bigint;
@@ -389,10 +386,20 @@ export class BaseExecutor implements IExecutor {
           });
         }
 
-        payoutAmount =
-          profitability.estimates.payout_amount ||
+        const estimatedPayoutAmount = profitability.estimates.payout_amount ? 
+          (typeof profitability.estimates.payout_amount === 'bigint' 
+            ? profitability.estimates.payout_amount 
+            : BigInt(String(profitability.estimates.payout_amount))) : 
+          BigInt(0);
+        
+        payoutAmount = estimatedPayoutAmount ||
           profitability.deposit_details.reduce(
-            (sum, detail) => sum + detail.rewards,
+            (sum, detail) => {
+              const rewardAmount = typeof detail.rewards === 'bigint' 
+                ? detail.rewards 
+                : BigInt(String(detail.rewards));
+              return sum + rewardAmount;
+            },
             BigInt(0),
           );
 
@@ -421,14 +428,18 @@ export class BaseExecutor implements IExecutor {
         10000n; // Multiply by 100 for percentage, divide by 10000 (100*100)
 
       // Validate that expected reward is sufficient
+      const expectedProfit = typeof profitability.estimates.expected_profit === 'bigint' 
+        ? profitability.estimates.expected_profit 
+        : BigInt(String(profitability.estimates.expected_profit));
+      
       if (
-        profitability.estimates.expected_profit <
+        expectedProfit <
         baseAmountForMargin + requiredProfitValue
       ) {
         const error = new TransactionValidationError(
           'Expected reward is less than payout amount plus gas cost and profit margin',
           {
-            expectedReward: profitability.estimates.expected_profit.toString(),
+            expectedReward: expectedProfit.toString(),
             payoutAmount: payoutAmount.toString(),
             estimatedGasCost: estimatedGasCost.toString(),
             requiredProfitValue: requiredProfitValue.toString(),
@@ -797,40 +808,87 @@ export class BaseExecutor implements IExecutor {
       tx.status = TransactionStatus.PENDING;
       this.queue.set(tx.id, tx);
 
-      // Get payout amount from contract
-      const payoutAmount = await this.govLstContract.payoutAmount();
-
-      // Temporarily use a default gas cost value
-      const gasCost = 0n; // Set to 0 for now since we don't have actual values
-      this.logger.info('Using default gas cost:', {
-        value: gasCost.toString(),
-        type: typeof gasCost,
-      });
-
-      // Calculate optimal threshold
-      const optimalThreshold = calculateOptimalThreshold(
-        payoutAmount,
-        gasCost,
-        this.config.minProfitMargin,
-        this.logger,
-      );
-
-      const depositIds = tx.depositIds;
+      // Use the queued transaction data instead of recalculating
+      let minExpectedReward: bigint;
+      let amount: bigint;
+      let depositIds: bigint[];
+      
+      // Get data from queued transaction
+      if (tx.tx_data) {
+        try {
+          const txData = JSON.parse(tx.tx_data);
+          
+          // Get depositIds from the queued data
+          depositIds = txData.depositIds ? txData.depositIds.map((id: string) => BigInt(id)) : tx.depositIds;
+          
+          // Get profitability data from the queued transaction
+          const profitability = txData.profitability || tx.profitability;
+          
+          // Use the expected profit as minExpectedReward (already calculated during queuing)
+          minExpectedReward = BigInt(String(profitability.estimates.expected_profit));
+          
+          // Get the total amount from the profitability data
+          amount = BigInt(String(profitability.estimates.total_shares));
+          
+          this.logger.info('Using queued transaction data', {
+            depositIds: depositIds.map(String),
+            minExpectedReward: minExpectedReward.toString(),
+            amount: amount.toString(),
+            source: 'queued_tx_data',
+          });
+        } catch (parseError) {
+          // If tx_data is not JSON (might be raw contract call data), use the transaction's profitability
+          this.logger.warn('tx_data is not JSON metadata, using transaction profitability', {
+            parseError: parseError instanceof Error ? parseError.message : String(parseError),
+          });
+          
+          depositIds = tx.depositIds;
+          minExpectedReward = BigInt(String(tx.profitability.estimates.expected_profit));
+          amount = BigInt(String(tx.profitability.estimates.total_shares));
+          
+          this.logger.info('Using transaction profitability data', {
+            depositIds: depositIds.map(String),
+            minExpectedReward: minExpectedReward.toString(),
+            amount: amount.toString(),
+            source: 'transaction_profitability',
+          });
+        }
+      } else {
+        // Fallback to using the transaction's profitability data
+        depositIds = tx.depositIds;
+        minExpectedReward = BigInt(String(tx.profitability.estimates.expected_profit));
+        amount = BigInt(String(tx.profitability.estimates.total_shares));
+        
+        this.logger.info('Using transaction profitability data (no tx_data)', {
+          depositIds: depositIds.map(String),
+          minExpectedReward: minExpectedReward.toString(),
+          amount: amount.toString(),
+          source: 'transaction_profitability_fallback',
+        });
+      }
 
       // Store queue-related metadata
       let queueItemId: string | undefined;
       let queueDepositIds: string[] = [];
-      if (tx.tx_data) {
+      
+      // Try to extract metadata from transaction object
+      if (tx.metadata?.queueItemId) {
+        queueItemId = tx.metadata.queueItemId;
+        queueDepositIds = tx.metadata.depositIds || depositIds.map(String);
+      } else if (tx.tx_data) {
         try {
           const txData = JSON.parse(tx.tx_data);
           queueItemId = txData.queueItemId;
-          queueDepositIds = depositIds.map(String);
+          queueDepositIds = txData.depositIds?.map(String) || depositIds.map(String);
         } catch (error) {
-          this.logger.error('Failed to parse txData', {
-            error: error instanceof Error ? error.message : String(error),
-            txData: tx.tx_data,
+          // tx_data might be raw contract call data, not JSON metadata
+          this.logger.debug('tx_data is not JSON metadata, treating as contract call data', {
+            txDataPreview: tx.tx_data?.substring(0, 50),
           });
+          queueDepositIds = depositIds.map(String);
         }
+      } else {
+        queueDepositIds = depositIds.map(String);
       }
 
       tx.metadata = {
@@ -842,7 +900,7 @@ export class BaseExecutor implements IExecutor {
       const simulationResult = await this.simulateTransaction(
         depositIds,
         this.config.defaultTipReceiver || this.wallet.address,
-        optimalThreshold,
+        minExpectedReward,
       );
 
       if (!simulationResult.success) {
@@ -878,21 +936,63 @@ export class BaseExecutor implements IExecutor {
       const { finalGasLimit, boostedGasPrice } =
         await this.calculateGasParameters(gasEstimate);
 
-      const claimAndDistributeReward = this.govLstContract
-        .claimAndDistributeReward as GovLstContractMethod;
-      if (!claimAndDistributeReward) {
-        throw new ContractMethodError('claimAndDistributeReward');
-      }
+      // Check if we have pre-encoded transaction data (for custom contracts like Rari)
+      let txResponse: ethers.ContractTransactionResponse;
+      
+      if (tx.tx_data && tx.tx_data.startsWith('0x')) {
+        // Use pre-encoded transaction data - determine target contract from tx_data
+        let targetAddress: string;
+        
+        // For Rari transactions, we need to send to the LST contract
+        if (tx.tx_data.startsWith('0x4406e5e5')) { // claimAndDistributeReward method signature
+          targetAddress = CONFIG.LST_ADDRESS;
+        } else {
+          // Default to govLstContract for other transactions
+          targetAddress = this.govLstContract.target as string;
+        }
 
-      const txResponse = await claimAndDistributeReward(
-        this.config.defaultTipReceiver || this.wallet.address,
-        optimalThreshold,
-        depositIds,
-        {
+        this.logger.info('Submitting pre-encoded transaction', {
+          targetAddress,
+          data: tx.tx_data,
+          gasLimit: finalGasLimit.toString(),
+          gasPrice: boostedGasPrice.toString(),
+        });
+
+        // Send raw transaction with pre-encoded data
+        txResponse = await this.wallet.sendTransaction({
+          to: targetAddress,
+          data: tx.tx_data,
           gasLimit: finalGasLimit,
           gasPrice: boostedGasPrice,
-        },
-      );
+        }) as ethers.ContractTransactionResponse;
+      } else {
+        // Use govLstContract method for standard transactions
+        const claimAndDistributeReward = this.govLstContract
+          .claimAndDistributeReward as GovLstContractMethod;
+        if (!claimAndDistributeReward) {
+          throw new ContractMethodError('claimAndDistributeReward');
+        }
+
+        this.logger.info('Submitting claimAndDistributeReward transaction', {
+          recipient: this.config.defaultTipReceiver || this.wallet.address,
+          minExpectedReward: minExpectedReward.toString(),
+          depositIds: depositIds.map(String),
+          totalAmount: amount.toString(),
+          profitMargin: this.config.minProfitMargin,
+          gasLimit: finalGasLimit.toString(),
+          gasPrice: boostedGasPrice.toString(),
+        });
+
+        txResponse = await claimAndDistributeReward(
+          this.config.defaultTipReceiver || this.wallet.address,
+          minExpectedReward,
+          depositIds,
+          {
+            gasLimit: finalGasLimit,
+            gasPrice: boostedGasPrice,
+          },
+        );
+      }
 
       this.logger.info('Transaction submitted', {
         id: tx.id,
@@ -1031,18 +1131,17 @@ export class BaseExecutor implements IExecutor {
         throw error;
       }
 
-      // First try to estimate with actual values
+      // Try to estimate gas using the contract's estimateGas method
       try {
-        const gasEstimate =
-          await this.govLstContract.estimateGas.claimAndDistributeReward(
-            tipReceiver,
-            profitability.estimates.payout_amount,
-            depositIds,
-          );
+        const gasEstimate = await this.govLstContract.estimateGas.claimAndDistributeReward(
+          tipReceiver,
+          profitability.estimates.payout_amount,
+          depositIds,
+        );
         return BigInt(gasEstimate.toString());
       } catch (estimateError) {
         this.logger.warn(
-          'Initial gas estimation failed, trying with minimum values',
+          'Gas estimation failed, using fallback estimate',
           {
             error:
               estimateError instanceof Error
@@ -1053,36 +1152,23 @@ export class BaseExecutor implements IExecutor {
 
         if (this.errorLogger) {
           await this.errorLogger.warn(estimateError as Error, {
-            context: 'base-executor-estimate-gas-initial-failed',
+            context: 'base-executor-estimate-gas-failed',
             depositIds: depositIds.map(String),
           });
         }
 
-        // If that fails, try with minimum values
-        try {
-          const minPayout = BigInt(1); // Minimum possible payout
-          const gasEstimate =
-            await this.govLstContract.estimateGas.claimAndDistributeReward(
-              tipReceiver,
-              minPayout,
-              depositIds,
-            );
-          return BigInt(gasEstimate.toString());
-        } catch (fallbackError) {
-          // If both attempts fail, throw with detailed error
-          if (this.errorLogger) {
-            await this.errorLogger.error(fallbackError as Error, {
-              context: 'base-executor-estimate-gas-fallback-failed',
-              depositIds: depositIds.map(String),
-            });
-          }
-
-          throw new GasEstimationError(fallbackError as Error, {
-            depositIds: depositIds.map((id) => id.toString()),
-            payoutAmount: profitability.estimates.payout_amount.toString(),
-            tipReceiver,
-          });
-        }
+        // Return a reasonable fallback gas estimate
+        // Base gas + per deposit gas
+        const baseGas = 150000n; // Base transaction cost
+        const perDepositGas = 50000n; // Additional gas per deposit
+        const fallbackEstimate = baseGas + (BigInt(depositIds.length) * perDepositGas);
+        
+        this.logger.info('Using fallback gas estimate', {
+          depositCount: depositIds.length,
+          estimate: fallbackEstimate.toString(),
+        });
+        
+        return fallbackEstimate;
       }
     } catch (error) {
       if (this.errorLogger && !(error instanceof GasEstimationError)) {

@@ -250,7 +250,7 @@ export class ExecutorWrapper {
         if (this.errorLogger) {
           await this.errorLogger.error(error as Error, {
             context: 'defender-authentication-failure',
-            severity: 'fatal',
+            severity: 'critical',
           });
         }
 
@@ -356,13 +356,20 @@ export class ExecutorWrapper {
         txData,
       );
 
-      // Convert QueueItem to QueuedTransaction
-      const queuedTransaction: QueuedTransaction = {
-        id: queueItem.id,
+      // Also queue the transaction in the underlying executor for actual execution
+      const executorTransaction = await this.executor.queueTransaction(
         depositIds,
         profitability,
-        status: this.mapQueueStatus(queueItem.status),
-        createdAt: new Date(queueItem.created_at),
+        txData,
+      );
+
+      // Convert QueueItem to QueuedTransaction but use executor transaction ID
+      const queuedTransaction: QueuedTransaction = {
+        id: executorTransaction.id,
+        depositIds,
+        profitability,
+        status: executorTransaction.status,
+        createdAt: executorTransaction.createdAt,
         hash: queueItem.hash,
         tx_data: queueItem.tx_data,
         metadata: {

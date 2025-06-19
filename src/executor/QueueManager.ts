@@ -25,6 +25,35 @@ export class QueueManager {
     this.logger = new ConsoleLogger('info');
   }
 
+  // Add helper function for BigInt serialization
+  private serializeBigIntValues(
+    obj: Record<string, unknown> | unknown[] | unknown,
+  ): Record<string, unknown> | unknown[] | unknown {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj === 'bigint') {
+      return obj.toString();
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map((item) => this.serializeBigIntValues(item));
+    }
+
+    if (typeof obj === 'object') {
+      const result: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(
+        obj as Record<string, unknown>,
+      )) {
+        result[key] = this.serializeBigIntValues(value);
+      }
+      return result;
+    }
+
+    return obj;
+  }
+
   async addTransaction(
     depositIds: bigint[],
     profitability: GovLstProfitabilityCheck,
@@ -39,6 +68,17 @@ export class QueueManager {
       throw new Error('Invalid deposit ID');
     }
 
+    // Serialize the profitability check to handle BigInt values
+    const serializedProfitability = this.serializeBigIntValues(profitability);
+
+    // Always create a consistent JSON structure for tx_data
+    const transactionData = {
+      depositIds: depositIds.map(String),
+      profitability: serializedProfitability,
+      // Store encoded contract call data separately if provided
+      ...(txData && { encodedCallData: txData }),
+    };
+
     const item: Omit<
       TransactionQueueItem,
       'id' | 'created_at' | 'updated_at' | 'attempts'
@@ -46,10 +86,8 @@ export class QueueManager {
       transaction_type: this.type,
       deposit_id: firstDepositId.toString(),
       status: TransactionQueueStatus.PENDING,
-      tx_data:
-        txData ||
-        JSON.stringify({ depositIds: depositIds.map(String), profitability }),
-      profitability_check: JSON.stringify(profitability),
+      tx_data: JSON.stringify(transactionData),
+      profitability_check: JSON.stringify(serializedProfitability),
     };
 
     try {

@@ -132,7 +132,7 @@ export const sleep = (ms: number) =>
  */
 export async function cleanupQueueItems(
   tx: QueuedTransaction,
-  txHash: string,
+  txHash: string | undefined,
   db: DatabaseWrapper | undefined,
   logger: Logger,
   errorLogger?: ErrorLogger,
@@ -210,7 +210,7 @@ export async function cleanupQueueItems(
             tx.status === TransactionStatus.CONFIRMED
               ? TransactionQueueStatus.CONFIRMED
               : TransactionQueueStatus.FAILED,
-          hash: txHash,
+          hash: txHash || undefined,
           error:
             tx.status === TransactionStatus.FAILED
               ? tx.error?.message || 'Transaction failed'
@@ -259,7 +259,7 @@ export async function cleanupQueueItems(
                 tx.status === TransactionStatus.CONFIRMED
                   ? TransactionQueueStatus.CONFIRMED
                   : TransactionQueueStatus.FAILED,
-              hash: txHash,
+              hash: txHash || undefined,
               error:
                 tx.status === TransactionStatus.FAILED
                   ? tx.error?.message || 'Transaction failed'
@@ -558,7 +558,7 @@ export async function processTransactionReceipt(
   receipt: EthersTransactionReceipt | null,
   logger: Logger,
   errorLogger: ErrorLogger,
-  cleanupFunction: (tx: QueuedTransaction, txHash: string) => Promise<void>,
+  cleanupFunction: (tx: QueuedTransaction, txHash: string | undefined) => Promise<void>,
 ): Promise<void> {
   const txHash = response.hash;
 
@@ -656,7 +656,7 @@ export async function handleExecutionError(
   logger: Logger,
   errorLogger: ErrorLogger,
   queue: Map<string, QueuedTransaction>,
-  cleanupFunction: (tx: QueuedTransaction, txHash: string) => Promise<void>,
+  cleanupFunction: (tx: QueuedTransaction, txHash: string | undefined) => Promise<void>,
 ): Promise<void> {
   tx.status = TransactionStatus.FAILED;
   tx.error = error as Error;
@@ -684,7 +684,7 @@ export async function handleExecutionError(
   });
 
   // Clean up queue items using the same method
-  await cleanupFunction(tx, tx.hash || '');
+  await cleanupFunction(tx, tx.hash || undefined);
 
   // Remove from in-memory queue
   queue.delete(tx.id);
@@ -838,6 +838,120 @@ export function calculateOptimalThreshold(
 }
 
 /**
+ * Requeue pending items from the database into the in-memory queue
+ * @param queue - In-memory transaction queue
+ * @param db - Database wrapper instance
+ * @param logger - Logger instance
+ * @param errorLogger - Error logger instance
+ */
+export async function requeuePendingItems(
+  queue: Map<string, QueuedTransaction>,
+  db: DatabaseWrapper | undefined,
+  logger: Logger,
+  errorLogger: ErrorLogger,
+): Promise<void> {
+  if (!db) return;
+
+  try {
+    const pendingItems = await db.getTransactionQueueItemsByStatus(
+      TransactionQueueStatus.PENDING,
+    );
+
+    if (!pendingItems?.length) return;
+
+    let requeued = 0;
+
+    for (const item of pendingItems) {
+      if (!item.tx_data) {
+        logger.warn('Skipping database queue item with no tx_data', {
+          itemId: item.id,
+          depositId: item.deposit_id,
+        });
+        continue;
+      }
+
+      // Check if this item is already in the in-memory queue
+      const existingTx = Array.from(queue.values()).find(
+        (tx) => tx.metadata?.queueItemId === item.id
+      );
+
+      if (existingTx) {
+        // Item already in memory queue, skip
+        continue;
+      }
+
+      try {
+        const txData = JSON.parse(item.tx_data);
+        if (!txData.depositIds || !txData.profitability) {
+          logger.warn('Skipping database queue item with invalid data', {
+            itemId: item.id,
+            depositId: item.deposit_id,
+            hasDepositIds: !!txData.depositIds,
+            hasProfitability: !!txData.profitability,
+          });
+          continue;
+        }
+
+        // Create in-memory transaction directly
+        const tx: QueuedTransaction = {
+          id: uuidv4(),
+          depositIds: txData.depositIds.map(BigInt),
+          profitability: txData.profitability,
+          status: TransactionStatus.QUEUED,
+          createdAt: new Date(),
+          tx_data: item.tx_data,
+          metadata: {
+            queueItemId: item.id,
+            depositIds: txData.depositIds,
+          },
+        };
+
+        queue.set(tx.id, tx);
+        requeued++;
+
+        logger.debug('Requeued transaction from database', {
+          txId: tx.id,
+          queueItemId: item.id,
+          depositId: item.deposit_id,
+          depositCount: tx.depositIds.length,
+        });
+
+      } catch (error) {
+        logger.error('Failed to requeue transaction', {
+          itemId: item.id,
+          depositId: item.deposit_id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
+        await errorLogger.error(error as Error, {
+          context: 'helper-requeue-transaction-failed',
+          itemId: item.id,
+          depositId: item.deposit_id,
+        });
+      }
+    }
+
+    if (requeued > 0) {
+      logger.info('Successfully requeued pending transactions', {
+        total: pendingItems.length,
+        requeued,
+        skipped: pendingItems.length - requeued,
+        newQueueSize: queue.size,
+      });
+    }
+
+  } catch (error) {
+    logger.error('Failed to requeue pending items', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    await errorLogger.error(error as Error, {
+      context: 'helper-requeue-pending-items-failed',
+    });
+  }
+}
+
+/**
  * Process the transaction queue
  * @param isPeriodicCheck - Whether this is a periodic check
  * @param isRunning - Whether the executor is running
@@ -869,6 +983,9 @@ export async function processQueue(
       queueSize: queue.size,
       timestamp: new Date().toISOString(),
     });
+
+    // Pull pending transactions from database into in-memory queue
+    await requeuePendingItems(queue, db, logger, errorLogger);
 
     // Run stale transaction cleanup (default 5 minutes)
     const staleThresholdMinutes = config.staleTransactionThresholdMinutes || 5;

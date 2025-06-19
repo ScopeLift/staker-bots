@@ -31,7 +31,7 @@ export class RariBumpEarningPowerEngine
   protected executor: IExecutor;
   private periodicCheckInterval: NodeJS.Timeout | null = null;
   protected isRunning = false;
-  private readonly PERIODIC_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
+  private readonly PERIODIC_CHECK_INTERVAL: number;
   protected lastUpdateTimestamp: number;
 
   constructor(params: {
@@ -74,6 +74,12 @@ export class RariBumpEarningPowerEngine
     this.database = params.database;
     this.executor = params.executor;
     this.lastUpdateTimestamp = Date.now();
+
+    // Configure interval from environment variable with fallback
+    this.PERIODIC_CHECK_INTERVAL = parseInt(
+      process.env.BUMP_EARNING_POWER_INTERVAL || '300000', // 5 minutes default
+      10,
+    );
 
     logger.info('🔧 RariBumpEarningPowerEngine initialized with:', {
       stakerContractAddress: params.stakerContract.target,
@@ -137,9 +143,50 @@ export class RariBumpEarningPowerEngine
       const tipReceiver = CONFIG.executor.tipReceiver || ethers.ZeroAddress;
       logger.info(`💰 Using tip receiver: ${tipReceiver}`);
 
-      // Validate parameters before encoding to prevent overflow
-      const depositIdBigInt = BigInt(deposit.deposit_id);
-      const tipAmountBigInt = isBumpProfitable.tipAmount!;
+      // Safely convert and validate parameters before encoding to prevent overflow
+      let depositIdBigInt: bigint;
+      let tipAmountBigInt: bigint;
+      
+      try {
+        // Handle deposit_id conversion
+        if (typeof deposit.deposit_id === 'bigint') {
+          depositIdBigInt = deposit.deposit_id;
+        } else if (typeof deposit.deposit_id === 'string') {
+          depositIdBigInt = BigInt(deposit.deposit_id);
+        } else if (typeof deposit.deposit_id === 'number') {
+          const depositIdNumber = Math.floor(deposit.deposit_id);
+          depositIdBigInt = BigInt(depositIdNumber);
+        } else {
+          throw new Error(`Invalid deposit_id type: ${typeof deposit.deposit_id}`);
+        }
+
+        // Handle tip amount conversion
+        if (!isBumpProfitable.tipAmount) {
+          tipAmountBigInt = 0n;
+        } else if (typeof isBumpProfitable.tipAmount === 'bigint') {
+          tipAmountBigInt = isBumpProfitable.tipAmount;
+        } else if (typeof isBumpProfitable.tipAmount === 'string') {
+          tipAmountBigInt = BigInt(isBumpProfitable.tipAmount);
+        } else if (typeof isBumpProfitable.tipAmount === 'number') {
+          const tipNumber = Math.floor(isBumpProfitable.tipAmount);
+          tipAmountBigInt = BigInt(tipNumber);
+        } else {
+          throw new Error(`Invalid tipAmount type: ${typeof isBumpProfitable.tipAmount}`);
+        }
+      } catch (conversionError) {
+        logger.error(`Failed to convert parameters for deposit ${deposit.deposit_id}`, {
+          error: conversionError instanceof Error ? conversionError.message : String(conversionError),
+          depositId: deposit.deposit_id,
+          depositIdType: typeof deposit.deposit_id,
+          tipAmount: isBumpProfitable.tipAmount,
+          tipAmountType: typeof isBumpProfitable.tipAmount,
+        });
+        return {
+          success: false,
+          result: 'error',
+          details: { error: `Parameter conversion failed: ${conversionError instanceof Error ? conversionError.message : String(conversionError)}` },
+        };
+      }
       
       // Ensure values are within safe ranges for ethers encoding
       const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
@@ -332,9 +379,52 @@ export class RariBumpEarningPowerEngine
 
         const tipReceiver = CONFIG.executor.tipReceiver || ethers.ZeroAddress;
 
-        // Validate parameters before encoding to prevent overflow
-        const depositIdBigInt = BigInt(deposit.deposit_id);
-        const tipAmountBigInt = isBumpProfitable.tipAmount!;
+        // Safely convert and validate parameters before encoding to prevent overflow
+        let depositIdBigInt: bigint;
+        let tipAmountBigInt: bigint;
+        
+        try {
+          // Handle deposit_id conversion
+          if (typeof deposit.deposit_id === 'bigint') {
+            depositIdBigInt = deposit.deposit_id;
+          } else if (typeof deposit.deposit_id === 'string') {
+            depositIdBigInt = BigInt(deposit.deposit_id);
+          } else if (typeof deposit.deposit_id === 'number') {
+            const depositIdNumber = Math.floor(deposit.deposit_id);
+            depositIdBigInt = BigInt(depositIdNumber);
+          } else {
+            throw new Error(`Invalid deposit_id type: ${typeof deposit.deposit_id}`);
+          }
+
+          // Handle tip amount conversion
+          if (!isBumpProfitable.tipAmount) {
+            tipAmountBigInt = 0n;
+          } else if (typeof isBumpProfitable.tipAmount === 'bigint') {
+            tipAmountBigInt = isBumpProfitable.tipAmount;
+          } else if (typeof isBumpProfitable.tipAmount === 'string') {
+            tipAmountBigInt = BigInt(isBumpProfitable.tipAmount);
+          } else if (typeof isBumpProfitable.tipAmount === 'number') {
+            const tipNumber = Math.floor(isBumpProfitable.tipAmount);
+            tipAmountBigInt = BigInt(tipNumber);
+          } else {
+            throw new Error(`Invalid tipAmount type: ${typeof isBumpProfitable.tipAmount}`);
+          }
+        } catch (conversionError) {
+          logger.error(`Failed to convert parameters for deposit ${deposit.deposit_id}`, {
+            error: conversionError instanceof Error ? conversionError.message : String(conversionError),
+            depositId: deposit.deposit_id,
+            depositIdType: typeof deposit.deposit_id,
+            tipAmount: isBumpProfitable.tipAmount,
+            tipAmountType: typeof isBumpProfitable.tipAmount,
+          });
+          results.errors++;
+          results.details.push({
+            depositId: deposit.deposit_id,
+            result: 'error',
+            details: { error: `Parameter conversion failed: ${conversionError instanceof Error ? conversionError.message : String(conversionError)}` },
+          });
+          continue;
+        }
         
         // Ensure values are within safe ranges for ethers encoding
         const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
@@ -527,10 +617,38 @@ export class RariBumpEarningPowerEngine
     );
 
     try {
+      // Safely convert deposit_id to BigInt, handling various input types
+      let depositIdBigInt: bigint;
+      try {
+        // Handle deposit_id whether it's string, number, or bigint
+        if (typeof deposit.deposit_id === 'bigint') {
+          depositIdBigInt = deposit.deposit_id;
+        } else if (typeof deposit.deposit_id === 'string') {
+          depositIdBigInt = BigInt(deposit.deposit_id);
+        } else if (typeof deposit.deposit_id === 'number') {
+          // For numbers, ensure they're whole numbers and not in scientific notation
+          const depositIdNumber = Math.floor(deposit.deposit_id);
+          depositIdBigInt = BigInt(depositIdNumber);
+        } else {
+          throw new Error(`Invalid deposit_id type: ${typeof deposit.deposit_id}`);
+        }
+      } catch (error) {
+        logger.error(
+          `❌ Failed to convert deposit_id to BigInt for deposit ${deposit.deposit_id}`,
+          {
+            depositId: deposit.deposit_id,
+            type: typeof deposit.deposit_id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return {
+          profitable: false,
+          reason: `Invalid deposit ID: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+
       // Get the current deposit state from the contract to ensure we have latest data
-      const depositState = await this.stakerContract.deposits(
-        BigInt(deposit.deposit_id),
-      );
+      const depositState = await this.stakerContract.deposits(depositIdBigInt);
 
       // Validate deposit state
       if (
@@ -651,9 +769,7 @@ export class RariBumpEarningPowerEngine
 
       // Get MAX_BUMP_TIP and unclaimed rewards
       const maxBumpTipValue = await this.stakerContract.maxBumpTip();
-      const unclaimedRewards = await this.stakerContract.unclaimedReward(
-        BigInt(deposit.deposit_id),
-      );
+      const unclaimedRewards = await this.stakerContract.unclaimedReward(depositIdBigInt);
 
       // Safety constants to prevent overflow
       const MAX_SAFE_TIP = ethers.parseEther('1000000'); // 1M tokens max tip to prevent overflow
@@ -780,7 +896,17 @@ export class RariBumpEarningPowerEngine
       return;
     }
 
-    logger.info('Starting RariBumpEarningPowerEngine');
+    // Check if bump earning power is enabled
+    const enableBumpEarningPower = process.env.ENABLE_BUMP_EARNING_POWER === 'true';
+    if (!enableBumpEarningPower) {
+      logger.info('Bump Earning Power Engine disabled by ENABLE_BUMP_EARNING_POWER environment variable');
+      return;
+    }
+
+    logger.info('Starting RariBumpEarningPowerEngine', {
+      enabledByFlag: true,
+      intervalMs: this.PERIODIC_CHECK_INTERVAL,
+    });
     this.isRunning = true;
     this.lastUpdateTimestamp = Date.now();
     this.startPeriodicChecks();

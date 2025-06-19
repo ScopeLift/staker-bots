@@ -216,14 +216,18 @@ export function extractQueueItemInfo(tx: QueuedTransaction): {
   let queueItemId: string | undefined;
   let depositIds: string[] = [];
 
-  if (tx.tx_data) {
+  // Try to extract metadata from transaction object
+  if (tx.metadata?.queueItemId) {
+    queueItemId = tx.metadata.queueItemId;
+    depositIds = tx.metadata.depositIds || [];
+  } else if (tx.tx_data) {
     try {
       const txData = JSON.parse(tx.tx_data);
       queueItemId = txData.queueItemId;
       depositIds = txData.depositIds?.map(String) || [];
     } catch (error) {
-      // If parsing fails, return empty values
-      console.error('Failed to parse txData:', error);
+      // tx_data might be raw contract call data, not JSON metadata
+      console.debug('tx_data is not JSON metadata, treating as contract call data');
     }
   }
 
@@ -244,9 +248,6 @@ export function calculateQueueStats(
   );
   const pending = transactions.filter(
     (tx) => tx.status === TransactionStatus.PENDING,
-  );
-  const queued = transactions.filter(
-    (tx) => tx.status === TransactionStatus.QUEUED,
   );
 
   const totalGasPrice = confirmed.reduce(
