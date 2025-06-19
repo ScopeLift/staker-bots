@@ -4,6 +4,7 @@ import {
   TransactionStatus,
   QueueStats,
 } from '@/executor/interfaces/types';
+import { TransactionType } from '@/database/interfaces/types';
 import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
 import { Logger } from '@/monitor/logging';
 import { EXECUTOR } from './constants';
@@ -262,16 +263,31 @@ export function calculateQueueStats(
   );
 
   return {
-    totalConfirmed: confirmed.length,
-    totalFailed: failed.length,
-    totalPending: pending.length,
-    totalQueued: queued.length,
-    averageGasPrice: confirmed.length
-      ? totalGasPrice / BigInt(confirmed.length)
-      : 0n,
-    averageGasLimit: confirmed.length
-      ? totalGasLimit / BigInt(confirmed.length)
-      : 0n,
-    totalProfits,
+    totalItems: transactions.length,
+    pendingItems: pending.length,
+    failedItems: failed.length,
+    byType: {
+      [TransactionType.BUMP]: {
+        total: 0,
+        pending: 0,
+        submitted: 0,
+        confirmed: 0,
+        failed: 0,
+      },
+      [TransactionType.CLAIM_AND_DISTRIBUTE]: {
+        total: transactions.length,
+        pending: pending.length,
+        submitted: 0,
+        confirmed: confirmed.length,
+        failed: failed.length,
+        averageGasPrice: confirmed.length
+          ? totalGasPrice / BigInt(confirmed.length)
+          : 0n,
+        averageGasLimit: confirmed.length
+          ? totalGasLimit / BigInt(confirmed.length)
+          : 0n,
+        totalProfits,
+      },
+    },
   };
 }
