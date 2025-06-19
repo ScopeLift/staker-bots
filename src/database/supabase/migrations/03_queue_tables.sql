@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS processing_queue (
 -- Create transaction queue table
 CREATE TABLE IF NOT EXISTS transaction_queue (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_type TEXT NOT NULL CHECK (transaction_type IN ('bump', 'claim_and_distribute')),
     deposit_id TEXT NOT NULL CHECK (length(deposit_id) > 0), -- This will store multiple deposit IDs as comma-separated values
     status TEXT NOT NULL CHECK (status IN ('pending', 'submitted', 'confirmed', 'failed')),
     hash TEXT CHECK (hash IS NULL OR length(hash) > 0),
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS transaction_queue (
     gas_price TEXT CHECK (gas_price IS NULL OR length(gas_price) > 0),
     tip_amount TEXT CHECK (tip_amount IS NULL OR length(tip_amount) > 0),
     tip_receiver TEXT CHECK (tip_receiver IS NULL OR length(tip_receiver) > 0),
+    profitability_check TEXT CHECK (profitability_check IS NULL OR length(profitability_check) > 0),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::TEXT, NOW()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::TEXT, NOW()) NOT NULL
 );

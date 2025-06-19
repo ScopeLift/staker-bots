@@ -22,6 +22,9 @@ async function runMigrations() {
       '03_queue_tables.sql',
       '04_govlst_tables.sql',
       '05_checkpoints_view.sql',
+      '06_errors_table.sql',
+      '07_enable_rls.sql',
+      '08_add_missing_columns.sql',
     ];
 
     logger.info('Starting database migrations...');

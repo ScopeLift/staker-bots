@@ -137,10 +137,54 @@ export class RariBumpEarningPowerEngine
       const tipReceiver = CONFIG.executor.tipReceiver || ethers.ZeroAddress;
       logger.info(`💰 Using tip receiver: ${tipReceiver}`);
 
-      const data = bumpEarningPowerInterface.encodeFunctionData(
-        'bumpEarningPower',
-        [deposit.deposit_id, tipReceiver, isBumpProfitable.tipAmount!],
-      );
+      // Validate parameters before encoding to prevent overflow
+      const depositIdBigInt = BigInt(deposit.deposit_id);
+      const tipAmountBigInt = isBumpProfitable.tipAmount!;
+      
+      // Ensure values are within safe ranges for ethers encoding
+      const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+      if (depositIdBigInt > MAX_UINT256) {
+        logger.error(`Deposit ID ${depositIdBigInt} exceeds uint256 max`, {
+          depositId: deposit.deposit_id,
+        });
+        return {
+          success: false,
+          result: 'error',
+          details: { error: 'Deposit ID overflow' },
+        };
+      }
+      
+      if (tipAmountBigInt > MAX_UINT256) {
+        logger.error(`Tip amount ${tipAmountBigInt} exceeds uint256 max`, {
+          depositId: deposit.deposit_id,
+          tipAmount: tipAmountBigInt.toString(),
+        });
+        return {
+          success: false,
+          result: 'error',
+          details: { error: 'Tip amount overflow' },
+        };
+      }
+
+      let data: string;
+      try {
+        data = bumpEarningPowerInterface.encodeFunctionData(
+          'bumpEarningPower',
+          [depositIdBigInt, tipReceiver, tipAmountBigInt],
+        );
+      } catch (encodingError) {
+        logger.error(`Failed to encode function data for deposit ${deposit.deposit_id}`, {
+          error: encodingError instanceof Error ? encodingError.message : String(encodingError),
+          depositId: depositIdBigInt.toString(),
+          tipReceiver,
+          tipAmount: tipAmountBigInt.toString(),
+        });
+        return {
+          success: false,
+          result: 'error',
+          details: { error: `Encoding failed: ${encodingError instanceof Error ? encodingError.message : String(encodingError)}` },
+        };
+      }
 
       const tx = {
         to: CONFIG.STAKER_CONTRACT_ADDRESS,
@@ -288,10 +332,60 @@ export class RariBumpEarningPowerEngine
 
         const tipReceiver = CONFIG.executor.tipReceiver || ethers.ZeroAddress;
 
-        const data = bumpEarningPowerInterface.encodeFunctionData(
-          'bumpEarningPower',
-          [deposit.deposit_id, tipReceiver, isBumpProfitable.tipAmount!],
-        );
+        // Validate parameters before encoding to prevent overflow
+        const depositIdBigInt = BigInt(deposit.deposit_id);
+        const tipAmountBigInt = isBumpProfitable.tipAmount!;
+        
+        // Ensure values are within safe ranges for ethers encoding
+        const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+        if (depositIdBigInt > MAX_UINT256) {
+          logger.error(`Deposit ID ${depositIdBigInt} exceeds uint256 max`, {
+            depositId: deposit.deposit_id,
+          });
+          results.errors++;
+          results.details.push({
+            depositId: deposit.deposit_id,
+            result: 'error',
+            details: { error: 'Deposit ID overflow' },
+          });
+          continue;
+        }
+        
+        if (tipAmountBigInt > MAX_UINT256) {
+          logger.error(`Tip amount ${tipAmountBigInt} exceeds uint256 max`, {
+            depositId: deposit.deposit_id,
+            tipAmount: tipAmountBigInt.toString(),
+          });
+          results.errors++;
+          results.details.push({
+            depositId: deposit.deposit_id,
+            result: 'error',
+            details: { error: 'Tip amount overflow' },
+          });
+          continue;
+        }
+
+        let data: string;
+        try {
+          data = bumpEarningPowerInterface.encodeFunctionData(
+            'bumpEarningPower',
+            [depositIdBigInt, tipReceiver, tipAmountBigInt],
+          );
+        } catch (encodingError) {
+          logger.error(`Failed to encode function data for deposit ${deposit.deposit_id}`, {
+            error: encodingError instanceof Error ? encodingError.message : String(encodingError),
+            depositId: depositIdBigInt.toString(),
+            tipReceiver,
+            tipAmount: tipAmountBigInt.toString(),
+          });
+          results.errors++;
+          results.details.push({
+            depositId: deposit.deposit_id,
+            result: 'error',
+            details: { error: `Encoding failed: ${encodingError instanceof Error ? encodingError.message : String(encodingError)}` },
+          });
+          continue;
+        }
 
         const tx = {
           to: CONFIG.STAKER_CONTRACT_ADDRESS,
@@ -561,6 +655,10 @@ export class RariBumpEarningPowerEngine
         BigInt(deposit.deposit_id),
       );
 
+      // Safety constants to prevent overflow
+      const MAX_SAFE_TIP = ethers.parseEther('1000000'); // 1M tokens max tip to prevent overflow
+      const MAX_ETHERS_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+
       // Get gas costs
       const provider = this.stakerContract.runner?.provider || this.provider;
       const feeData = await provider.getFeeData();
@@ -590,7 +688,35 @@ export class RariBumpEarningPowerEngine
         }
 
         // We can use any remaining rewards above minRequiredRewards as tip
-        const availableForTip = unclaimedRewards - minRequiredRewards;
+        let availableForTip = unclaimedRewards - minRequiredRewards;
+
+        // Apply safety caps to prevent overflow
+        if (availableForTip > MAX_SAFE_TIP) {
+          logger.warn(
+            `Tip amount ${ethers.formatEther(availableForTip)} exceeds safety limit, capping to ${ethers.formatEther(MAX_SAFE_TIP)}`,
+            {
+              depositId: deposit.deposit_id,
+              originalTip: availableForTip.toString(),
+              cappedTip: MAX_SAFE_TIP.toString(),
+            }
+          );
+          availableForTip = MAX_SAFE_TIP;
+        }
+
+        // Additional safety check for ethers uint256 overflow
+        if (availableForTip > MAX_ETHERS_UINT256) {
+          logger.error(
+            `Tip amount ${availableForTip.toString()} exceeds uint256 max, this should not happen`,
+            {
+              depositId: deposit.deposit_id,
+              availableForTip: availableForTip.toString(),
+            }
+          );
+          return {
+            profitable: false,
+            reason: 'Tip calculation overflow error',
+          };
+        }
 
         // If we have enough for a tip, proceed with that amount
         if (availableForTip > 0n) {
