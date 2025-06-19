@@ -583,23 +583,72 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         }
       }
 
-      // Check if bin has reached optimal threshold
+      // Two-stage Tenderly simulation approach
       const readyBins: GovLstDepositGroup[] = [];
 
+      // Stage 1: Initial check - trigger first simulation when rewards > payout + margin
       if (this.activeBin?.total_rewards >= optimalThreshold) {
-        // Only run simulation if rewards are sufficient for payout
-        if (this.activeBin.total_rewards >= payoutAmount && CONFIG.tenderly.skipSimulationBelowPayout !== false) {
-          // Try to get a better gas estimate using simulation
-          enhancedGasCost = await this.estimateGasWithSimulation(
-            this.activeBin.deposit_ids,
-            gasCost,
-          );
+        this.logger.info('Stage 1: Initial threshold reached, running first simulation', {
+          totalRewards: this.activeBin.total_rewards.toString(),
+          optimalThreshold: optimalThreshold.toString(),
+          depositCount: this.activeBin.deposit_ids.length,
+        });
 
-          // Get the actual gas units estimate from simulation
+        // First simulation to get accurate gas cost
+        let firstSimulationGasCost = gasCost;
+        let firstSimulationGasUnits = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
+        
+        if (this.simulationService && this.activeBin.total_rewards >= payoutAmount) {
+          try {
+            const mockRecipientAddress = CONFIG.profitability.defaultTipReceiver;
+            const simulatedGasUnits = await estimateGasUsingSimulation(
+              this.activeBin.deposit_ids,
+              mockRecipientAddress,
+              payoutAmount,
+              this.govLstContract,
+              this.simulationService,
+              this.logger,
+            );
+            
+            if (simulatedGasUnits !== null) {
+              firstSimulationGasUnits = simulatedGasUnits;
+              firstSimulationGasCost = await this.convertGasUnitsToRewardToken(simulatedGasUnits);
+              
+              this.logger.info('Stage 1 simulation completed', {
+                simulatedGasUnits: simulatedGasUnits.toString(),
+                simulatedGasCost: firstSimulationGasCost.toString(),
+                depositCount: this.activeBin.deposit_ids.length,
+              });
+            }
+          } catch (error) {
+            this.logger.warn('Stage 1 simulation failed, using fallback estimates', {
+              error: error instanceof Error ? error.message : String(error),
+              depositIds: this.activeBin.deposit_ids.map(String),
+            });
+          }
+        }
+
+        // Stage 2: Check if rewards > payout + margin + gas cost from stage 1
+        const stage2Threshold = payoutAmount + 
+          (CONFIG.profitability.includeGasCost ? firstSimulationGasCost : BigInt(0)) + 
+          ((payoutAmount + firstSimulationGasCost) * this.calculateScaledProfitMargin(BigInt(this.activeBin.deposit_ids.length), this.config.minProfitMargin)) / 10000n;
+        
+        this.logger.info('Stage 2: Checking against refined threshold', {
+          totalRewards: this.activeBin.total_rewards.toString(),
+          stage2Threshold: stage2Threshold.toString(),
+          firstSimulationGasCost: firstSimulationGasCost.toString(),
+          payoutAmount: payoutAmount.toString(),
+        });
+
+        if (this.activeBin.total_rewards >= stage2Threshold) {
+          // Run second simulation for final validation
+          let finalGasCost = firstSimulationGasCost;
+          let finalGasUnits = firstSimulationGasUnits;
+          
           if (this.simulationService) {
             try {
               const mockRecipientAddress = CONFIG.profitability.defaultTipReceiver;
-              const simulatedGasUnits = await estimateGasUsingSimulation(
+              const secondSimulatedGasUnits = await estimateGasUsingSimulation(
                 this.activeBin.deposit_ids,
                 mockRecipientAddress,
                 payoutAmount,
@@ -608,37 +657,49 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
                 this.logger,
               );
               
-              if (simulatedGasUnits !== null) {
-                actualGasEstimate = simulatedGasUnits;
-                this.logger.info('Using simulated gas estimate for deposit group analysis', {
-                  simulatedGasUnits: simulatedGasUnits.toString(),
-                  fallbackEstimate: GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE.toString(),
+              if (secondSimulatedGasUnits !== null) {
+                finalGasUnits = secondSimulatedGasUnits;
+                finalGasCost = await this.convertGasUnitsToRewardToken(secondSimulatedGasUnits);
+                
+                this.logger.info('Stage 2 simulation completed', {
+                  secondSimulatedGasUnits: secondSimulatedGasUnits.toString(),
+                  finalGasCost: finalGasCost.toString(),
                   depositCount: this.activeBin.deposit_ids.length,
                 });
               }
             } catch (error) {
-              this.logger.warn('Failed to get gas units from simulation for deposit analysis', {
+              this.logger.warn('Stage 2 simulation failed, using stage 1 estimates', {
                 error: error instanceof Error ? error.message : String(error),
                 depositIds: this.activeBin.deposit_ids.map(String),
               });
             }
           }
           
-          // Update gas estimate in bin
+          // Update gas estimates with final simulation results
+          enhancedGasCost = finalGasCost;
+          actualGasEstimate = finalGasUnits;
           this.activeBin.gas_estimate = actualGasEstimate;
-        } else {
-          this.logger.info('Skipping simulation - rewards below payout amount', {
+          
+          // Calculate expected profit - total rewards minus gas cost
+          const expectedProfit = this.activeBin.total_rewards > finalGasCost ? 
+            this.activeBin.total_rewards - finalGasCost : BigInt(0);
+          this.activeBin.expected_profit = expectedProfit;
+
+          this.logger.info('Final profitability calculation', {
             totalRewards: this.activeBin.total_rewards.toString(),
-            payoutAmount: payoutAmount.toString(),
+            finalGasCost: finalGasCost.toString(),
+            expectedProfit: expectedProfit.toString(),
             depositCount: this.activeBin.deposit_ids.length,
           });
-        }
-        
-        // Calculate expected profit - should be equal to total rewards
-        const expectedProfit = this.activeBin.total_rewards;
-        this.activeBin.expected_profit = expectedProfit;
 
-        readyBins.push(this.activeBin);
+          readyBins.push(this.activeBin);
+        } else {
+          this.logger.info('Stage 2: Insufficient rewards after accurate gas estimation', {
+            totalRewards: this.activeBin.total_rewards.toString(),
+            stage2Threshold: stage2Threshold.toString(),
+            shortfall: (stage2Threshold - this.activeBin.total_rewards).toString(),
+          });
+        }
       }
 
       // Always clear the active bin after analysis
@@ -795,8 +856,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         }
       }
 
-      // Expected profit should be equal to total rewards
-      const expectedProfit = this.activeBin.total_rewards;
+      // Expected profit should be total rewards minus gas cost
+      const expectedProfit = this.activeBin.total_rewards > enhancedGasCost ? 
+        this.activeBin.total_rewards - enhancedGasCost : BigInt(0);
 
       this.activeBin.expected_profit = expectedProfit;
       this.activeBin.gas_estimate = actualGasEstimate; // Use actual simulation gas estimate
