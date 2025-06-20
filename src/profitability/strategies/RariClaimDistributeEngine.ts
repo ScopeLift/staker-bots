@@ -96,17 +96,18 @@ export class RariClaimDistributeEngine
       10,
     );
 
-    // Initialize LST token contract
+    // Initialize LST token contract with correct ABI
     this.lstToken = new ethers.Contract(
       CONFIG.LST_ADDRESS,
       [
         'function getUnclaimedRewards() external view returns (uint256)',
-        'function claimAndDistributeReward() external',
+        'function claimAndDistributeReward(address _recipient, uint256 _minExpectedReward, uint256[] calldata _depositIds) external',
         'function payoutAmount() external view returns (uint256)',
       ],
       provider,
     ) as ethers.Contract & {
       getUnclaimedRewards(): Promise<bigint>;
+      claimAndDistributeReward(recipient: string, minExpectedReward: bigint, depositIds: bigint[]): Promise<any>;
       payoutAmount?(): Promise<bigint>;
     };
   }
@@ -243,11 +244,19 @@ export class RariClaimDistributeEngine
       }
 
       // Queue the transaction
+      const recipient = CONFIG.executor.tipReceiver || CONFIG.profitability.defaultTipReceiver || ethers.ZeroAddress;
+      const minExpectedReward = isClaimProfitable.rewardAmount!;
+      const selectedDepositIds = [BigInt(deposit.deposit_id)];
+      
       const tx = {
         to: CONFIG.LST_ADDRESS,
         data: this.lstToken.interface.encodeFunctionData(
           'claimAndDistributeReward',
-          [],
+          [
+            recipient,
+            minExpectedReward,
+            selectedDepositIds
+          ]
         ),
         gasLimit: CONFIG.CLAIM_GAS_LIMIT || '500000',
       };
@@ -446,13 +455,16 @@ export class RariClaimDistributeEngine
       // Step 7: Validate that we have enough total rewards
       if (totalRewards < optimalThreshold) {
         const insufficientAmount = optimalThreshold - totalRewards;
-        this.logger.warn('Insufficient total rewards across all deposits', {
+        this.logger.error('CRITICAL: Insufficient total rewards - REJECTING TRANSACTION', {
           totalRewards: totalRewards.toString(),
           optimalThreshold: optimalThreshold.toString(),
           shortfall: insufficientAmount.toString(),
           selectedDeposits: selectedDeposits.length,
+          contractPayoutAmount: contractPayoutAmount.toString(),
+          profitMargin: `${profitMargin}%`,
         });
 
+        // CRITICAL: This is unprofitable - should NEVER proceed
         return {
           success: true,
           total: deposits.length,
@@ -463,26 +475,58 @@ export class RariClaimDistributeEngine
             depositId: deposit.deposit_id,
             result: 'not_profitable',
             details: { 
-              reason: `Insufficient combined rewards: ${totalRewards.toString()} < ${optimalThreshold.toString()}`,
+              reason: `UNPROFITABLE: Insufficient combined rewards: ${totalRewards.toString()} < ${optimalThreshold.toString()}`,
             },
           })),
         };
       }
 
-      // Step 8: Queue the optimized transaction with selected deposits
+      // Step 7.5: Double-check profitability before queueing
+      const finalProfitCheck = totalRewards - optimalThreshold;
+      if (finalProfitCheck <= 0n) {
+        this.logger.error('CRITICAL: Final profitability check failed - transaction would lose money!', {
+          totalRewards: totalRewards.toString(),
+          optimalThreshold: optimalThreshold.toString(),
+          finalProfit: finalProfitCheck.toString(),
+        });
+        
+        return {
+          success: true,
+          total: deposits.length,
+          queued: 0,
+          notProfitable: deposits.length,
+          errors: 0,
+          details: deposits.map((deposit) => ({
+            depositId: deposit.deposit_id,
+            result: 'not_profitable',
+            details: { 
+              reason: `UNPROFITABLE: Final check failed, would lose ${(-finalProfitCheck).toString()} tokens`,
+            },
+          })),
+        };
+      }
+
+      // Step 8: Calculate minimum expected reward (total rewards minus profit margin)
+      const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
+      const actualProfitMarginAmount = (totalRewards * profitMarginBasisPoints) / 10000n;
+      const minExpectedReward = totalRewards - actualProfitMarginAmount;
+      
+      // Queue the optimized transaction with selected deposits
+      const recipient = CONFIG.executor.tipReceiver || CONFIG.profitability.defaultTipReceiver || ethers.ZeroAddress;
+      const selectedDepositIds = selectedDeposits.map((d) => BigInt(d.deposit_id));
+      
       const tx = {
         to: CONFIG.LST_ADDRESS,
         data: this.lstToken.interface.encodeFunctionData(
           'claimAndDistributeReward',
-          [],
+          [
+            recipient,
+            minExpectedReward,
+            selectedDepositIds
+          ]
         ),
         gasLimit: CONFIG.CLAIM_GAS_LIMIT || '500000',
       };
-
-      // Calculate minimum expected reward (total rewards minus profit margin)
-      const profitMarginBasisPoints = BigInt(Math.floor(profitMargin * 100));
-      const actualProfitMarginAmount = (totalRewards * profitMarginBasisPoints) / 10000n;
-      const minExpectedReward = totalRewards - actualProfitMarginAmount;
 
       this.logger.info('Queueing optimized claim and distribute transaction', {
         selectedDeposits: selectedDeposits.length,
@@ -491,6 +535,27 @@ export class RariClaimDistributeEngine
         minExpectedReward: minExpectedReward.toString(),
         contractPayoutAmount: contractPayoutAmount.toString(),
         profitMarginAmount: actualProfitMarginAmount.toString(),
+      });
+
+      // Calculate actual profit (rewards minus costs)
+      const actualProfit = totalRewards - optimalThreshold;
+      
+      // CRITICAL: Final validation before queuing
+      if (actualProfit <= 0n) {
+        this.logger.error('CRITICAL: About to queue unprofitable transaction - BLOCKING!', {
+          actualProfit: actualProfit.toString(),
+          totalRewards: totalRewards.toString(),
+          optimalThreshold: optimalThreshold.toString(),
+        });
+        
+        throw new Error(`CRITICAL: Attempted to queue unprofitable transaction with profit: ${actualProfit.toString()}`);
+      }
+      
+      this.logger.info('VALIDATED: Transaction is profitable, proceeding to queue', {
+        actualProfit: actualProfit.toString(),
+        totalRewards: totalRewards.toString(),
+        optimalThreshold: optimalThreshold.toString(),
+        profitMarginPercent: ((Number(actualProfit) / Number(totalRewards)) * 100).toFixed(2) + '%',
       });
 
       await this.executor.queueTransaction(
@@ -507,7 +572,7 @@ export class RariClaimDistributeEngine
             payout_amount: contractPayoutAmount,
             gas_estimate: gasLimit,
             gas_cost: gasCost,
-            expected_profit: totalRewards,
+            expected_profit: totalRewards, // Use total rewards, not net profit - BaseExecutor expects total reward amount
           },
           deposit_details: selectedDeposits.map((d) => ({
             depositId: BigInt(d.deposit_id),

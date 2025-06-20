@@ -227,6 +227,61 @@ export class BaseExecutor implements IExecutor {
     profitability: GovLstProfitabilityCheck,
     txData?: string,
   ): Promise<QueuedTransaction> {
+    // Check if transaction is marked as profitable
+    if (!profitability.is_profitable) {
+      this.logger.warn('Attempted to queue unprofitable transaction - rejecting', {
+        depositIds: depositIds.map(String),
+        isProfitable: profitability.is_profitable,
+        expectedProfit: profitability.estimates.expected_profit.toString(),
+      });
+      
+      const error = new ExecutorError(
+        'Cannot queue unprofitable transaction',
+        {
+          depositIds: depositIds.map(String),
+          isProfitable: profitability.is_profitable,
+          expectedProfit: profitability.estimates.expected_profit.toString(),
+        },
+        false
+      );
+      
+      throw error;
+    }
+
+    // Additional check: Expected profit must be positive
+    const queueExpectedProfit = BigInt(String(profitability.estimates.expected_profit));
+    if (queueExpectedProfit <= 0n) {
+      this.logger.warn('Attempted to queue transaction with zero/negative profit - rejecting', {
+        depositIds: depositIds.map(String),
+        expectedProfit: queueExpectedProfit.toString(),
+      });
+      
+      const error = new ExecutorError(
+        'Cannot queue transaction with zero or negative expected profit',
+        {
+          depositIds: depositIds.map(String),
+          expectedProfit: queueExpectedProfit.toString(),
+        },
+        false
+      );
+      
+      if (this.errorLogger) {
+        await this.errorLogger.error(error, {
+          context: 'zero-profit-transaction-queue-blocked',
+          depositIds: depositIds.map(String),
+          severity: 'critical',
+        });
+      }
+      
+      throw error;
+    }
+
+    this.logger.info('Profitability check passed at queue level', {
+      depositIds: depositIds.map(String),
+      isProfitable: profitability.is_profitable,
+      expectedProfit: queueExpectedProfit.toString(),
+    });
+
     // Validate state and inputs
     if (!this.isRunning) {
       const error = new ExecutorError('Executor is not running', {}, false);
@@ -297,6 +352,51 @@ export class BaseExecutor implements IExecutor {
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
     try {
+      // Check profitability flag
+      if (!profitability.is_profitable) {
+        this.logger.warn('Transaction marked as unprofitable - skipping validation', {
+          depositIds: depositIds.map(String),
+          isProfitable: profitability.is_profitable,
+          expectedProfit: profitability.estimates.expected_profit.toString(),
+        });
+        
+        const error = new TransactionValidationError(
+          'Transaction marked as unprofitable',
+          {
+            depositIds: depositIds.map(String),
+            isProfitable: profitability.is_profitable,
+            expectedProfit: profitability.estimates.expected_profit.toString(),
+          },
+        );
+        
+        return {
+          isValid: false,
+          error,
+        };
+      }
+
+      // Additional check: Expected profit must be positive
+      const validationExpectedProfit = BigInt(String(profitability.estimates.expected_profit));
+      if (validationExpectedProfit <= 0n) {
+        this.logger.warn('Transaction has zero or negative expected profit - skipping validation', {
+          depositIds: depositIds.map(String),
+          expectedProfit: validationExpectedProfit.toString(),
+        });
+        
+        const error = new TransactionValidationError(
+          'Transaction has zero or negative expected profit',
+          {
+            depositIds: depositIds.map(String),
+            expectedProfit: validationExpectedProfit.toString(),
+          },
+        );
+        
+        return {
+          isValid: false,
+          error,
+        };
+      }
+
       // Use the centralized validation function
       const baseValidation = await validateTransaction(
         depositIds,
@@ -428,32 +528,41 @@ export class BaseExecutor implements IExecutor {
         10000n; // Multiply by 100 for percentage, divide by 10000 (100*100)
 
       // Validate that expected reward is sufficient
-      const expectedProfit = typeof profitability.estimates.expected_profit === 'bigint' 
+      const validationExpectedReward = typeof profitability.estimates.expected_profit === 'bigint' 
         ? profitability.estimates.expected_profit 
         : BigInt(String(profitability.estimates.expected_profit));
       
       if (
-        expectedProfit <
+        validationExpectedReward <
         baseAmountForMargin + requiredProfitValue
       ) {
+        this.logger.warn('Transaction not profitable - insufficient reward vs costs', {
+          expectedReward: validationExpectedReward.toString(),
+          payoutAmount: payoutAmount.toString(),
+          estimatedGasCost: estimatedGasCost.toString(),
+          requiredProfitValue: requiredProfitValue.toString(),
+          minProfitMarginPercent: `${minProfitMarginPercent}%`,
+          depositIds: depositIds.map(String),
+          shortfall: (baseAmountForMargin + requiredProfitValue - validationExpectedReward).toString(),
+        });
+
         const error = new TransactionValidationError(
-          'Expected reward is less than payout amount plus gas cost and profit margin',
+          'Transaction not profitable: Expected reward is less than payout amount plus gas cost and profit margin',
           {
-            expectedReward: expectedProfit.toString(),
+            expectedReward: validationExpectedReward.toString(),
             payoutAmount: payoutAmount.toString(),
             estimatedGasCost: estimatedGasCost.toString(),
             requiredProfitValue: requiredProfitValue.toString(),
             minProfitMarginPercent: `${minProfitMarginPercent}%`,
             depositIds: depositIds.map(String),
+            shortfall: (baseAmountForMargin + requiredProfitValue - validationExpectedReward).toString(),
           },
         );
-        if (this.errorLogger) {
-          await this.errorLogger.warn(error, {
-            context: 'base-executor-insufficient-reward',
-          });
-        }
 
-        throw error;
+        return {
+          isValid: false,
+          error,
+        };
       }
 
       return {
@@ -805,6 +914,42 @@ export class BaseExecutor implements IExecutor {
     });
 
     try {
+      // Validate profitability before execution
+      if (!tx.profitability.is_profitable) {
+        this.logger.warn('Skipping unprofitable transaction execution', {
+          id: tx.id,
+          depositIds: tx.depositIds.map(String),
+          isProfitable: tx.profitability.is_profitable,
+          expectedProfit: tx.profitability.estimates.expected_profit.toString(),
+        });
+        
+        tx.status = TransactionStatus.FAILED;
+        tx.error = new Error('Transaction marked as unprofitable');
+        this.queue.set(tx.id, tx);
+        return;
+      }
+
+      // Additional validation: Check that expected profit is positive
+      const executionExpectedProfit = BigInt(String(tx.profitability.estimates.expected_profit));
+      if (executionExpectedProfit <= 0n) {
+        this.logger.warn('Skipping transaction with zero/negative expected profit', {
+          id: tx.id,
+          depositIds: tx.depositIds.map(String),
+          expectedProfit: executionExpectedProfit.toString(),
+        });
+        
+        tx.status = TransactionStatus.FAILED;
+        tx.error = new Error('Transaction has zero or negative expected profit');
+        this.queue.set(tx.id, tx);
+        return;
+      }
+
+      this.logger.info('Profitability validation passed', {
+        id: tx.id,
+        isProfitable: tx.profitability.is_profitable,
+        expectedProfit: executionExpectedProfit.toString(),
+      });
+
       tx.status = TransactionStatus.PENDING;
       this.queue.set(tx.id, tx);
 
@@ -896,34 +1041,45 @@ export class BaseExecutor implements IExecutor {
         depositIds: queueDepositIds,
       };
 
-      // Simulate transaction before execution to verify it will succeed
-      const simulationResult = await this.simulateTransaction(
-        depositIds,
-        this.config.defaultTipReceiver || this.wallet.address,
-        minExpectedReward,
-      );
+      // Check if this is a pre-encoded transaction (Rari claim and distribute)
+      const isPreEncodedTransaction = tx.tx_data && tx.tx_data.startsWith('0x');
 
-      if (!simulationResult.success) {
-        this.logger.error('Transaction simulation failed, not executing', {
-          id: tx.id,
-          depositIds: depositIds.map(String),
-          error: simulationResult.error,
-        });
+      // Skip simulation for pre-encoded transactions (like Rari claim and distribute)
+      if (!isPreEncodedTransaction) {
+        // Simulate transaction before execution to verify it will succeed
+        const simulationResult = await this.simulateTransaction(
+          depositIds,
+          this.config.defaultTipReceiver || this.wallet.address,
+          minExpectedReward,
+        );
 
-        // Update transaction status
-        tx.status = TransactionStatus.FAILED;
-        tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
-        this.queue.set(tx.id, tx);
-
-        // Update database if available
-        if (this.db && queueItemId) {
-          await this.db.updateTransactionQueueItem(queueItemId, {
-            status: TransactionQueueStatus.FAILED,
-            error: `Simulation failed: ${simulationResult.error}`,
+        if (!simulationResult.success) {
+          this.logger.error('Transaction simulation failed, not executing', {
+            id: tx.id,
+            depositIds: depositIds.map(String),
+            error: simulationResult.error,
           });
-        }
 
-        return;
+          // Update transaction status
+          tx.status = TransactionStatus.FAILED;
+          tx.error = new Error(`Simulation failed: ${simulationResult.error}`);
+          this.queue.set(tx.id, tx);
+
+          // Update database if available
+          if (this.db && queueItemId) {
+            await this.db.updateTransactionQueueItem(queueItemId, {
+              status: TransactionQueueStatus.FAILED,
+              error: `Simulation failed: ${simulationResult.error}`,
+            });
+          }
+
+          return;
+        }
+      } else {
+        this.logger.info('Skipping simulation for pre-encoded transaction', {
+          id: tx.id,
+          dataPreview: tx.tx_data.substring(0, 10),
+        });
       }
 
       this.logger.info('Transaction simulation successful', {
@@ -944,8 +1100,19 @@ export class BaseExecutor implements IExecutor {
         let targetAddress: string;
         
         // For Rari transactions, we need to send to the LST contract
-        if (tx.tx_data.startsWith('0x4406e5e5')) { // claimAndDistributeReward method signature
+        if (tx.tx_data.startsWith('0x4406e5e5') || tx.tx_data.startsWith('0x0cbeab6d')) { // claimAndDistributeReward method signatures
+          if (!CONFIG.LST_ADDRESS) {
+            throw new Error('LST_ADDRESS is not configured for Rari transactions');
+          }
           targetAddress = CONFIG.LST_ADDRESS;
+          
+          const methodType = tx.tx_data.startsWith('0x4406e5e5') ? 'no params' : 'with params';
+          this.logger.info('Detected Rari claimAndDistributeReward transaction', {
+            targetAddress,
+            methodSignature: tx.tx_data.substring(0, 10),
+            methodType,
+            lstAddress: CONFIG.LST_ADDRESS,
+          });
         } else {
           // Default to govLstContract for other transactions
           targetAddress = this.govLstContract.target as string;
@@ -954,19 +1121,49 @@ export class BaseExecutor implements IExecutor {
         this.logger.info('Submitting pre-encoded transaction', {
           targetAddress,
           data: tx.tx_data,
+          dataLength: tx.tx_data.length,
+          methodSignature: tx.tx_data.substring(0, 10),
           gasLimit: finalGasLimit.toString(),
           gasPrice: boostedGasPrice.toString(),
         });
 
-        // Send raw transaction with pre-encoded data
-        txResponse = await this.wallet.sendTransaction({
-          to: targetAddress,
-          data: tx.tx_data,
-          gasLimit: finalGasLimit,
-          gasPrice: boostedGasPrice,
-        }) as ethers.ContractTransactionResponse;
+        try {
+          // Send raw transaction with pre-encoded data
+          txResponse = await this.wallet.sendTransaction({
+            to: targetAddress,
+            data: tx.tx_data,
+            gasLimit: finalGasLimit,
+            gasPrice: boostedGasPrice,
+          }) as ethers.ContractTransactionResponse;
+        } catch (sendError) {
+          this.logger.error('Failed to send pre-encoded transaction', {
+            error: sendError instanceof Error ? sendError.message : String(sendError),
+            targetAddress,
+            methodSignature: tx.tx_data.substring(0, 10),
+            errorCode: (sendError as any)?.code,
+            errorData: (sendError as any)?.data,
+          });
+          
+          // Check if it's a contract error
+          if (sendError instanceof Error && sendError.message.includes('missing revert data')) {
+            const enhancedError = new Error(
+              `Contract call failed at ${targetAddress}. Possible causes:\n` +
+              `1. Contract doesn't exist at this address\n` +
+              `2. Method doesn't exist on the contract\n` +
+              `3. Transaction parameters are invalid\n` +
+              `Original error: ${sendError.message}`
+            );
+            throw enhancedError;
+          }
+          throw sendError;
+        }
       } else {
         // Use govLstContract method for standard transactions
+        // First check if the contract has the expected method
+        if (!this.govLstContract.interface.hasFunction('claimAndDistributeReward')) {
+          throw new ContractMethodError('claimAndDistributeReward - method not found on contract');
+        }
+
         const claimAndDistributeReward = this.govLstContract
           .claimAndDistributeReward as GovLstContractMethod;
         if (!claimAndDistributeReward) {
@@ -1131,14 +1328,33 @@ export class BaseExecutor implements IExecutor {
         throw error;
       }
 
+      // Check if this is a Rari claim and distribute transaction
+      // The profitability object might have metadata or we can check the gas_estimate value
+      const isRariClaimDistribute = profitability.estimates.gas_estimate && 
+        BigInt(profitability.estimates.gas_estimate.toString()) === BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000');
+
+      if (isRariClaimDistribute) {
+        // For Rari claim and distribute, use the pre-configured gas limit
+        const rariGasEstimate = BigInt(CONFIG.CLAIM_GAS_LIMIT || '500000');
+        this.logger.info('Using Rari claim and distribute gas estimate', {
+          estimate: rariGasEstimate.toString(),
+        });
+        return rariGasEstimate;
+      }
+
       // Try to estimate gas using the contract's estimateGas method
       try {
-        const gasEstimate = await this.govLstContract.estimateGas.claimAndDistributeReward(
-          tipReceiver,
-          profitability.estimates.payout_amount,
-          depositIds,
-        );
-        return BigInt(gasEstimate.toString());
+        // Only try to estimate if the contract has the method with correct parameters
+        if (this.govLstContract.estimateGas?.claimAndDistributeReward) {
+          const gasEstimate = await this.govLstContract.estimateGas.claimAndDistributeReward(
+            tipReceiver,
+            profitability.estimates.payout_amount,
+            depositIds,
+          );
+          return BigInt(gasEstimate.toString());
+        } else {
+          throw new Error('Contract does not support gas estimation for claimAndDistributeReward');
+        }
       } catch (estimateError) {
         this.logger.warn(
           'Gas estimation failed, using fallback estimate',

@@ -83,7 +83,7 @@ export const RARI_CONSTANTS = {
   RSTRARI_ADDRESS:
     process.env.RSTRARI_ADDRESS || '0xFB2CAA6c18422a714CAF0e9C62457B696D74e07f',
   LST_ADDRESS:
-    process.env.LST_ADDRESS || '0xbEFe5bEe763af472DE88ACbcA5fF326C14e6D2Da',
+    process.env.LST_ADDRESS || '0xf5b1009B9B5e36346f4A6B586FA35d02996703bf',
 
   // Bump Earning Power Bot Configuration
   MIN_TIP_AMOUNT: process.env.MIN_TIP_AMOUNT || '1000000000000000', // 0.001 ETH in wei

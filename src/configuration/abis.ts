@@ -109,6 +109,13 @@ export const stakerAbi = [
   'event DepositUpdated(address indexed holder, uint256 oldDepositId, uint256 newDepositId)',
 ];
 
+// Rari LST Contract ABI
+export const rariLstAbi = [
+  'function claimAndDistributeReward(address _recipient, uint256 _minExpectedReward, uint256[] calldata _depositIds) external',
+  'function getUnclaimedRewards() external view returns (uint256)',
+  'function payoutAmount() external view returns (uint256)',
+];
+
 export const RARI_ABIS = {
   // Staker Contract ABI (simplified for relevant functions)
   STAKER_CONTRACT_ABI: `[
