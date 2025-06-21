@@ -804,13 +804,18 @@ export class GovLstProfitabilityEngineWrapper
           // FIXED: Generate proper contract call data instead of serialized JSON
           // We need to use the claimAndDistributeReward function to perform the claim
           const claimAndDistributeInterface = new ethers.Interface([
-            'function claimAndDistributeReward()',
+            'function claimAndDistributeReward(address _recipient, uint256 _minExpectedReward, uint256[] calldata _depositIds) external',
           ]);
 
-          // Encode the function call
+          // Calculate proper parameters for the function call
+          const recipient = CONFIG.executor?.tipReceiver || CONFIG.profitability?.defaultTipReceiver || ethers.ZeroAddress;
+          const minExpectedReward = group.expected_profit; // Use expected profit as minimum reward
+          const depositIds = group.deposit_ids;
+
+          // Encode the function call with proper parameters
           const txData = claimAndDistributeInterface.encodeFunctionData(
             'claimAndDistributeReward',
-            [],
+            [recipient, minExpectedReward, depositIds],
           );
 
           this.logger.info(
@@ -819,6 +824,9 @@ export class GovLstProfitabilityEngineWrapper
               groupSize: group.deposit_ids.length,
               totalRewards: group.total_rewards.toString(),
               expectedProfit: group.expected_profit.toString(),
+              recipient,
+              minExpectedReward: minExpectedReward.toString(),
+              depositIds: depositIds.map(id => id.toString()),
               txData,
             },
           );

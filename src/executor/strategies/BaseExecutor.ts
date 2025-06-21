@@ -1078,7 +1078,7 @@ export class BaseExecutor implements IExecutor {
       } else {
         this.logger.info('Skipping simulation for pre-encoded transaction', {
           id: tx.id,
-          dataPreview: tx.tx_data.substring(0, 10),
+          dataPreview: tx.tx_data ? tx.tx_data.substring(0, 10) : 'N/A',
         });
       }
 
