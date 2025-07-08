@@ -503,7 +503,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       const effectiveGasCost = CONFIG.profitability.includeGasCost
         ? enhancedGasCost
         : BigInt(0);
-      const baseAmount = payoutAmount + effectiveGasCost;
+      
+      // Add gas buffer to account for estimation inaccuracy before simulation
+      // Buffer of 100 tokens to ensure we have enough rewards for actual gas costs
+      const gasBuffer = ethers.parseEther('100');
+      const baseAmount = payoutAmount + effectiveGasCost + gasBuffer;
 
       // Scale profit margin based on deposit count
       const depositCount = BigInt(depositIds.length);
@@ -550,11 +554,26 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         'Fetching unclaimed rewards',
       );
 
+      // Calculate total available rewards across all deposits
+      let totalAvailableRewards = BigInt(0);
+      for (const [, reward] of rewardsMap) {
+        totalAvailableRewards += reward;
+      }
+      
+      this.logger.info('Total available rewards across all deposits', {
+        totalAvailableRewards: totalAvailableRewards.toString(),
+        totalAvailableRewardsFormatted: ethers.formatEther(totalAvailableRewards),
+        depositCount: depositIds.length,
+      });
+
       // Sort deposits by rewards in descending order for optimal filling
+      // Add secondary sort by deposit_id for deterministic ordering when rewards are equal
       const sortedDeposits = [...normalizedDeposits].sort((a, b) => {
         const rewardA = rewardsMap.get(a.deposit_id.toString()) || BigInt(0);
         const rewardB = rewardsMap.get(b.deposit_id.toString()) || BigInt(0);
-        return Number(rewardB - rewardA);
+        const rewardDiff = Number(rewardB - rewardA);
+        // If rewards are equal, sort by deposit_id for deterministic ordering
+        return rewardDiff !== 0 ? rewardDiff : Number(a.deposit_id - b.deposit_id);
       });
 
       // Track which deposits were added to the bin
@@ -578,6 +597,12 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
           // Check if we've hit optimal threshold after adding this deposit
           if (this.activeBin.total_rewards >= optimalThreshold) {
+            this.logger.info('Optimal threshold reached, stopping deposit addition', {
+              depositsAdded: this.activeBin.deposit_ids.length,
+              totalRewardsInBin: this.activeBin.total_rewards.toString(),
+              optimalThreshold: optimalThreshold.toString(),
+              remainingDeposits: sortedDeposits.length - addedDeposits.length,
+            });
             break;
           }
         }
@@ -629,15 +654,23 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         }
 
         // Stage 2: Check if rewards > payout + margin + gas cost from stage 1
+        const scaledProfitMarginBasisPoints = this.calculateScaledProfitMargin(
+          BigInt(this.activeBin.deposit_ids.length), 
+          this.config.minProfitMargin
+        );
+        const marginOnPayout = (payoutAmount * scaledProfitMarginBasisPoints) / 10000n;
         const stage2Threshold = payoutAmount + 
           (CONFIG.profitability.includeGasCost ? firstSimulationGasCost : BigInt(0)) + 
-          ((payoutAmount + firstSimulationGasCost) * this.calculateScaledProfitMargin(BigInt(this.activeBin.deposit_ids.length), this.config.minProfitMargin)) / 10000n;
+          marginOnPayout;
         
         this.logger.info('Stage 2: Checking against refined threshold', {
           totalRewards: this.activeBin.total_rewards.toString(),
           stage2Threshold: stage2Threshold.toString(),
           firstSimulationGasCost: firstSimulationGasCost.toString(),
           payoutAmount: payoutAmount.toString(),
+          scaledProfitMarginBasisPoints: scaledProfitMarginBasisPoints.toString(),
+          marginOnPayout: marginOnPayout.toString(),
+          depositCount: this.activeBin.deposit_ids.length,
         });
 
         if (this.activeBin.total_rewards >= stage2Threshold) {
@@ -698,6 +731,13 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
             totalRewards: this.activeBin.total_rewards.toString(),
             stage2Threshold: stage2Threshold.toString(),
             shortfall: (stage2Threshold - this.activeBin.total_rewards).toString(),
+            breakdown: {
+              payoutAmount: payoutAmount.toString(),
+              gasCost: firstSimulationGasCost.toString(),
+              marginBasisPoints: scaledProfitMarginBasisPoints.toString(),
+              marginAmount: marginOnPayout.toString(),
+              calculation: `${payoutAmount} + ${firstSimulationGasCost} + ${marginOnPayout} = ${stage2Threshold}`,
+            },
           });
         }
       }
@@ -1241,7 +1281,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     const decimalAdjustment = 10n ** BigInt(Math.abs(ETH_DECIMALS - TOKEN_DECIMALS));
     let costInRewardTokens: bigint;
 
-    this.logger.debug('Gas cost conversion details', {
+    this.logger.info('Gas cost conversion details', {
       gasCost: gasCost.toString(),
       gasCostEth: ethers.formatEther(gasCost),
       ethPrice: ethPriceScaled.toString(),
@@ -1251,6 +1291,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       decimalAdjustment: decimalAdjustment.toString(),
       ethPriceUsd: Number(ethPriceScaled) / 10 ** ETH_DECIMALS,
       tokenPriceUsd: Number(tokenPriceScaled) / 10 ** TOKEN_DECIMALS,
+      priceRatio: (Number(ethPriceScaled) / 10 ** ETH_DECIMALS) / (Number(tokenPriceScaled) / 10 ** TOKEN_DECIMALS),
     });
 
     if (ETH_DECIMALS >= TOKEN_DECIMALS) {
@@ -1274,9 +1315,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       return minimumCost;
     }
 
-    this.logger.debug('Final gas cost conversion result', {
+    this.logger.info('Final gas cost conversion result', {
       costInRewardTokens: costInRewardTokens.toString(),
       formattedCost: ethers.formatUnits(costInRewardTokens, TOKEN_DECIMALS),
+      gasCostEth: ethers.formatEther(gasCost),
+      conversionRate: `1 ETH = ${(Number(costInRewardTokens) / Number(gasCost) * 1e18).toFixed(2)} reward tokens`,
     });
 
     return costInRewardTokens;

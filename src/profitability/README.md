@@ -1,535 +1,287 @@
-# GovLst Profitability Engine
+# Profitability Module
 
-The Profitability Engine analyzes GovLst deposits to determine optimal grouping and profitability metrics for reward claiming. It provides detailed analysis of deposit groups, considering gas costs, reward rates, and market conditions.
+## Overview
 
----
+The Profitability module determines whether claiming rewards for staking deposits is economically viable. It implements a sophisticated two-stage gas simulation approach to ensure accurate profitability calculations, preventing unprofitable transactions while maximizing rewards.
 
-## State Diagram
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "External Services"
+        BLOCKCHAIN[Blockchain RPC]
+        TENDERLY[Tenderly Simulation]
+        PRICE_FEED[Price Oracle]
+    end
+    
+    subgraph "Profitability Module"
+        WRAPPER[ProfitabilityEngineWrapper]
+        IFACE[IProfitabilityEngine]
+        ENGINE[GovLstProfitabilityEngine]
+        
+        subgraph "Core Components"
+            PRICE_CONV[Price Converter]
+            GAS_EST[Gas Estimator]
+            BATCH_OPT[Batch Optimizer]
+            THRESHOLD[Threshold Calculator]
+        end
+    end
+    
+    subgraph "Consumers"
+        EXECUTOR[Executor Module]
+        MONITOR[Monitor Module]
+    end
+    
+    WRAPPER --> IFACE
+    WRAPPER --> ENGINE
+    ENGINE --> PRICE_CONV
+    ENGINE --> GAS_EST
+    ENGINE --> BATCH_OPT
+    ENGINE --> THRESHOLD
+    
+    PRICE_CONV --> PRICE_FEED
+    GAS_EST --> TENDERLY
+    ENGINE --> BLOCKCHAIN
+    
+    EXECUTOR --> WRAPPER
+    MONITOR --> WRAPPER
+```
+
+## Core Algorithm
+
+### Two-Stage Profitability Check
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle
-    Idle --> Analyzing: New deposit/event
-    Analyzing --> Caching: Update deposit/gas cache
-    Caching --> BatchOptimization: Optimize batches
-    BatchOptimization --> Queueing: Queue profitable claims
-    Queueing --> Idle
-    Queueing --> [*]: On unrecoverable error
+    [*] --> FetchDeposits
+    FetchDeposits --> CalculateRewards
+    CalculateRewards --> Stage1Check
+    
+    Stage1Check --> Stage1Pass: Rewards > Threshold1
+    Stage1Check --> Reject: Rewards < Threshold1
+    
+    Stage1Pass --> RunSimulation1
+    RunSimulation1 --> Stage2Check
+    
+    Stage2Check --> Stage2Pass: Rewards > Threshold2
+    Stage2Check --> Reject: Rewards < Threshold2
+    
+    Stage2Pass --> RunSimulation2
+    RunSimulation2 --> Profitable
+    
+    Profitable --> [*]
+    Reject --> [*]
 ```
 
----
+### Stage Details
 
-## Sequence Diagram: Batch Profitability Analysis
+**Stage 1: Initial Check**
+- Uses fallback gas estimates
+- Calculates: `threshold1 = payoutAmount + initialGasCost + margin`
+- Quick rejection of clearly unprofitable deposits
+
+**Stage 2: Refined Check**
+- Uses actual simulated gas costs
+- Calculates: `threshold2 = payoutAmount + simulatedGasCost + (payoutAmount * scaledMargin)`
+- Final validation before execution
+
+## Components
+
+### 1. ProfitabilityEngineWrapper
+
+**Purpose**: Factory and lifecycle manager for profitability engines.
+
+**Responsibilities**:
+- Creates appropriate engine instances
+- Manages engine lifecycle
+- Provides consistent interface
+
+### 2. GovLstProfitabilityEngine
+
+**Purpose**: Core profitability calculation engine for GovLst protocol.
+
+**Key Methods**:
+
+#### `analyzeAndGroupDeposits(deposits: GovLstDeposit[])`
+```mermaid
+flowchart LR
+    A[Input Deposits] --> B[Fetch Rewards]
+    B --> C[Sort by Reward]
+    C --> D[Create Bin]
+    D --> E[Add Deposits]
+    E --> F{Threshold Met?}
+    F -->|No| E
+    F -->|Yes| G[Run Simulations]
+    G --> H[Return Batch]
+```
+
+#### `checkGroupProfitability(deposits: GovLstDeposit[])`
+- Validates earning power requirements
+- Calculates total unclaimed rewards
+- Estimates gas costs in reward tokens
+- Determines profitability constraints
+
+### 3. Price Conversion
+
+**Flow**:
+```mermaid
+graph LR
+    ETH_GAS[ETH Gas Cost] --> CONV[Converter]
+    ETH_PRICE[ETH Price USD] --> CONV
+    TOKEN_PRICE[Token Price USD] --> CONV
+    CONV --> TOKEN_COST[Token Gas Cost]
+```
+
+**Formula**:
+```
+tokenCost = (ethGasCost * ethPriceUSD) / tokenPriceUSD
+```
+
+### 4. Gas Estimation
+
+**Sources**:
+1. **Fallback Estimate**: 300,000 gas units
+2. **Tenderly Simulation**: Accurate gas prediction
+3. **Dynamic Calculation**: Base + (perDeposit * count)
+
+**Buffer Application**:
+- Simulation result + 30% buffer
+- Minimum 300,000 gas units
+- Maximum 10,000,000 gas units
+
+## Data Flow
 
 ```mermaid
 sequenceDiagram
     participant Monitor
-    participant ProfitabilityEngine
-    participant Database
+    participant ProfitEngine
+    participant Contracts
+    participant PriceFeed
+    participant Tenderly
     participant Executor
-
-    Monitor->>ProfitabilityEngine: Notify deposit update
-    ProfitabilityEngine->>Database: Read deposits
-    ProfitabilityEngine->>ProfitabilityEngine: Analyze profitability
-    alt Profitable
-        ProfitabilityEngine->>Executor: Queue claim tx
-        Executor-->>ProfitabilityEngine: Ack
+    
+    Monitor->>ProfitEngine: analyzeAndGroupDeposits(deposits)
+    ProfitEngine->>Contracts: getPayoutAmount()
+    ProfitEngine->>Contracts: batchFetchUnclaimedRewards()
+    ProfitEngine->>PriceFeed: getPrices()
+    
+    rect rgb(200, 220, 240)
+    note right of ProfitEngine: Stage 1
+    ProfitEngine->>ProfitEngine: Calculate initial threshold
+    ProfitEngine->>ProfitEngine: Check total rewards
     end
-    ProfitabilityEngine->>Database: Update analysis/queue
+    
+    rect rgb(220, 200, 240)
+    note right of ProfitEngine: Stage 2
+    ProfitEngine->>Tenderly: simulateTransaction()
+    Tenderly-->>ProfitEngine: Gas estimate
+    ProfitEngine->>ProfitEngine: Calculate refined threshold
+    ProfitEngine->>ProfitEngine: Validate profitability
+    end
+    
+    ProfitEngine-->>Monitor: Profitable batches
+    Monitor->>Executor: Execute batch
 ```
 
----
+## Threshold Calculations
 
-## Core Features
+### Base Threshold Components
 
-- Single-bin accumulation strategy for optimal deposit grouping
-- Real-time profitability analysis with advanced gas cost estimation
-- Dynamic profit margin scaling based on deposit count
-- Simulation-based gas estimation with fallback
-- Batch processing of unclaimed rewards
-- Automatic threshold optimization
-- Resilient error handling and retry mechanisms
+1. **Payout Amount**: Fixed protocol requirement
+2. **Gas Cost**: Dynamic based on network conditions
+3. **Profit Margin**: Scaled by deposit count
 
-## Architecture Overview
-
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Analyzing: New deposits
-    Analyzing --> GasEstimation: Process deposits
-    GasEstimation --> BinAccumulation: Estimate costs
-    BinAccumulation --> ThresholdCheck: Add to bin
-    ThresholdCheck --> Queueing: Threshold met
-    ThresholdCheck --> BinAccumulation: Continue accumulating
-    Queueing --> Idle
-```
-
-## Single-Bin Accumulation Algorithm
-
-The engine implements a novel single-bin accumulation strategy that:
-
-1. Maintains one active bin for collecting deposits
-2. Sorts deposits by reward amount in descending order
-3. Uses simulation-based gas estimation when available
-4. Accumulates deposits until reaching optimal threshold
-5. Automatically queues full bins for execution
-
-### Optimization Parameters
-
-- **Optimal Threshold**: Dynamic based on deposit count and gas costs
-- **Gas Cost Buffer**: Configurable safety margin for gas estimates
-- **Batch Size**: 100 deposits per processing batch
-- **Profit Margin**: Dynamic scaling based on deposit count (0.05% per deposit)
-- **Maximum Profit Margin**: Capped at 15% (1500 basis points)
-
-### Profitability Calculation
-
-The engine calculates profitability using:
+### Profit Margin Scaling
 
 ```typescript
-// Calculate base amount
-baseAmount = payoutAmount + (includeGasCost ? gasCost : 0n);
-
-// Scale profit margin based on deposit count
-depositScalingBasisPoints = min(20, depositCount * 5); // 0.05% per deposit
-scaledMargin = min(1500, baseMarginBps + depositScalingBasisPoints);
-
-// Calculate minimum expected reward
-profitMarginAmount = (baseAmount * scaledMarginBps) / 10000n;
-minExpectedReward = baseAmount + profitMarginAmount;
-
-// Final profitability check
-isProfileable = totalRewards >= minExpectedReward;
+scaledMargin = baseMargin + (depositCount * 0.02%)
+// Capped at 5% maximum
 ```
 
-Where:
+This ensures larger batches have higher profit requirements to compensate for increased risk.
 
-- `payoutAmount`: Base payout from contract
-- `gasCost`: Estimated gas cost (from simulation or fallback)
-- `depositCount`: Number of deposits in batch
-- `baseMarginBps`: Base profit margin in basis points
-- `scaledMarginBps`: Final margin after deposit count scaling
+### Minimum Expected Reward
 
-## Gas Estimation
-
-The engine now supports two methods of gas estimation:
-
-1. **Simulation-Based Estimation**
-
-   - Uses Tenderly simulation when available
-   - Provides more accurate gas estimates
-   - Handles complex contract interactions
-
-2. **Fallback Estimation**
-   - Uses historical gas data
-   - Applies configurable safety buffer
-   - Cached with TTL for efficiency
-
-## Error Handling
-
-Implements a robust error handling system:
-
-- Automatic retries for transient failures
-- Exponential backoff for RPC calls
-- Detailed error context and logging
-- Graceful degradation on partial failures
-- Simulation fallback mechanisms
-
-## Performance Optimizations
-
-1. **Caching System**
-
-   - Gas price caching with TTL
-   - Reward calculation memoization
-   - Batch processing of RPC calls
-   - Simulation results caching
-
-2. **Smart Batching**
-   - Parallel reward fetching
-   - Sorted deposit processing
-   - Dynamic threshold calculation
-   - Simulation-aware batch sizing
+```
+minExpectedReward = payoutAmount + gasCost + (payoutAmount * scaledMargin)
+```
 
 ## Configuration
 
+### Environment Variables
+- `PROFITABILITY_MIN_PROFIT_MARGIN_PERCENT`: Base profit margin
+- `PROFITABILITY_INCLUDE_GAS_COST`: Include gas in calculations
+- `GOVLST_PAYOUT_AMOUNT`: Fixed payout requirement
+- `GOVLST_MIN_EARNING_POWER`: Minimum deposit eligibility
+
+### Constants
 ```typescript
-interface ProfitabilityConfig {
-  rewardTokenAddress: string;
-  minProfitMargin: number;
-  gasPriceBuffer: number;
-  maxBatchSize: number;
-  defaultTipReceiver: string;
-  includeGasCost: boolean;
-  priceFeed: {
-    cacheDuration: number;
-  };
+GAS_CONSTANTS = {
+  FALLBACK_GAS_ESTIMATE: 300_000n,
+  GAS_PRICE_UPDATE_INTERVAL: 60_000,
+  MIN_GAS_PRICE: 1_000_000_000n // 1 gwei
 }
 ```
-
-## Usage Example
-
-```typescript
-const engine = new GovLstProfitabilityEngine(
-  govLstContract,
-  stakerContract,
-  provider,
-  {
-    rewardTokenAddress: '0x...',
-    minProfitMargin: 1, // 1% base margin
-    gasPriceBuffer: 20, // 20% buffer
-    maxBatchSize: 50,
-    defaultTipReceiver: '0x...',
-    includeGasCost: true,
-    priceFeed: {
-      cacheDuration: 300_000, // 5 minutes
-    },
-  },
-  simulationService, // Optional simulation service
-);
-
-// Start the engine
-await engine.start();
-
-// Analyze deposits
-const analysis = await engine.analyzeAndGroupDeposits(deposits);
-
-// Check if bin is ready
-const isReady = await engine.isActiveBinReady();
-```
-
-## Monitoring
-
-The engine provides detailed monitoring capabilities:
-
-- Real-time bin status
-- Gas price trends and simulation results
-- Processing metrics
-- Error rates and types
-- Profitability statistics
-- Simulation success rates
-
-## Error Types
-
-```typescript
--ProfitabilityError - // Base error class
-  GasEstimationError - // Gas calculation issues
-  SimulationError - // Simulation failures
-  BatchFetchError - // Batch processing failures
-  QueueProcessingError; // Queue operation errors
-```
-
-## Future Improvements
-
-1. Machine learning for gas price prediction
-2. Multi-bin optimization strategies
-3. Advanced profit maximization algorithms
-4. Enhanced monitoring and alerting systems
-5. Improved simulation integration
-6. Dynamic gas cost modeling
-
-## See Also
-
-- [Contract Documentation](./docs/contracts.md)
-- [API Reference](./docs/api.md)
-- [Configuration Guide](./docs/config.md)
-
-## Inputs & Outputs
-
-- **Inputs**: Deposit data, config, price feeds, gas prices
-- **Outputs**: Profitability analysis, batch queue, claim recommendations
-
----
 
 ## Error Handling
 
-- Early returns for invalid/missing data
-- Retries for transient errors
-- Logs and propagates context-rich errors
-
----
-
-## Monitoring
-
-- Health/status via `getStatus()`
-- Metrics: queue size, cache hit rate, last update, profit stats
-
----
-
-## See root README for system-level diagrams and configuration.
-
-## System Architecture
-
-```mermaid
-graph TD
-    A[Deposits] --> B[Profitability Engine]
-    B --> C[Deposit Cache]
-    B --> D[Gas Price Cache]
-    B --> E[Processing Queue]
-    B --> F[Analysis Output]
-
-    subgraph "Engine Components"
-        B
-        C
-        D
-        E
-    end
-```
-
-### Key Components
-
-#### ProfitabilityEngineWrapper
-
-- Main orchestrator for profitability analysis
-- Manages deposit caching and queue processing
-- Handles batch optimization and analysis
-
-#### GovLstProfitabilityEngine
-
-- Core profitability calculation logic
-- Gas cost estimation
-- Share and reward calculations
-- Batch optimization algorithms
-
-## Inputs
-
-### 1. Configuration (ProfitabilityConfig)
-
-```typescript
-{
-  rewardTokenAddress: string,     // Reward token contract address
-  minProfitMargin: bigint,       // Minimum acceptable profit
-  gasPriceBuffer: number,        // Gas price safety buffer (%)
-  maxBatchSize: number,          // Maximum deposits per batch
-  defaultTipReceiver: string,    // Default tip receiver address
-  priceFeed: {
-    cacheDuration: number        // Price cache duration (ms)
-  }
-}
-```
-
-### 2. Deposit Data (GovLstDeposit)
-
-```typescript
-{
-  deposit_id: bigint,            // Unique deposit identifier
-  owner_address: string,         // Deposit owner address
-  delegatee_address: string | null, // Optional delegatee
-  amount: bigint,               // Deposit amount
-  shares_of: bigint,            // Current share allocation
-  payout_amount: bigint         // Expected payout amount
-}
-```
-
-### 3. External Dependencies
-
-- Ethereum Provider (RPC connection)
-- GovLst Contract Instance
-- Price Feed Service
-- Database Connection
-- Logging Service
-
-## Outputs
-
-### 1. Profitability Analysis (GovLstProfitabilityCheck)
-
-```typescript
-{
-  is_profitable: boolean,        // Overall profitability flag
-  constraints: {
-    has_enough_shares: boolean,  // Share threshold check
-    meets_min_reward: boolean,   // Minimum reward check
-    is_profitable: boolean       // Profit after gas check
-  },
-  estimates: {
-    total_shares: bigint,       // Group's total shares
-    payout_amount: bigint,      // Expected payout
-    gas_estimate: bigint,       // Estimated gas cost
-    expected_profit: bigint     // Net profit after gas
-  }
-}
-```
-
-### 2. Batch Analysis (GovLstBatchAnalysis)
-
-```typescript
-{
-  deposit_groups: [             // Array of profitable groups
-    {
-      deposit_ids: bigint[],    // Group member IDs
-      total_shares: bigint,     // Group's total shares
-      total_payout: bigint,     // Group's total payout
-      expected_profit: bigint,  // Group's net profit
-      gas_estimate: bigint      // Group's gas cost
-    }
-  ],
-  total_gas_estimate: bigint,   // Total gas for all groups
-  total_expected_profit: bigint,// Total net profit
-  total_deposits: number        // Total deposits analyzed
-}
-```
-
-### 3. Engine Status
-
-```typescript
-{
-  isRunning: boolean,           // Engine state
-  lastGasPrice: bigint,        // Latest gas price
-  lastUpdateTimestamp: number,  // Last update time
-  queueSize: number,           // Current queue size
-  groupCount: number           // Active group count
-}
-```
-
-## Performance Optimizations
-
-### 1. Caching System
-
-- **Deposit Cache**
-
-  - TTL: 5 minutes
-  - Reduces database load
-  - Quick access to frequent deposits
-
-- **Gas Price Cache**
-  - Updates every minute
-  - Includes price buffer
-  - Reduces RPC calls
-
-### 2. Batch Processing
-
-- Groups deposits by profitability
-- Optimizes gas usage
-- Maintains processing queue
-- Handles requeuing on restarts
-
-## Error Handling
+### Retry Logic
+- Contract calls: 3 retries with exponential backoff
+- Price feeds: Cached results with fallback
+- Simulations: Graceful degradation to estimates
 
 ### Error Types
+- `GasEstimationError`: Simulation failures
+- `BatchFetchError`: Reward fetching issues
+- `QueueProcessingError`: Processing pipeline errors
 
-```typescript
--ProfitabilityError - // Base error class
-  DepositNotFoundError - // Missing deposit
-  InvalidDepositDataError - // Malformed data
-  GasEstimationError - // Gas calculation issues
-  QueueProcessingError; // Queue operation failures
-```
+## Optimization Strategies
 
-### Error Recovery
+### 1. Batch Accumulation
+Deposits are accumulated until reaching optimal size:
+- Maximizes gas efficiency
+- Ensures sufficient profit margin
+- Allows multiple profitable claims
 
-- Automatic retry mechanism
-- Configurable retry limits
-- Error context preservation
-- Detailed error logging
+### 2. Reward Sorting
+Deposits sorted by reward size:
+- Prioritizes highest value deposits
+- Reaches threshold faster
+- Minimizes transaction count
 
-## Usage Examples
+### 3. Early Termination
+Stops adding deposits when threshold met:
+- Prevents oversized transactions
+- Maintains profitability ratio
+- Enables remaining deposits for future batches
 
-### Initialize Engine
+## Best Practices
 
-```typescript
-const engine = new GovLstProfitabilityEngineWrapper(
-  database,
-  govLstContract,
-  provider,
-  logger,
-  priceFeed,
-  {
-    rewardTokenAddress: '0x...',
-    minProfitMargin: BigInt(1e16),
-    gasPriceBuffer: 20,
-    maxBatchSize: 50,
-    defaultTipReceiver: '0x...',
-    priceFeed: {
-      cacheDuration: 300_000,
-    },
-  },
-);
-```
+1. **Monitor Price Feeds**: Ensure accurate ETH/token prices
+2. **Adjust Margins**: Set appropriate profit margins for market conditions
+3. **Gas Buffer**: Account for gas price volatility
+4. **Simulation Limits**: Respect rate limits on Tenderly
+5. **Batch Sizes**: Balance between efficiency and gas limits
 
-### Check Group Profitability
+## Common Issues and Solutions
 
-```typescript
-const profitability = await engine.checkGroupProfitability(deposits);
-if (profitability.is_profitable) {
-  console.log(`Expected profit: ${profitability.estimates.expected_profit}`);
-}
-```
+### Issue: "Insufficient rewards after accurate gas estimation"
+**Cause**: Gas costs exceed profit margin after simulation
+**Solution**: Accumulate more deposits or wait for better gas prices
 
-### Analyze Deposits
+### Issue: High gas costs for small token values
+**Cause**: Low token price relative to ETH
+**Solution**: Increase minimum batch sizes or profit margins
 
-```typescript
-const analysis = await engine.analyzeAndGroupDeposits(deposits);
-console.log(`Found ${analysis.deposit_groups.length} profitable groups`);
-console.log(`Total profit: ${analysis.total_expected_profit}`);
-```
+### Issue: Simulation failures
+**Cause**: Network issues or invalid transactions
+**Solution**: Fallback to conservative estimates
 
-## Monitoring
+## Performance Metrics
 
-### Health Metrics
+- **Batch Formation Time**: < 5 seconds
+- **Simulation Latency**: ~1-2 seconds per simulation
+- **Price Cache Duration**: 10 minutes
+- **Gas Price Updates**: Every 60 seconds
 
-- Engine running state
-- Queue processing rate
-- Cache hit rates
-- Gas price trends
-- Profitability statistics
-
-### Performance Metrics
-
-- Processing latency
-- Queue backlog size
-- Cache efficiency
-- Error rates
-- Profit margins
-
-## Database Schema
-
-### Processing Queue
-
-```sql
-CREATE TABLE processing_queue (
-  deposit_id TEXT PRIMARY KEY,
-  status TEXT NOT NULL,
-  attempts INTEGER DEFAULT 0,
-  last_attempt TIMESTAMP,
-  error TEXT,
-  created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-### Profitability Results
-
-```sql
-CREATE TABLE profitability_results (
-  group_id TEXT PRIMARY KEY,
-  deposit_ids TEXT[],
-  total_shares NUMERIC,
-  expected_profit NUMERIC,
-  gas_estimate NUMERIC,
-  analyzed_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-## Testing
-
-### Unit Tests
-
-- Profitability calculations
-- Gas estimation
-- Batch optimization
-- Error handling
-- Cache management
-
-### Integration Tests
-
-- Database operations
-- Contract interactions
-- Price feed integration
-- Queue processing
-- End-to-end flows
-
-## Future Improvements
-
-1. Dynamic batch size optimization
-2. Machine learning for gas prediction
-3. Advanced profit optimization strategies
-4. Real-time market condition adaptation
-5. Enhanced monitoring and alerting
+This module ensures that every reward claim is profitable, protecting users from losing money on gas costs while maximizing their staking rewards.

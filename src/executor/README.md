@@ -1,487 +1,344 @@
-# Executor Component
+# Executor Module
 
-The Executor component manages and executes GovLst reward claim transactions in a controlled, efficient manner. It handles wallet management, batch transaction queueing, execution, and tip collection.
+## Overview
 
-## Core Features
-
-### 1. Wallet Management
-
-- Secure private key handling
-- Balance monitoring with minimum thresholds
-- Automatic tip collection when threshold reached
-- Gas price optimization with configurable boost
-- Support for both direct wallet and OpenZeppelin Defender Relayer
-- Simulation-based gas estimation
-
-### 2. Transaction Queue
-
-- FIFO (First In, First Out) batch processing
-- Configurable queue size limits
-- Concurrent transaction execution
-- Transaction status tracking (QUEUED → PENDING → CONFIRMED/FAILED)
-- Automatic retry mechanism for failed transactions
-- Batch size optimization
-- Dynamic gas estimation
-
-### 3. Transaction Execution
-
-- Simulation-based gas estimation with fallback
-- Gas price optimization with configurable boost percentage
-- Batch gas estimation with safety buffers
-- Confirmation monitoring with configurable confirmations
-- Enhanced error handling and logging
-- Transaction receipt tracking with ethers.js v6 compatibility
-- Dynamic profit margin scaling
-
-### 4. Tip Management
-
-- Automatic transfer of accumulated tips to configured receiver
-- Configurable transfer threshold
-- Gas cost calculation and optimization
-- Support for both wallet and relayer implementations
-- Dynamic gas estimation for transfers
-
-## Usage
-
-```typescript
-import { ExecutorWrapper, ExecutorType } from './executor';
-import { GovLstProfitabilityCheck } from '@/profitability/interfaces/types';
-
-// Initialize with custom configuration
-const executor = new ExecutorWrapper(
-  govLstContract,
-  provider,
-  ExecutorType.WALLET, // or ExecutorType.RELAYER
-  {
-    wallet: {
-      privateKey: process.env.PRIVATE_KEY,
-      minBalance: ethers.parseEther('0.1'), // 0.1 ETH
-      maxPendingTransactions: 5,
-    },
-    maxQueueSize: 100,
-    minConfirmations: 2,
-    maxRetries: 3,
-    retryDelayMs: 5000,
-    transferOutThreshold: ethers.parseEther('0.5'), // 0.5 ETH
-    gasBoostPercentage: 10, // 10%
-    concurrentTransactions: 3,
-    includeGasCost: true, // Include gas cost in profitability
-  },
-  simulationService, // Optional simulation service
-);
-
-// Start the executor
-await executor.start();
-
-// Queue a batch transaction
-const depositIds = [1n, 2n, 3n].map(BigInt);
-const profitability: GovLstProfitabilityCheck = {
-  is_profitable: true,
-  constraints: {
-    has_enough_shares: true,
-    meets_min_reward: true,
-    meets_min_profit: true,
-  },
-  estimates: {
-    total_shares: BigInt(1000),
-    payout_amount: ethers.parseEther('1'),
-    gas_estimate: BigInt(500000),
-    gas_cost: BigInt(500000),
-    expected_profit: ethers.parseEther('0.5'),
-    minExpectedReward: ethers.parseEther('1.1'), // Includes margin
-  },
-};
-
-// Validate transaction first
-const validation = await executor.validateTransaction(
-  depositIds,
-  profitability,
-);
-if (validation.isValid) {
-  const tx = await executor.queueTransaction(depositIds, profitability);
-}
-
-// Monitor transaction status
-const status = await executor.getTransaction(tx.id);
-
-// Get queue statistics
-const stats = await executor.getQueueStats();
-
-// Transfer accumulated tips
-await executor.transferOutTips();
-
-// Stop the executor
-await executor.stop();
-```
-
-## Configuration
-
-| Parameter                       | Description                                    | Default  |
-| ------------------------------- | ---------------------------------------------- | -------- |
-| `wallet.privateKey`             | Private key for transaction signing            | Required |
-| `wallet.minBalance`             | Minimum balance to maintain                    | 0.1 ETH  |
-| `wallet.maxPendingTransactions` | Maximum concurrent pending transactions        | 5        |
-| `maxQueueSize`                  | Maximum size of transaction queue              | 100      |
-| `minConfirmations`              | Required confirmations for transactions        | 2        |
-| `maxRetries`                    | Maximum retry attempts for failed transactions | 3        |
-| `retryDelayMs`                  | Delay between retry attempts                   | 5000     |
-| `transferOutThreshold`          | Balance threshold for tip transfer             | 0.5 ETH  |
-| `gasBoostPercentage`            | Percentage to boost gas price                  | 10       |
-| `concurrentTransactions`        | Maximum concurrent transactions                | 3        |
-| `includeGasCost`                | Include gas cost in profitability              | true     |
-
-## State Diagram
-
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Validating: New tx from ProfitabilityEngine
-    Validating --> Queueing: Validation passed
-    Validating --> Idle: Validation failed
-    Queueing --> Simulating: Tx ready for execution
-    Simulating --> Executing: Simulation passed
-    Simulating --> Retrying: Simulation failed
-    Executing --> Confirming: Await confirmations
-    Confirming --> Idle: On success
-    Confirming --> Retrying: On failure
-    Retrying --> Simulating: Retry tx
-    Retrying --> [*]: On unrecoverable error
-    Executing --> [*]: On unrecoverable error
-```
-
-## Sequence Diagram: Transaction Execution
-
-```mermaid
-sequenceDiagram
-    participant ProfitabilityEngine
-    participant Executor
-    participant Simulation
-    participant Database
-    participant Ethereum
-
-    ProfitabilityEngine->>Executor: Queue claim tx
-    Executor->>Database: Store tx
-    Executor->>Simulation: Simulate tx
-    alt Simulation Success
-        Simulation-->>Executor: Gas estimate
-        Executor->>Ethereum: Submit tx
-        Ethereum-->>Executor: Tx receipt
-    else Simulation Failed
-        Simulation-->>Executor: Error
-        Executor->>Ethereum: Submit with fallback gas
-    end
-    Executor->>Database: Update tx status
-    alt Tip threshold reached
-        Executor->>Ethereum: Transfer tips
-        Ethereum-->>Executor: Tip receipt
-    end
-```
+The Executor module manages the submission and monitoring of profitable reward claim transactions. It provides multiple execution strategies (direct wallet, OpenZeppelin Defender) with comprehensive gas management, simulation, and error recovery capabilities.
 
 ## Architecture
 
-The component follows a modular architecture with clear separation of concerns:
+```mermaid
+graph TB
+    subgraph "External Services"
+        BLOCKCHAIN[Blockchain RPC]
+        DEFENDER[OpenZeppelin Defender]
+        TENDERLY[Tenderly Simulation]
+    end
+    
+    subgraph "Executor Module"
+        WRAPPER[ExecutorWrapper]
+        IFACE[IExecutor Interface]
+        
+        subgraph "Implementations"
+            BASE[BaseExecutor]
+            RELAYER[RelayerExecutor]
+        end
+        
+        subgraph "Helpers"
+            SIM_HELP[simulation-helpers.ts]
+            DEF_HELP[defender-helpers.ts]
+            GAS_HELP[helpers.ts]
+            SWAP_HELP[token-swap-helpers.ts]
+        end
+        
+        subgraph "Core Components"
+            QUEUE[Transaction Queue]
+            GAS_MGR[Gas Manager]
+            SIM_MGR[Simulation Manager]
+            SWAP_MGR[Swap Strategy]
+        end
+    end
+    
+    subgraph "Consumers"
+        PROFIT[Profitability Module]
+        MONITOR[Monitor Module]
+    end
+    
+    WRAPPER --> IFACE
+    WRAPPER --> BASE
+    WRAPPER --> RELAYER
+    BASE -.-> RELAYER
+    
+    BASE --> QUEUE
+    BASE --> GAS_MGR
+    BASE --> SIM_MGR
+    RELAYER --> DEFENDER
+    
+    GAS_MGR --> GAS_HELP
+    SIM_MGR --> SIM_HELP
+    SIM_MGR --> TENDERLY
+    RELAYER --> DEF_HELP
+    
+    BASE --> BLOCKCHAIN
+    SWAP_MGR --> SWAP_HELP
+    
+    PROFIT --> WRAPPER
+    MONITOR --> WRAPPER
+```
 
+## Transaction Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Validation
+    Validation --> Queued: Valid
+    Validation --> Rejected: Invalid
+    
+    Queued --> Simulation
+    Simulation --> GasEstimation: Success
+    Simulation --> Failed: Failure
+    
+    GasEstimation --> Submission
+    Submission --> Pending: Submitted
+    Submission --> Failed: Error
+    
+    Pending --> Monitoring
+    Monitoring --> Confirmed: Mined
+    Monitoring --> Failed: Reverted
+    Monitoring --> Replacement: Stuck
+    
+    Replacement --> Pending: Resubmitted
+    
+    Confirmed --> [*]
+    Failed --> [*]
+    Rejected --> [*]
 ```
-executor/
-├── interfaces/         # Type definitions and interfaces
-│   ├── IExecutor.ts   # Executor interface
-│   └── types.ts       # Shared types and interfaces
-├── strategies/        # Implementation strategies
-│   ├── BaseExecutor.ts    # Wallet-based executor
-│   ├── RelayerExecutor.ts # Defender-based executor
-│   └── helpers/          # Shared utilities
-│       ├── simulation.ts # Simulation helpers
-│       └── gas.ts       # Gas estimation
-├── constants.ts        # Default configuration and constants
-├── ExecutorWrapper.ts  # Main wrapper class
-└── index.ts           # Public exports
+
+## Components
+
+### 1. ExecutorWrapper
+
+**Purpose**: Factory and manager for executor implementations.
+
+**Responsibilities**:
+- Creates appropriate executor instance based on configuration
+- Provides unified interface
+- Manages executor lifecycle
+
+### 2. BaseExecutor
+
+**Purpose**: Direct wallet-based transaction execution.
+
+**Key Features**:
+- In-memory transaction queue
+- Gas price optimization
+- Transaction simulation
+- Automatic retry logic
+- Tip accumulation and transfer
+
+**Process Flow**:
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Executor
+    participant Simulation
+    participant Blockchain
+    participant Database
+    
+    Client->>Executor: queueTransaction()
+    Executor->>Executor: Validate transaction
+    Executor->>Database: Create queue item
+    
+    loop Process Queue
+        Executor->>Simulation: Simulate transaction
+        Simulation-->>Executor: Gas estimate
+        Executor->>Executor: Calculate gas parameters
+        Executor->>Blockchain: Submit transaction
+        Blockchain-->>Executor: Transaction hash
+        Executor->>Database: Update status
+        Executor->>Blockchain: Monitor receipt
+        Blockchain-->>Executor: Confirmation
+        Executor->>Database: Mark confirmed
+    end
 ```
+
+### 3. RelayerExecutor
+
+**Purpose**: OpenZeppelin Defender-based execution.
+
+**Key Features**:
+- Managed gas pricing
+- Private mempool options
+- MEV protection
+- Enhanced monitoring
+- Automatic balance management
+
+**Defender Integration**:
+```mermaid
+graph LR
+    EXEC[RelayerExecutor] --> API[Defender API]
+    API --> RELAYER[Relayer Service]
+    RELAYER --> MEMPOOL{Mempool Type}
+    MEMPOOL -->|Public| PUBLIC[Standard Pool]
+    MEMPOOL -->|Private| PRIVATE[Flashbots]
+    PUBLIC --> BLOCKCHAIN
+    PRIVATE --> BLOCKCHAIN
+```
+
+### 4. Transaction Queue
+
+**States**:
+- `QUEUED`: Awaiting processing
+- `PENDING`: Submitted to network
+- `CONFIRMED`: Successfully mined
+- `FAILED`: Execution failed
+- `REPLACED`: Resubmitted with higher gas
+
+**Queue Processing**:
+```typescript
+// Process every 3 seconds
+setInterval(() => processQueue(), 3000)
+
+// Priority order:
+1. Failed transactions (retry)
+2. Queued transactions (new)
+3. Stuck transactions (replace)
+```
+
+### 5. Gas Management
+
+**Gas Estimation Flow**:
+```mermaid
+flowchart TD
+    A[Start] --> B{Simulation Available?}
+    B -->|Yes| C[Run Tenderly Simulation]
+    B -->|No| D[Use Fallback Estimate]
+    C --> E{Success?}
+    E -->|Yes| F[Use Simulated Gas + 30%]
+    E -->|No| D
+    D --> G[Base + Deposits * PerDeposit]
+    F --> H[Apply Gas Price Buffer]
+    G --> H
+    H --> I[Final Gas Parameters]
+```
+
+**Gas Calculation**:
+```typescript
+// Base calculation
+gasLimit = BASE_GAS + (depositCount * GAS_PER_DEPOSIT)
+
+// With reentrancy protection (20+ deposits)
+if (depositCount >= 20) {
+  gasLimit *= 1.25 // 25% additional buffer
+}
+
+// Price calculation
+gasPrice = currentGasPrice * (1 + buffer)
+maxFeePerGas = baseFee * 2 + priorityFee
+```
+
+### 6. Simulation Integration
+
+**Purpose**: Pre-execution validation and accurate gas estimation.
+
+**Process**:
+1. Encode transaction data
+2. Set simulation parameters
+3. Run Tenderly simulation
+4. Extract gas usage
+5. Apply safety buffer
+
+**Benefits**:
+- Prevents failed transactions
+- Accurate gas estimates
+- Error detection before submission
+- Cost optimization
 
 ## Error Handling
 
-The executor implements a robust, type-safe error handling system with dedicated error classes:
+### Retry Strategy
 
-### Error Classes
+```mermaid
+graph TD
+    ERROR[Transaction Error] --> ANALYZE{Error Type}
+    ANALYZE -->|Gas Too Low| INCREASE[Increase Gas]
+    ANALYZE -->|Nonce Issue| RESET[Reset Nonce]
+    ANALYZE -->|Network Error| WAIT[Wait & Retry]
+    ANALYZE -->|Contract Error| FAIL[Mark Failed]
+    
+    INCREASE --> RETRY[Retry Transaction]
+    RESET --> RETRY
+    WAIT --> RETRY
+    RETRY --> CHECK{Attempts < Max?}
+    CHECK -->|Yes| SUBMIT[Resubmit]
+    CHECK -->|No| FAIL
+```
 
-- `ExecutorError`: Base error class for executor-related errors
+### Error Types
 
-  - Includes context and retryable flag
-  - Used for general executor state errors
+1. **ValidationError**: Invalid transaction parameters
+2. **GasEstimationError**: Failed to estimate gas
+3. **InsufficientBalanceError**: Wallet balance too low
+4. **TransactionExecutionError**: Submission failed
+5. **SimulationError**: Tenderly simulation failed
 
-- `TransactionExecutionError`: For transaction execution failures
+## Configuration
 
-  - Includes transaction ID and deposit details
-  - Most transaction errors are retryable
-
-- `GasEstimationError`: For gas estimation failures
-
-  - Includes estimation parameters
-  - Generally retryable
-
-- `SimulationError`: For simulation failures
-
-  - Includes simulation context
-  - Falls back to standard estimation
-
-- `ContractMethodError`: For missing/invalid contract methods
-
-  - Includes method name
-  - Non-retryable, requires code fix
-
-- `QueueOperationError`: For queue operation failures
-
-  - Includes queue state information
-  - Generally retryable
-
-- `TransactionValidationError`: For invalid transaction parameters
-
-  - Includes validation context
-  - Non-retryable, requires valid input
-
-- `InsufficientBalanceError`: For low wallet/relayer balance
-
-  - Includes current and required balance
-  - Retryable once funds are added
-
-- `TransactionReceiptError`: For missing/invalid receipts
-  - Includes transaction hash and context
-  - May be retryable (network issues)
-
-### Error Handling Pattern
-
+### Wallet Executor
 ```typescript
-try {
-  const validation = await executor.validateTransaction(
-    depositIds,
-    profitability,
-  );
-  if (validation.isValid) {
-    await executor.queueTransaction(depositIds, profitability);
-  } else {
-    console.error('Validation failed:', validation.error);
-  }
-} catch (error) {
-  if (error instanceof ExecutorError) {
-    console.error('Executor error:', {
-      message: error.message,
-      context: error.context,
-      isRetryable: error.isRetryable,
-    });
+{
+  privateKey: string,
+  minBalance: bigint,        // Minimum wallet balance
+  maxPendingTransactions: 5, // Concurrent tx limit
+  transferOutThreshold: 0.5, // ETH threshold for tips
+  gasBoostPercentage: 25,    // Gas price buffer %
+  minProfitMargin: 10        // Minimum profit %
+}
+```
 
-    if (error.isRetryable) {
-      // Implement retry logic
-    }
+### Relayer Executor
+```typescript
+{
+  apiKey: string,
+  apiSecret: string,
+  isPrivate: boolean,        // Use Flashbots
+  gasPolicy: {
+    maxFeePerGas: bigint,
+    maxPriorityFeePerGas: bigint
   }
 }
 ```
 
-### Error Context
+## Transaction Validation
 
-All errors include relevant context for debugging:
+### Pre-submission Checks
+1. **Sufficient Rewards**: Total rewards > payout + gas + margin
+2. **Valid Deposits**: All deposits exist and qualify
+3. **Gas Estimation**: Successful simulation or fallback
+4. **Balance Check**: Executor has sufficient ETH
+5. **Queue Limits**: Not exceeding max queue size
 
-- Transaction IDs
-- Deposit IDs
-- Gas parameters
-- Balance information
-- Contract state
-- Validation details
-- Simulation results
+### Post-submission Monitoring
+1. **Receipt Polling**: Check transaction status
+2. **Timeout Detection**: Identify stuck transactions
+3. **Replacement Logic**: Resubmit with higher gas
+4. **Success Verification**: Validate execution results
 
-### Error Propagation
+## Best Practices
 
-The ExecutorWrapper provides a consistent error handling layer:
+1. **Always Simulate**: Use Tenderly when available
+2. **Monitor Gas Prices**: Adjust buffers for volatility
+3. **Set Appropriate Limits**: Balance speed vs cost
+4. **Handle Failures Gracefully**: Implement retry logic
+5. **Track Metrics**: Monitor success rates and costs
 
-- Wraps all underlying errors in appropriate error classes
-- Adds execution context to errors
-- Preserves error traceability
-- Maintains type safety through the error hierarchy
+## Common Issues and Solutions
 
-### Logging
+### Issue: Transaction Stuck
+**Solution**: Automatic replacement after timeout with higher gas
 
-Errors are automatically logged with:
+### Issue: Simulation Failures
+**Solution**: Fallback to conservative gas estimates
 
-- Error type and message
-- Full error context
-- Stack trace when available
-- Retry status
-- Related transaction/deposit IDs
-- Simulation results
+### Issue: Insufficient Balance
+**Solution**: Alert and pause execution until funded
 
-## Monitoring
+### Issue: High Failure Rate
+**Solution**: Circuit breaker activates after threshold
 
-- Health/status via `getStatus()`
-- Metrics: queue size, pending txs, wallet balance, last error
-- Simulation success rate
-- Gas estimation accuracy
-- Profit margin statistics
+## Performance Metrics
 
-## Testing
+- **Queue Processing**: Every 3 seconds
+- **Transaction Timeout**: 5 minutes
+- **Max Retries**: 3 attempts
+- **Simulation Success Rate**: >95%
+- **Transaction Success Rate**: >98%
 
-A comprehensive test suite is included that verifies:
+## Integration Points
 
-- Batch queue management
-- Transaction validation
-- Simulation integration
-- Transaction execution with GovLst contract
-- Status monitoring and receipt handling
-- Error handling and recovery
-- Tip transfers
-- Gas estimation accuracy
+- **Profitability Module**: Receives profitable batches
+- **Database Module**: Persists transaction state
+- **Simulation Module**: Validates transactions
+- **Price Module**: Gas cost calculations
+- **Monitor Module**: Triggers execution
 
-### Test Setup
-
-1. Place your GovLst contract ABI in `src/tests/abis/govlst.json`
-2. Set required environment variables:
-   ```
-   TEST_PRIVATE_KEY=your_test_wallet_private_key
-   GOVLST_CONTRACT_ADDRESS=your_contract_address
-   RPC_URL=your_rpc_url
-   TIP_RECEIVER=your_tip_receiver_address
-   TENDERLY_ACCESS_KEY=your_tenderly_key
-   ```
-3. Run the tests:
-
-   ```bash
-   # Unit tests
-   pnpm test src/executor/strategies/__tests__/BaseExecutor.test.ts
-   pnpm test src/executor/strategies/__tests__/RelayerExecutor.test.ts
-
-   # Integration tests
-   pnpm test src/executor/__tests__/integration/
-   ```
-
-## Using RelayerExecutor with OpenZeppelin Defender
-
-The RelayerExecutor allows you to send transactions via an OpenZeppelin Defender Relayer instead of using a local wallet. This provides better security, reliability, and gas management features.
-
-### Setup
-
-First, install the required dependencies:
-
-```bash
-pnpm add @openzeppelin/defender-sdk ethers@6
-```
-
-### Configuration
-
-To use the RelayerExecutor, you need an OpenZeppelin Defender account and a Relayer setup. Configure the executor with your Relayer credentials:
-
-```typescript
-import { ethers } from 'ethers'
-import { ExecutorWrapper, ExecutorType } from './src/executor'
-
-// Create provider
-const provider = new ethers.JsonRpcProvider('https://mainnet.infura.io/v3/YOUR_INFURA_KEY')
-
-// Load contract
-const govLstAbi = [...] // Contract ABI
-const govLstAddress = '0x...' // Contract address
-const govLstContract = new ethers.Contract(govLstAddress, govLstAbi, provider)
-
-// Configure executor with Relayer
-const executor = new ExecutorWrapper(
-  govLstContract,
-  provider,
-  ExecutorType.RELAYER,
-  {
-    relayer: {
-      apiKey: 'YOUR_DEFENDER_API_KEY',
-      apiSecret: 'YOUR_DEFENDER_API_SECRET',
-      minBalance: ethers.parseEther('0.1'),
-      maxPendingTransactions: 5,
-      gasPolicy: {
-        maxFeePerGas: ethers.parseGwei('100'),
-        maxPriorityFeePerGas: ethers.parseGwei('2')
-      }
-    },
-    maxQueueSize: 100,
-    minConfirmations: 2,
-    concurrentTransactions: 5,
-    includeGasCost: true
-  }
-)
-
-// Start executor
-await executor.start()
-```
-
-### Benefits of Using RelayerExecutor
-
-1. **Improved Security**: No private keys stored in your application
-2. **Transaction Management**: Automatic gas price adjustments and transaction resubmission
-3. **Monitoring**: Built-in monitoring and notification capabilities through Defender
-4. **Reliability**: Higher transaction success rate with optimized gas pricing
-5. **Scalability**: Easily create and manage multiple relayers for different chains
-6. **Simulation Support**: Integrated transaction simulation through Defender
-
-## See root README for system-level diagrams and configuration.
-
-# Executor Module
-
-The executor module is responsible for executing transactions in the staker-bots system.
-
-## Features
-
-### Privacy Mode
-
-The RelayerExecutor supports private transactions through OpenZeppelin Defender. When enabled, transactions are sent through private mempool channels to help prevent front-running and MEV attacks.
-
-To enable private transactions, set the following environment variable:
-
-```env
-RELAYER_PRIVATE_TRANSACTIONS=true
-```
-
-Note that private transactions may have slightly higher gas costs and longer confirmation times.
-
-## Strategies
-
-### Swap Strategy
-
-The swap strategy allows automatic conversion of tokens to ETH using Uniswap V2. This is useful for converting accumulated reward tokens into ETH.
-
-#### Configuration
-
-Copy the environment variables from `strategies/swap.env.example` to your `.env` file and adjust as needed:
-
-```env
-# Enable/disable automatic token swapping to ETH
-EXECUTOR_SWAP_TO_ETH=false
-
-# Uniswap V2 Router address (mainnet)
-UNISWAP_ROUTER_ADDRESS=0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
-
-# Maximum allowed slippage in percentage (e.g., 0.5 for 0.5%)
-SWAP_SLIPPAGE_TOLERANCE=0.5
-
-# Number of minutes until the swap transaction expires
-SWAP_DEADLINE_MINUTES=10
-
-# Minimum amount of tokens required to trigger a swap (in wei)
-SWAP_MIN_AMOUNT_IN=1000000000000000000 # 1 token
-
-# Maximum amount of tokens to swap in a single transaction (in wei)
-SWAP_MAX_AMOUNT_IN=1000000000000000000000 # 1000 tokens
-
-# Number of decimals for the token being swapped
-SWAP_TOKEN_DECIMALS=18
-```
-
-#### Features
-
-- Automatic token to ETH swaps via Uniswap V2
-- Configurable slippage tolerance
-- Minimum and maximum swap amounts
-- Transaction deadline protection
-- Uses OpenZeppelin Defender Relayer for secure transaction execution
-- Automatic approval handling
-
-#### Usage
-
-The swap strategy will automatically:
-
-1. Check if token balance exceeds minimum amount
-2. Get optimal swap path and quote from Uniswap
-3. Apply slippage tolerance to protect against price movement
-4. Execute swap with deadline protection
-5. Handle token approvals if needed
+This module ensures reliable and cost-effective execution of reward claims while protecting against common blockchain transaction failures.

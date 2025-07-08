@@ -1,309 +1,375 @@
-# Database Component
+# Database Module
 
-The database component provides a storage layer for the staker-bots system. It supports both Supabase and local JSON file storage.
+## Overview
 
----
+The Database module provides a flexible data persistence layer for the staker-bots system. It supports multiple storage backends (Supabase and JSON) with automatic fallback capabilities, ensuring data integrity and availability.
 
-## State Diagram: Table Relationships
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "External Systems"
+        SUPABASE[Supabase Cloud]
+        FILESYSTEM[Local Filesystem]
+    end
+    
+    subgraph "Database Module"
+        WRAPPER[DatabaseWrapper]
+        IFACE[IDatabase Interface]
+        
+        subgraph "Implementations"
+            SUPA_IMPL[Supabase Implementation]
+            JSON_IMPL[JsonDatabase]
+        end
+        
+        subgraph "Domain Modules"
+            DEPOSITS[deposits.ts]
+            CHECKPOINTS[checkpoints.ts]
+            PROC_QUEUE[processing_queue.ts]
+            TX_QUEUE[transaction_queue.ts]
+            TX_DETAILS[transaction_details.ts]
+            GOVLST[govlst_rewards.ts]
+            ERRORS[errors.ts]
+        end
+    end
+    
+    subgraph "Consumers"
+        MONITOR[Monitor Module]
+        EXECUTOR[Executor Module]
+        PROFIT[Profitability Module]
+    end
+    
+    WRAPPER --> IFACE
+    WRAPPER --> SUPA_IMPL
+    WRAPPER --> JSON_IMPL
+    
+    SUPA_IMPL --> DEPOSITS
+    SUPA_IMPL --> CHECKPOINTS
+    SUPA_IMPL --> PROC_QUEUE
+    SUPA_IMPL --> TX_QUEUE
+    SUPA_IMPL --> TX_DETAILS
+    SUPA_IMPL --> GOVLST
+    SUPA_IMPL --> ERRORS
+    
+    DEPOSITS --> SUPABASE
+    CHECKPOINTS --> SUPABASE
+    PROC_QUEUE --> SUPABASE
+    TX_QUEUE --> SUPABASE
+    TX_DETAILS --> SUPABASE
+    GOVLST --> SUPABASE
+    ERRORS --> SUPABASE
+    
+    JSON_IMPL --> FILESYSTEM
+    
+    MONITOR --> WRAPPER
+    EXECUTOR --> WRAPPER
+    PROFIT --> WRAPPER
+```
+
+## Data Model
 
 ```mermaid
 erDiagram
-    DEPOSITS ||--o{ PROCESSING_QUEUE : contains
-    DEPOSITS ||--o{ GOVLST_DEPOSITS : tracks
-    PROCESSING_QUEUE ||--o{ TRANSACTION_QUEUE : triggers
-    GOVLST_DEPOSITS ||--o{ GOVLST_CLAIM_HISTORY : claims
+    DEPOSITS {
+        string id PK
+        string deposit_id UK
+        string owner_address
+        string depositor_address
+        string amount
+        string delegatee_address
+        string earning_power
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    PROCESSING_QUEUE {
+        string id PK
+        string deposit_id FK
+        string status
+        string delegatee
+        string error
+        int attempts
+        json last_profitability_check
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    TRANSACTION_QUEUE {
+        string id PK
+        string deposit_id FK
+        string status
+        string hash
+        json tx_data
+        string gas_price
+        string tip_amount
+        string tip_receiver
+        int attempts
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    TRANSACTION_DETAILS {
+        string id PK
+        string transaction_id UK
+        string transaction_hash
+        string tx_queue_item_id FK
+        string status
+        string[] deposit_ids
+        string recipient_address
+        string min_expected_reward
+        string payout_amount
+        string gas_cost_estimate
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    CHECKPOINTS {
+        string component_type PK
+        int last_block_number
+        string block_hash
+        timestamp last_update
+    }
+    
+    GOVLST_CLAIM_HISTORY {
+        string id PK
+        string govlst_address
+        string[] deposit_ids
+        string claimed_reward
+        string payout_amount
+        string profit
+        string transaction_hash
+        timestamp created_at
+    }
+    
+    ERROR_LOGS {
+        string id PK
+        string service_name
+        string error_message
+        string stack_trace
+        string severity
+        json meta
+        json context
+        timestamp created_at
+    }
+    
+    DEPOSITS ||--o{ PROCESSING_QUEUE : has
+    DEPOSITS ||--o{ TRANSACTION_QUEUE : has
+    TRANSACTION_QUEUE ||--o| TRANSACTION_DETAILS : details
 ```
 
----
+## Components
 
-## Sequence Diagram: Deposit to Claim Flow
+### 1. Database Interface (`IDatabase`)
 
+**Purpose**: Defines the contract for all database implementations.
+
+**Key Method Categories**:
+- **Deposits**: CRUD operations for staking deposits
+- **Checkpoints**: Block processing state management
+- **Processing Queue**: Profitability check queue management
+- **Transaction Queue**: Transaction execution queue management
+- **Transaction Details**: Detailed transaction tracking
+- **GovLst Claims**: Reward claim history
+- **Error Logs**: System error tracking
+
+### 2. DatabaseWrapper
+
+**Purpose**: Provides automatic fallback between database implementations.
+
+**Features**:
+- Primary database selection (Supabase/JSON)
+- Automatic fallback to JSON on Supabase failure
+- Transparent error handling
+- Method wrapping for all database operations
+
+**Flow**:
 ```mermaid
 sequenceDiagram
-    participant Monitor
-    participant Database
-    participant ProfitabilityEngine
-    participant Executor
-    participant Ethereum
-
-    Monitor->>Database: Store deposit event
-    ProfitabilityEngine->>Database: Read deposits
-    ProfitabilityEngine->>Database: Update processing_queue
-    alt Profitable
-        ProfitabilityEngine->>Database: Add to transaction_queue
-        Executor->>Database: Read transaction_queue
-        Executor->>Ethereum: Submit claim tx
-        Ethereum-->>Executor: Tx receipt
-        Executor->>Database: Update claim_history
+    participant Client
+    participant Wrapper
+    participant Supabase
+    participant JsonDB
+    
+    Client->>Wrapper: Database operation
+    Wrapper->>Supabase: Try operation
+    alt Success
+        Supabase-->>Wrapper: Result
+        Wrapper-->>Client: Result
+    else Failure
+        Supabase-->>Wrapper: Error
+        Wrapper->>JsonDB: Fallback operation
+        JsonDB-->>Wrapper: Result
+        Wrapper-->>Client: Result
     end
 ```
 
----
+### 3. Supabase Implementation
 
-## Schema Overview
+**Purpose**: Cloud-based database storage using Supabase.
 
-- **deposits**: Tracks staking deposits
-- **processing_checkpoints**: Tracks component state
-- **govlst_deposits**: Tracks GovLst-owned deposits
-- **govlst_claim_history**: Records claim executions
-- **processing_queue**: Manages analysis queue
-- **transaction_queue**: Manages tx execution queue
+**Structure**:
+- `client.ts`: Supabase client initialization
+- `deposits.ts`: Deposit operations
+- `checkpoints.ts`: Checkpoint operations
+- `processing_queue.ts`: Processing queue operations
+- `transaction_queue.ts`: Transaction queue operations
+- `transaction_details.ts`: Transaction detail operations
+- `govlst_rewards.ts`: GovLst claim operations
+- `errors.ts`: Error log operations
+- `migrations/`: SQL migration files
 
----
+### 4. JSON Database Implementation
 
-## Integration
+**Purpose**: Local file-based storage for development and fallback.
 
-- **Monitor**: Writes events and deposits
-- **Profitability Engine**: Reads deposits, updates queues
-- **Executor**: Reads/writes transaction and claim history
+**Features**:
+- In-memory data with file persistence
+- Thread-safe write operations
+- Automatic file creation
+- Data migration support
+- Query simulation for complex operations
 
----
+## Data Flow
 
-## See root README for system-level diagrams and configuration.
+### Write Operations
 
-## Database Schema
-
-The database schema is organized into logical components:
-
-1. **Core Tables** - Contains the core tables like deposits and processing_checkpoints
-2. **Monitor Tables** - Tables used by the monitor component
-3. **Queue Tables** - Tables for processing and transaction queues
-4. **GovLst Tables** - Tables specific to the GovLst functionality
-
-## Running Migrations
-
-All migrations have been consolidated into sequential files that must be run in the correct order:
-
-```
-01_core_tables.sql    - Core tables with base schema
-02_monitor_tables.sql - Monitor-related tables
-03_queue_tables.sql   - Queue-related tables
-04_govlst_tables.sql  - GovLst-related tables
-05_checkpoints_view.sql - Compatibility view for checkpoints
-```
-
-To apply migrations:
-
-```bash
-# Using the npm script
-npm run migrate
-
-# Or directly
-npx tsx src/database/supabase/migrate.ts
+```mermaid
+sequenceDiagram
+    participant Module
+    participant DB as DatabaseWrapper
+    participant Store as Storage
+    
+    Module->>DB: Create/Update Entity
+    DB->>DB: Validate Data
+    DB->>Store: Write Operation
+    Store->>Store: Persist Data
+    Store-->>DB: Confirmation
+    DB-->>Module: Success/Error
 ```
 
-## Manual Setup
+### Read Operations
 
-If you prefer to manually set up the database:
+```mermaid
+sequenceDiagram
+    participant Module
+    participant DB as DatabaseWrapper
+    participant Store as Storage
+    
+    Module->>DB: Query Request
+    DB->>Store: Fetch Data
+    Store->>Store: Apply Filters
+    Store-->>DB: Results
+    DB->>DB: Transform Results
+    DB-->>Module: Typed Data
+```
 
-1. Go to [Supabase Dashboard](https://app.supabase.com)
-2. Select your project
-3. Go to SQL Editor
-4. Click "New Query"
-5. Copy and paste the contents of each migration file in sequence:
-   - `src/database/supabase/migrations/01_core_tables.sql`
-   - `src/database/supabase/migrations/02_monitor_tables.sql`
-   - `src/database/supabase/migrations/03_queue_tables.sql`
-   - `src/database/supabase/migrations/04_govlst_tables.sql`
-   - `src/database/supabase/migrations/05_checkpoints_view.sql`
-6. Run each migration in order
+## Key Tables
 
-## Database Structure
+### 1. Deposits
+- Tracks all staking deposits
+- Links owners, depositors, and delegatees
+- Stores amounts and earning power
 
-### Tables
+### 2. Processing Queue
+- Manages deposits awaiting profitability checks
+- Tracks check attempts and results
+- Maintains processing status
 
-#### Core Tables (01_core_tables.sql)
+### 3. Transaction Queue
+- Queues profitable claims for execution
+- Tracks transaction submission status
+- Stores gas prices and tip information
 
-- **deposits**
+### 4. Transaction Details
+- Comprehensive transaction execution records
+- Links multiple deposits to single transaction
+- Tracks profitability calculations and actual results
 
-  - `deposit_id` (TEXT, PK): Unique identifier for each deposit
-  - `owner_address` (TEXT): Address of the deposit owner
-  - `depositor_address` (TEXT): Address of the depositor
-  - `delegatee_address` (TEXT): Address of the delegatee
-  - `amount` (NUMERIC): Amount of deposit
-  - `earning_power` (TEXT): Earning power of the deposit
-  - `created_at` (TIMESTAMP): Auto-set on creation
-  - `updated_at` (TIMESTAMP): Auto-updates on changes
+### 5. Checkpoints
+- Maintains blockchain synchronization state
+- Prevents reprocessing of blocks
+- Handles chain reorganizations
 
-- **processing_checkpoints**
-  - `component_type` (TEXT, PK): Type of the processing component
-  - `last_block_number` (BIGINT): Last processed block number
-  - `block_hash` (TEXT): Hash of the last processed block
-  - `last_update` (TIMESTAMP): Time of last update
+### 6. Error Logs
+- Centralized error tracking
+- Categorized by service and severity
+- Includes context and metadata
 
-#### Monitor Tables (02_monitor_tables.sql)
+## Usage Examples
 
-- **score_events**
-  - `delegatee` (TEXT): Delegatee address (part of PK)
-  - `score` (NUMERIC): Score value
-  - `block_number` (BIGINT): Block number (part of PK)
-  - `created_at` (TIMESTAMP): Auto-set on creation
-  - `updated_at` (TIMESTAMP): Auto-updates on changes
-
-#### Queue Tables (03_queue_tables.sql)
-
-- **processing_queue**
-
-  - `id` (UUID, PK): Unique identifier
-  - `deposit_id` (TEXT): Reference to deposit
-  - `status` (TEXT): Status of processing
-  - `delegatee` (TEXT): Delegatee address
-  - `attempts` (INTEGER): Number of processing attempts
-  - `error` (TEXT): Error message if failed
-  - `last_profitability_check` (TEXT): JSON stringified profitability result
-
-- **transaction_queue**
-  - `id` (UUID, PK): Unique identifier
-  - `deposit_id` (TEXT): Reference to deposit
-  - `status` (TEXT): Status of transaction
-  - `hash` (TEXT): Transaction hash
-  - `attempts` (INTEGER): Number of submission attempts
-  - `error` (TEXT): Error message if failed
-  - `tx_data` (TEXT): JSON stringified transaction data
-  - `gas_price` (TEXT): Gas price used
-  - `tip_amount` (TEXT): Tip amount
-  - `tip_receiver` (TEXT): Tip receiver address
-
-#### GovLst Tables (04_govlst_tables.sql)
-
-- **govlst_deposits**
-
-  - `deposit_id` (TEXT, PK): Unique identifier (references deposits)
-  - `govlst_address` (TEXT): Address of the GovLst contract
-  - `last_reward_check` (TIMESTAMP): Time of last reward check
-  - `last_unclaimed_reward` (TEXT): Amount of unclaimed rewards
-  - `created_at` (TIMESTAMP): Auto-set on creation
-  - `updated_at` (TIMESTAMP): Auto-updates on changes
-
-- **govlst_claim_history**
-  - `id` (UUID, PK): Unique identifier for each claim
-  - `govlst_address` (TEXT): Address of the GovLst contract
-  - `deposit_ids` (JSONB): Array of claimed deposit IDs
-  - `claimed_reward` (TEXT): Total claimed reward amount
-  - `payout_amount` (TEXT): GovLst payout amount at time of claim
-  - `profit` (TEXT): Net profit from the claim
-  - `transaction_hash` (TEXT): Hash of the claim transaction
-  - `gas_used` (TEXT): Gas used by the transaction
-  - `gas_price` (TEXT): Gas price for the transaction
-  - `created_at` (TIMESTAMP): Time of claim execution
-  - `updated_at` (TIMESTAMP): Auto-updates on changes
-
-## Usage Example
-
+### Creating a Deposit
 ```typescript
-import { DatabaseWrapper } from '@/database';
-
-// Supabase database (default)
-const supabaseDb = new DatabaseWrapper();
-
-// Local JSON database
-const jsonDb = new DatabaseWrapper({
-  type: 'json',
-  jsonDbPath: '.my-local-db.json', // optional, defaults to '.local-db.json'
-});
-
-// Create deposit
-await supabaseDb.createDeposit({
-  deposit_id: '123',
+await database.createDeposit({
+  deposit_id: '12345',
   owner_address: '0x...',
-  depositor_address: '0x...',
-  delegatee_address: '0x...',
   amount: '1000000000000000000',
+  delegatee_address: '0x...',
   created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString(),
+  updated_at: new Date().toISOString()
 });
 ```
 
-## Local JSON Database
-
-The package includes a simple JSON-based database implementation for local development and testing. The JSON database stores all data in a local file and implements the same interface as the Supabase database.
-
-To use the JSON database:
-
-1. Initialize the DatabaseWrapper with the 'json' type
-2. Optionally specify a custom path for the database file
-3. The database file will be automatically created if it doesn't exist
-
-The JSON database is suitable for:
-
-- Local development
-- Testing
-- Simple deployments that don't require a full database
-- Scenarios where you want to avoid external dependencies
-
-Note that the JSON database is not recommended for production use cases that require:
-
-- Concurrent access
-- High performance
-- Data redundancy
-- Complex queries
-
-## Error Logging
-
-The database layer includes support for logging errors to both Supabase and the local JSON database.
-
-### Error Log Schema
-
-The error logs are stored in the `errors` table with the following schema:
-
-```
-id               - UUID (primary key)
-service_name     - Text (the name of the service generating the error)
-error_message    - Text (the main error message)
-stack_trace      - Text (optional stack trace from the error)
-severity         - Text ('info', 'warn', 'error', 'fatal')
-meta             - JSONB (additional metadata about the error)
-context          - JSONB (context information about where the error occurred)
-created_at       - Timestamp (when the error was logged)
-```
-
-### Error Logging Methods
-
-The following methods are available for error logging:
-
+### Processing Queue Management
 ```typescript
-// Create a new error log
-await db.createErrorLog({
-  service_name: 'my-service',
-  error_message: 'Something went wrong',
-  severity: 'error',
-  stack_trace: new Error().stack,
-  meta: { additionalInfo: 'value' },
-  context: { requestId: '123' },
+// Add to queue
+const item = await database.createProcessingQueueItem({
+  deposit_id: '12345',
+  status: ProcessingQueueStatus.PENDING,
+  delegatee: '0x...'
 });
 
-// Retrieve error logs with pagination
-const recentErrors = await db.getErrorLogs(10, 0); // limit 10, offset 0
-
-// Get errors for a specific service
-const serviceErrors = await db.getErrorLogsByService('my-service', 50, 0);
-
-// Get errors by severity
-const criticalErrors = await db.getErrorLogsBySeverity('fatal', 20, 0);
-
-// Delete an error log
-await db.deleteErrorLog('error-id');
+// Update status
+await database.updateProcessingQueueItem(item.id, {
+  status: ProcessingQueueStatus.PROCESSING,
+  last_profitability_check: JSON.stringify(checkResult)
+});
 ```
 
-### Using the Error Logger
-
-For a higher-level API, you can use the `ErrorLogger` class in the `src/configuration/errorLogger.ts` file:
-
+### Transaction Tracking
 ```typescript
-import { createErrorLogger } from '@/configuration/errorLogger';
-import { dbWrapper } from '@/database';
-
-// Create an error logger for a specific service
-const logger = createErrorLogger('my-service', dbWrapper);
-
-// Log different severity levels
-await logger.info('Operation started', { operationId: '123' });
-await logger.warn('Resource usage high', { cpuUsage: 89 });
-await logger.error(new Error('Operation failed'), { operationId: '123' });
-await logger.fatal('Critical system failure', { component: 'auth' });
-
-// Or use the generic logError method
-await logger.logError(error, 'error', { additionalContext: 'value' });
+// Create transaction details
+await database.createTransactionDetails({
+  transaction_id: 'tx-123',
+  deposit_ids: ['12345', '67890'],
+  status: TransactionDetailsStatus.PENDING,
+  min_expected_reward: '1000000000000000000',
+  gas_cost_estimate: '50000000000000000'
+});
 ```
 
-The logger automatically extracts context from `BaseError` types, making it easy to integrate with the existing error system.
+## Migration System
+
+SQL migrations are automatically applied on startup:
+1. Core tables (deposits, checkpoints)
+2. Monitor tables (processing states)
+3. Queue tables (transaction management)
+4. GovLst tables (reward tracking)
+5. View definitions
+6. Error tracking tables
+7. Transaction detail enhancements
+
+## Error Handling
+
+The module implements comprehensive error handling:
+- Automatic retry logic for transient failures
+- Fallback to JSON database on persistent errors
+- Error logging with full context
+- Graceful degradation of functionality
+
+## Best Practices
+
+1. **Always use the interface**: Never directly access implementations
+2. **Handle errors gracefully**: The database may fallback to JSON
+3. **Use transactions**: Group related operations when possible
+4. **Index considerations**: Add indexes for frequently queried fields
+5. **Data validation**: Validate before writing to database
+
+## Performance Considerations
+
+- **Batch operations**: Use batch methods for multiple items
+- **Connection pooling**: Supabase client reuses connections
+- **JSON file size**: Monitor JSON database file growth
+- **Query optimization**: Use specific queries over getAllX methods
+- **Caching**: Implement caching for frequently accessed data
+
+This module ensures reliable data persistence across different deployment scenarios, from local development to production cloud environments.
