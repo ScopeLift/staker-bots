@@ -9,10 +9,7 @@ import {
   ProfitabilityConfig,
 } from '../interfaces/types';
 import { GAS_CONSTANTS, CONTRACT_CONSTANTS, EVENTS } from '../constants';
-import {
-  QueueProcessingError,
-  BatchFetchError,
-} from '@/configuration/errors';
+import { QueueProcessingError, BatchFetchError } from '@/configuration/errors';
 import { CONFIG } from '@/configuration';
 import { ErrorLogger } from '@/configuration/errorLogger';
 import { CoinMarketCapFeed } from '@/prices/CoinmarketcapFeed';
