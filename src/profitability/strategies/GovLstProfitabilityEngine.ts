@@ -491,8 +491,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         'Fetching payout amount',
       );
 
-      // Calculate realistic gas cost based on actual usage patterns (600k gas)
-      const REALISTIC_GAS_UNITS = BigInt(600000); // 600k gas based on production data
+      // Calculate realistic gas cost based on actual usage patterns
+      // Production data shows ~2-2.6M gas for 60-70 deposits
+      const REALISTIC_GAS_UNITS = BigInt(2500000); // 2.5M gas based on production simulations
       const gasPrice = await this.getGasPriceWithBuffer();
       const gasCostWei = gasPrice * REALISTIC_GAS_UNITS;
       const realisticGasCost =
