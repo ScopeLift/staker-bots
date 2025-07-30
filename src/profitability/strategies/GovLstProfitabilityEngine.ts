@@ -485,29 +485,35 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         'Fetching payout amount',
       );
 
-      const gasCost = await this.getContractDataWithRetry(
-        () => this.estimateGasCostInRewardToken(),
-        'Estimating gas cost',
-      );
+      // Calculate realistic gas cost based on actual usage patterns (600k gas)
+      const REALISTIC_GAS_UNITS = BigInt(600000); // 600k gas based on production data
+      const gasPrice = await this.getGasPriceWithBuffer();
+      const gasCostWei = gasPrice * REALISTIC_GAS_UNITS;
+      const realisticGasCost = await this.convertGasCostToRewardTokens(gasCostWei);
+
+      this.logger.info('Using realistic gas estimate for Stage 1 threshold', {
+        gasUnits: REALISTIC_GAS_UNITS.toString(),
+        gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
+        gasCostWei: gasCostWei.toString(),
+        gasCostInTokens: realisticGasCost.toString(),
+        gasCostInTokensFormatted: ethers.formatEther(realisticGasCost),
+      });
 
       // We'll calculate enhanced gas cost and actualGasEstimate later, after we know total rewards
-      let enhancedGasCost = gasCost;
-      let actualGasEstimate = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
+      let enhancedGasCost = realisticGasCost;
+      let actualGasEstimate = REALISTIC_GAS_UNITS;
 
       const profitMargin = this.config.minProfitMargin;
 
       // Get all deposit IDs
       const depositIds = normalizedDeposits.map((d) => d.deposit_id);
 
-      // Calculate optimal threshold based on payout amount, gas cost and profit margin percentage
+      // Calculate optimal threshold based on payout amount and realistic gas cost
       const effectiveGasCost = CONFIG.profitability.includeGasCost
-        ? enhancedGasCost
+        ? realisticGasCost
         : BigInt(0);
       
-      // Add gas buffer to account for estimation inaccuracy before simulation
-      // Buffer of 100 tokens to ensure we have enough rewards for actual gas costs
-      const gasBuffer = ethers.parseEther('100');
-      const baseAmount = payoutAmount + effectiveGasCost + gasBuffer;
+      const baseAmount = payoutAmount + effectiveGasCost;
 
       // Scale profit margin based on deposit count
       const depositCount = BigInt(depositIds.length);
@@ -620,8 +626,8 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         });
 
         // First simulation to get accurate gas cost
-        let firstSimulationGasCost = gasCost;
-        let firstSimulationGasUnits = GAS_CONSTANTS.FALLBACK_GAS_ESTIMATE;
+        let firstSimulationGasCost = realisticGasCost;
+        let firstSimulationGasUnits = REALISTIC_GAS_UNITS;
         
         if (this.simulationService && this.activeBin.total_rewards >= payoutAmount) {
           try {
