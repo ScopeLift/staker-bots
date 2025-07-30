@@ -13,23 +13,23 @@ graph TB
         DEFENDER[OpenZeppelin Defender]
         TENDERLY[Tenderly Simulation]
     end
-    
+
     subgraph "Executor Module"
         WRAPPER[ExecutorWrapper]
         IFACE[IExecutor Interface]
-        
+
         subgraph "Implementations"
             BASE[BaseExecutor]
             RELAYER[RelayerExecutor]
         end
-        
+
         subgraph "Helpers"
             SIM_HELP[simulation-helpers.ts]
             DEF_HELP[defender-helpers.ts]
             GAS_HELP[helpers.ts]
             SWAP_HELP[token-swap-helpers.ts]
         end
-        
+
         subgraph "Core Components"
             QUEUE[Transaction Queue]
             GAS_MGR[Gas Manager]
@@ -37,30 +37,30 @@ graph TB
             SWAP_MGR[Swap Strategy]
         end
     end
-    
+
     subgraph "Consumers"
         PROFIT[Profitability Module]
         MONITOR[Monitor Module]
     end
-    
+
     WRAPPER --> IFACE
     WRAPPER --> BASE
     WRAPPER --> RELAYER
     BASE -.-> RELAYER
-    
+
     BASE --> QUEUE
     BASE --> GAS_MGR
     BASE --> SIM_MGR
     RELAYER --> DEFENDER
-    
+
     GAS_MGR --> GAS_HELP
     SIM_MGR --> SIM_HELP
     SIM_MGR --> TENDERLY
     RELAYER --> DEF_HELP
-    
+
     BASE --> BLOCKCHAIN
     SWAP_MGR --> SWAP_HELP
-    
+
     PROFIT --> WRAPPER
     MONITOR --> WRAPPER
 ```
@@ -72,22 +72,22 @@ stateDiagram-v2
     [*] --> Validation
     Validation --> Queued: Valid
     Validation --> Rejected: Invalid
-    
+
     Queued --> Simulation
     Simulation --> GasEstimation: Success
     Simulation --> Failed: Failure
-    
+
     GasEstimation --> Submission
     Submission --> Pending: Submitted
     Submission --> Failed: Error
-    
+
     Pending --> Monitoring
     Monitoring --> Confirmed: Mined
     Monitoring --> Failed: Reverted
     Monitoring --> Replacement: Stuck
-    
+
     Replacement --> Pending: Resubmitted
-    
+
     Confirmed --> [*]
     Failed --> [*]
     Rejected --> [*]
@@ -100,6 +100,7 @@ stateDiagram-v2
 **Purpose**: Factory and manager for executor implementations.
 
 **Responsibilities**:
+
 - Creates appropriate executor instance based on configuration
 - Provides unified interface
 - Manages executor lifecycle
@@ -109,6 +110,7 @@ stateDiagram-v2
 **Purpose**: Direct wallet-based transaction execution.
 
 **Key Features**:
+
 - In-memory transaction queue
 - Gas price optimization
 - Transaction simulation
@@ -116,6 +118,7 @@ stateDiagram-v2
 - Tip accumulation and transfer
 
 **Process Flow**:
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -123,11 +126,11 @@ sequenceDiagram
     participant Simulation
     participant Blockchain
     participant Database
-    
+
     Client->>Executor: queueTransaction()
     Executor->>Executor: Validate transaction
     Executor->>Database: Create queue item
-    
+
     loop Process Queue
         Executor->>Simulation: Simulate transaction
         Simulation-->>Executor: Gas estimate
@@ -146,6 +149,7 @@ sequenceDiagram
 **Purpose**: OpenZeppelin Defender-based execution.
 
 **Key Features**:
+
 - Managed gas pricing
 - Private mempool options
 - MEV protection
@@ -153,6 +157,7 @@ sequenceDiagram
 - Automatic balance management
 
 **Defender Integration**:
+
 ```mermaid
 graph LR
     EXEC[RelayerExecutor] --> API[Defender API]
@@ -167,6 +172,7 @@ graph LR
 ### 4. Transaction Queue
 
 **States**:
+
 - `QUEUED`: Awaiting processing
 - `PENDING`: Submitted to network
 - `CONFIRMED`: Successfully mined
@@ -174,6 +180,7 @@ graph LR
 - `REPLACED`: Resubmitted with higher gas
 
 **Queue Processing**:
+
 ```typescript
 // Process every 3 seconds
 setInterval(() => processQueue(), 3000)
@@ -187,6 +194,7 @@ setInterval(() => processQueue(), 3000)
 ### 5. Gas Management
 
 **Gas Estimation Flow**:
+
 ```mermaid
 flowchart TD
     A[Start] --> B{Simulation Available?}
@@ -202,18 +210,19 @@ flowchart TD
 ```
 
 **Gas Calculation**:
+
 ```typescript
 // Base calculation
-gasLimit = BASE_GAS + (depositCount * GAS_PER_DEPOSIT)
+gasLimit = BASE_GAS + depositCount * GAS_PER_DEPOSIT;
 
 // With reentrancy protection (20+ deposits)
 if (depositCount >= 20) {
-  gasLimit *= 1.25 // 25% additional buffer
+  gasLimit *= 1.25; // 25% additional buffer
 }
 
 // Price calculation
-gasPrice = currentGasPrice * (1 + buffer)
-maxFeePerGas = baseFee * 2 + priorityFee
+gasPrice = currentGasPrice * (1 + buffer);
+maxFeePerGas = baseFee * 2 + priorityFee;
 ```
 
 ### 6. Simulation Integration
@@ -221,6 +230,7 @@ maxFeePerGas = baseFee * 2 + priorityFee
 **Purpose**: Pre-execution validation and accurate gas estimation.
 
 **Process**:
+
 1. Encode transaction data
 2. Set simulation parameters
 3. Run Tenderly simulation
@@ -228,6 +238,7 @@ maxFeePerGas = baseFee * 2 + priorityFee
 5. Apply safety buffer
 
 **Benefits**:
+
 - Prevents failed transactions
 - Accurate gas estimates
 - Error detection before submission
@@ -244,7 +255,7 @@ graph TD
     ANALYZE -->|Nonce Issue| RESET[Reset Nonce]
     ANALYZE -->|Network Error| WAIT[Wait & Retry]
     ANALYZE -->|Contract Error| FAIL[Mark Failed]
-    
+
     INCREASE --> RETRY[Retry Transaction]
     RESET --> RETRY
     WAIT --> RETRY
@@ -264,6 +275,7 @@ graph TD
 ## Configuration
 
 ### Wallet Executor
+
 ```typescript
 {
   privateKey: string,
@@ -276,6 +288,7 @@ graph TD
 ```
 
 ### Relayer Executor
+
 ```typescript
 {
   apiKey: string,
@@ -291,6 +304,7 @@ graph TD
 ## Transaction Validation
 
 ### Pre-submission Checks
+
 1. **Sufficient Rewards**: Total rewards > payout + gas + margin
 2. **Valid Deposits**: All deposits exist and qualify
 3. **Gas Estimation**: Successful simulation or fallback
@@ -298,6 +312,7 @@ graph TD
 5. **Queue Limits**: Not exceeding max queue size
 
 ### Post-submission Monitoring
+
 1. **Receipt Polling**: Check transaction status
 2. **Timeout Detection**: Identify stuck transactions
 3. **Replacement Logic**: Resubmit with higher gas
@@ -314,15 +329,19 @@ graph TD
 ## Common Issues and Solutions
 
 ### Issue: Transaction Stuck
+
 **Solution**: Automatic replacement after timeout with higher gas
 
 ### Issue: Simulation Failures
+
 **Solution**: Fallback to conservative gas estimates
 
 ### Issue: Insufficient Balance
+
 **Solution**: Alert and pause execution until funded
 
 ### Issue: High Failure Rate
+
 **Solution**: Circuit breaker activates after threshold
 
 ## Performance Metrics

@@ -12,17 +12,17 @@ graph TB
         TENDERLY[Tenderly API]
         BLOCKCHAIN[Blockchain State]
     end
-    
+
     subgraph "Simulation Module"
         SERVICE[SimulationService]
-        
+
         subgraph "Core Functions"
             SIMULATE[Transaction Simulation]
             BUNDLE[Bundle Simulation]
             GAS_EST[Gas Estimation]
             ERROR_PARSE[Error Parser]
         end
-        
+
         subgraph "Interfaces"
             SIM_TX[SimulationTransaction]
             SIM_RES[SimulationResult]
@@ -30,25 +30,25 @@ graph TB
             GAS_COST[GasCostEstimate]
         end
     end
-    
+
     subgraph "Consumers"
         PROFIT[Profitability Module]
         EXECUTOR[Executor Module]
     end
-    
+
     SERVICE --> TENDERLY
     TENDERLY --> BLOCKCHAIN
-    
+
     SERVICE --> SIMULATE
     SERVICE --> BUNDLE
     SERVICE --> GAS_EST
     SERVICE --> ERROR_PARSE
-    
+
     SIMULATE --> SIM_TX
     SIMULATE --> SIM_RES
     GAS_EST --> GAS_COST
     ERROR_PARSE --> SIM_ERR
-    
+
     PROFIT --> SERVICE
     EXECUTOR --> SERVICE
 ```
@@ -62,31 +62,40 @@ graph TB
 **Key Methods**:
 
 #### `simulateTransaction(transaction, options)`
+
 Simulates a single transaction with full trace and logs:
+
 ```typescript
-const result = await simulationService.simulateTransaction({
-  from: '0x...',
-  to: '0x...',
-  data: '0x...',
-  gas: 300000,
-  gasPrice: '20000000000'
-}, {
-  networkId: '1',
-  save: false
-});
+const result = await simulationService.simulateTransaction(
+  {
+    from: '0x...',
+    to: '0x...',
+    data: '0x...',
+    gas: 300000,
+    gasPrice: '20000000000',
+  },
+  {
+    networkId: '1',
+    save: false,
+  },
+);
 ```
 
 #### `simulateBundle(transactions, options)`
+
 Simulates multiple transactions as a bundle:
+
 ```typescript
-const results = await simulationService.simulateBundle([
-  transaction1,
-  transaction2
-], options);
+const results = await simulationService.simulateBundle(
+  [transaction1, transaction2],
+  options,
+);
 ```
 
 #### `estimateGasCosts(transaction, options)`
+
 Fast gas estimation without full simulation:
+
 ```typescript
 const estimate = await simulationService.estimateGasCosts(transaction, options);
 // Returns: { gasUnits, gasPrice, gasPriceDetails, timestamp }
@@ -95,39 +104,46 @@ const estimate = await simulationService.estimateGasCosts(transaction, options);
 ### 2. Data Structures
 
 #### SimulationTransaction
+
 ```typescript
 interface SimulationTransaction {
-  from: string              // Sender address
-  to: string               // Contract address
-  data?: string            // Encoded function call
-  value?: string | number  // ETH value to send
-  gas: number             // Gas limit
-  gasPrice?: string       // Gas price in wei
-  maxFeePerGas?: number   // EIP-1559 max fee
-  maxPriorityFeePerGas?: number // EIP-1559 priority fee
+  from: string; // Sender address
+  to: string; // Contract address
+  data?: string; // Encoded function call
+  value?: string | number; // ETH value to send
+  gas: number; // Gas limit
+  gasPrice?: string; // Gas price in wei
+  maxFeePerGas?: number; // EIP-1559 max fee
+  maxPriorityFeePerGas?: number; // EIP-1559 priority fee
 }
 ```
 
 #### SimulationResult
+
 ```typescript
 interface SimulationResult {
-  success: boolean
-  gasUsed: number
-  error?: SimulationError
-  trace?: TransactionTrace
-  logs?: Array<EventLog>
-  returnValue?: string
-  status?: boolean
+  success: boolean;
+  gasUsed: number;
+  error?: SimulationError;
+  trace?: TransactionTrace;
+  logs?: Array<EventLog>;
+  returnValue?: string;
+  status?: boolean;
 }
 ```
 
 #### SimulationError
+
 ```typescript
 interface SimulationError {
-  code: 'INSUFFICIENT_FUNDS' | 'EXECUTION_REVERTED' | 
-        'GAS_LIMIT_EXCEEDED' | 'SIMULATION_FAILED' | 'UNKNOWN_ERROR'
-  message: string
-  details?: string
+  code:
+    | 'INSUFFICIENT_FUNDS'
+    | 'EXECUTION_REVERTED'
+    | 'GAS_LIMIT_EXCEEDED'
+    | 'SIMULATION_FAILED'
+    | 'UNKNOWN_ERROR';
+  message: string;
+  details?: string;
 }
 ```
 
@@ -141,7 +157,7 @@ sequenceDiagram
     participant Service as SimulationService
     participant Tenderly as Tenderly API
     participant Blockchain
-    
+
     Client->>Service: simulateTransaction(tx, options)
     Service->>Service: Process gas price
     Service->>Service: Build request payload
@@ -173,14 +189,14 @@ flowchart TD
 ### Minimum Gas Price Protection
 
 ```typescript
-const MIN_SIMULATION_GAS_PRICE_GWEI = 1  // 1 gwei minimum
-const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20  // 20 gwei default
+const MIN_SIMULATION_GAS_PRICE_GWEI = 1; // 1 gwei minimum
+const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20; // 20 gwei default
 
 // Process gas price
 if (!gasPrice || gasPrice === '0') {
-  gasPrice = ethers.parseUnits('20', 'gwei').toString()
+  gasPrice = ethers.parseUnits('20', 'gwei').toString();
 } else if (gasPriceWei < minGasPriceWei) {
-  gasPrice = minGasPriceWei.toString()
+  gasPrice = minGasPriceWei.toString();
 }
 ```
 
@@ -189,6 +205,7 @@ if (!gasPrice || gasPrice === '0') {
 ### EIP-1559 Support
 
 The service supports both legacy and EIP-1559 transactions:
+
 - Legacy: Uses `gasPrice`
 - EIP-1559: Uses `maxFeePerGas` and `maxPriorityFeePerGas`
 
@@ -203,7 +220,7 @@ graph TD
     PARSE --> REVERT{Execution Reverted?}
     PARSE --> GAS{Gas Limit Exceeded?}
     PARSE --> UNKNOWN[Unknown Error]
-    
+
     FUNDS --> FUNDS_CODE[INSUFFICIENT_FUNDS]
     REVERT --> REVERT_CODE[EXECUTION_REVERTED]
     GAS --> GAS_CODE[GAS_LIMIT_EXCEEDED]
@@ -214,20 +231,21 @@ graph TD
 
 ```typescript
 try {
-  return await simulateTransaction(tx, options)
+  return await simulateTransaction(tx, options);
 } catch (error) {
-  const simulationError = parseSimulationError(error)
+  const simulationError = parseSimulationError(error);
   return {
     success: false,
     gasUsed: 0,
-    error: simulationError
-  }
+    error: simulationError,
+  };
 }
 ```
 
 ## Configuration
 
 ### Environment Variables
+
 ```typescript
 {
   TENDERLY_ACCESS_KEY: string,     // 32-char API key
@@ -239,6 +257,7 @@ try {
 ```
 
 ### API Endpoints
+
 - **Single Transaction**: `/api/v1/account/{account}/project/{project}/simulate`
 - **Bundle**: `/api/v1/account/{account}/project/{project}/simulate-bundle`
 - **Gas Estimation**: Same endpoint with `estimate_gas: true`
@@ -253,13 +272,13 @@ const options = {
     '0x...': {
       balance: '1000000000000000000000', // 1000 ETH
       nonce: 0,
-      code: '0x...',  // Custom contract code
+      code: '0x...', // Custom contract code
       state: {
-        '0x0': '0x1'   // Storage slot overrides
-      }
-    }
-  }
-}
+        '0x0': '0x1', // Storage slot overrides
+      },
+    },
+  },
+};
 ```
 
 ## Performance Optimization
@@ -268,12 +287,12 @@ const options = {
 
 ```typescript
 // Quick estimation (faster)
-simulation_type: 'quick'
-estimate_gas: true
+simulation_type: 'quick';
+estimate_gas: true;
 
 // Full simulation (detailed)
-simulation_type: 'full'
-generate_access_list: true
+simulation_type: 'full';
+generate_access_list: true;
 ```
 
 ### 2. Caching Strategy
@@ -294,29 +313,29 @@ generate_access_list: true
 
 ```typescript
 // Pre-execution validation
-const simulation = await simulationService.simulateTransaction(tx, options)
+const simulation = await simulationService.simulateTransaction(tx, options);
 if (!simulation.success) {
-  throw new Error(`Transaction would fail: ${simulation.error?.message}`)
+  throw new Error(`Transaction would fail: ${simulation.error?.message}`);
 }
 
 // Accurate gas estimation
-const gasEstimate = await simulationService.estimateGasCosts(tx, options)
-const gasCostInTokens = await convertGasToTokens(gasEstimate.gasUnits)
+const gasEstimate = await simulationService.estimateGasCosts(tx, options);
+const gasCostInTokens = await convertGasToTokens(gasEstimate.gasUnits);
 ```
 
 ### Executor Module Integration
 
 ```typescript
 // Validate before submission
-const validation = await simulateTransaction(queuedTx, options)
+const validation = await simulateTransaction(queuedTx, options);
 if (!validation.success) {
-  markTransactionFailed(queuedTx.id, validation.error)
-  return
+  markTransactionFailed(queuedTx.id, validation.error);
+  return;
 }
 
 // Optimize gas parameters
-const estimate = await estimateGasCosts(queuedTx, options)
-queuedTx.gasLimit = estimate.gasUnits * 1.2 // 20% buffer
+const estimate = await estimateGasCosts(queuedTx, options);
+queuedTx.gasLimit = estimate.gasUnits * 1.2; // 20% buffer
 ```
 
 ## Best Practices
@@ -330,26 +349,32 @@ queuedTx.gasLimit = estimate.gasUnits * 1.2 // 20% buffer
 ## Common Issues and Solutions
 
 ### Issue: "Insufficient Funds" Errors
+
 **Solution**: Use state overrides to provide sufficient balance
 
 ### Issue: Very Low Gas Price Failures
+
 **Solution**: Enforce minimum 1 gwei gas price for simulations
 
 ### Issue: Contract Not Found
+
 **Solution**: Verify contract address and network ID
 
 ### Issue: Rate Limiting
+
 **Solution**: Implement request throttling and exponential backoff
 
 ## Monitoring and Metrics
 
 ### Key Metrics
+
 - **Simulation Success Rate**: Percentage of successful simulations
 - **Gas Estimation Accuracy**: Actual vs simulated gas usage
 - **Response Time**: API latency for simulations
 - **Error Distribution**: Breakdown of error types
 
 ### Health Checks
+
 - API connectivity validation
 - Authentication verification
 - Network state consistency

@@ -15,16 +15,16 @@ graph TB
         DEFENDER[OpenZeppelin Defender]
         SUPABASE[Supabase Database]
     end
-    
+
     subgraph "Staker-Bots System"
         ENTRY[Application Entry Point]
-        
+
         subgraph "Core Modules"
             MONITOR[Monitor Module]
             PROFIT[Profitability Module]
             EXECUTOR[Executor Module]
         end
-        
+
         subgraph "Support Modules"
             CONFIG[Configuration Module]
             DATABASE[Database Module]
@@ -33,16 +33,16 @@ graph TB
             TESTS[Tests Module]
         end
     end
-    
+
     subgraph "Storage"
         JSON_DB[JSON Database]
         CLOUD_DB[Supabase Cloud DB]
     end
-    
+
     ENTRY --> MONITOR
     ENTRY --> PROFIT
     ENTRY --> EXECUTOR
-    
+
     MONITOR --> CONFIG
     MONITOR --> DATABASE
     PROFIT --> CONFIG
@@ -52,7 +52,7 @@ graph TB
     EXECUTOR --> CONFIG
     EXECUTOR --> DATABASE
     EXECUTOR --> SIMULATION
-    
+
     DATABASE --> JSON_DB
     DATABASE --> CLOUD_DB
     PRICES --> CMC
@@ -60,7 +60,7 @@ graph TB
     EXECUTOR --> DEFENDER
     EXECUTOR --> BLOCKCHAIN
     MONITOR --> BLOCKCHAIN
-    
+
     CLOUD_DB --> SUPABASE
 ```
 
@@ -75,13 +75,13 @@ sequenceDiagram
     participant SIM as Simulation
     participant EXEC as Executor
     participant USR as Users
-    
+
     loop Continuous Monitoring
         BC->>MON: Events (deposits, withdrawals)
         MON->>DB: Store deposit data
         MON->>DB: Add to processing queue
     end
-    
+
     loop Profitability Analysis
         PROFIT->>DB: Get pending deposits
         PROFIT->>BC: Fetch unclaimed rewards
@@ -94,7 +94,7 @@ sequenceDiagram
             PROFIT->>DB: Mark as skipped
         end
     end
-    
+
     loop Transaction Execution
         EXEC->>SIM: Pre-execution validation
         EXEC->>BC: Submit transaction
@@ -110,12 +110,14 @@ sequenceDiagram
 **Purpose**: Continuously watches blockchain for staking-related events.
 
 **Key Features**:
+
 - Event polling with checkpoint management
 - Deposit lifecycle tracking
 - Delegation change monitoring
 - Reorg-safe block processing
 
 **Data Flow**:
+
 ```
 Blockchain Events → Event Processing → Database Storage → Processing Queue
 ```
@@ -125,12 +127,14 @@ Blockchain Events → Event Processing → Database Storage → Processing Queue
 **Purpose**: Analyzes deposits to determine profitable reward claiming opportunities.
 
 **Key Features**:
+
 - Two-stage gas estimation
 - Batch optimization
 - Price-aware calculations
 - Margin scaling
 
 **Algorithm**:
+
 ```
 1. Fetch unclaimed rewards
 2. Calculate gas costs in reward tokens
@@ -144,12 +148,14 @@ Blockchain Events → Event Processing → Database Storage → Processing Queue
 **Purpose**: Submits and monitors reward claim transactions.
 
 **Key Features**:
+
 - Multiple execution strategies (Wallet, Defender)
 - Transaction queue management
 - Gas optimization
 - Retry logic
 
 **Execution Flow**:
+
 ```
 Validation → Simulation → Submission → Monitoring → Confirmation
 ```
@@ -159,6 +165,7 @@ Validation → Simulation → Submission → Monitoring → Confirmation
 **Purpose**: Centralized configuration management with environment-based settings.
 
 **Components**:
+
 - Environment variable loading
 - Type-safe configuration objects
 - Contract ABIs
@@ -169,6 +176,7 @@ Validation → Simulation → Submission → Monitoring → Confirmation
 **Purpose**: Flexible data persistence with multiple backend support.
 
 **Features**:
+
 - Supabase and JSON storage
 - Automatic fallback
 - Transaction support
@@ -179,6 +187,7 @@ Validation → Simulation → Submission → Monitoring → Confirmation
 **Purpose**: Real-time price feeds for gas cost calculations.
 
 **Components**:
+
 - CoinMarketCap integration
 - Price caching
 - Currency conversion
@@ -189,6 +198,7 @@ Validation → Simulation → Submission → Monitoring → Confirmation
 **Purpose**: Transaction simulation using Tenderly for accurate gas estimation.
 
 **Features**:
+
 - Pre-execution validation
 - Gas estimation
 - Error detection
@@ -199,6 +209,7 @@ Validation → Simulation → Submission → Monitoring → Confirmation
 **Purpose**: Comprehensive testing suite for system validation.
 
 **Coverage**:
+
 - Unit tests for components
 - Integration tests for workflows
 - Mock providers and contracts
@@ -218,7 +229,7 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     PROCESSING_QUEUE {
         string id PK
         string deposit_id FK
@@ -229,7 +240,7 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     TRANSACTION_QUEUE {
         string id PK
         string deposit_id FK
@@ -240,7 +251,7 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     TRANSACTION_DETAILS {
         string id PK
         string transaction_id UK
@@ -251,14 +262,14 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     CHECKPOINTS {
         string component_type PK
         int last_block_number
         string block_hash
         timestamp last_update
     }
-    
+
     ERROR_LOGS {
         string id PK
         string service_name
@@ -267,7 +278,7 @@ erDiagram
         json context
         timestamp created_at
     }
-    
+
     DEPOSITS ||--o{ PROCESSING_QUEUE : processes
     DEPOSITS ||--o{ TRANSACTION_QUEUE : executes
     TRANSACTION_QUEUE ||--o| TRANSACTION_DETAILS : details
@@ -276,6 +287,7 @@ erDiagram
 ## Technology Stack
 
 ### Core Technologies
+
 - **Runtime**: Node.js with TypeScript
 - **Blockchain**: Ethers.js v6
 - **Database**: Supabase (PostgreSQL) with JSON fallback
@@ -284,6 +296,7 @@ erDiagram
 - **Price Feeds**: CoinMarketCap API
 
 ### External Services
+
 - **Blockchain RPC**: Ethereum mainnet/testnet
 - **Gas Simulation**: Tenderly
 - **Price Oracle**: CoinMarketCap
@@ -291,6 +304,7 @@ erDiagram
 - **Database**: Supabase Cloud
 
 ### Development Tools
+
 - **Type Safety**: Full TypeScript coverage
 - **Code Quality**: ESLint, Prettier
 - **Testing**: Unit and integration tests
@@ -309,37 +323,37 @@ graph TB
         DB[(Supabase DB)]
         REDIS[(Redis Cache)]
     end
-    
+
     subgraph "External APIs"
         RPC[Ethereum RPC]
         TEND[Tenderly]
         CMC[CoinMarketCap]
         DEF[Defender]
     end
-    
+
     subgraph "Monitoring"
         LOGS[Centralized Logging]
         METRICS[Metrics Collection]
         ALERTS[Alert Manager]
     end
-    
+
     LB --> APP1
     LB --> APP2
     APP1 --> DB
     APP2 --> DB
     APP1 --> REDIS
     APP2 --> REDIS
-    
+
     APP1 --> RPC
     APP1 --> TEND
     APP1 --> CMC
     APP1 --> DEF
-    
+
     APP2 --> RPC
     APP2 --> TEND
     APP2 --> CMC
     APP2 --> DEF
-    
+
     APP1 --> LOGS
     APP2 --> LOGS
     APP1 --> METRICS
@@ -369,21 +383,25 @@ COMPONENTS=all npm start
 ## Security Considerations
 
 ### Private Key Management
+
 - Environment variable storage
 - Support for hardware security modules
 - Rotation capabilities
 
 ### API Security
+
 - Rate limiting for external APIs
 - Error handling for API failures
 - Credential rotation
 
 ### Transaction Security
+
 - Pre-execution simulation
 - Gas limit enforcement
 - Slippage protection
 
 ### Operational Security
+
 - Error logging without sensitive data
 - Secure database connections
 - Network isolation
@@ -391,16 +409,19 @@ COMPONENTS=all npm start
 ## Performance Characteristics
 
 ### Throughput
+
 - **Event Processing**: 1000+ events/minute
 - **Profitability Checks**: 100+ deposits/minute
 - **Transaction Execution**: 10+ tx/minute (limited by gas)
 
 ### Latency
+
 - **Event Detection**: < 30 seconds
 - **Profitability Analysis**: < 10 seconds
 - **Transaction Submission**: < 5 seconds
 
 ### Resource Usage
+
 - **Memory**: 256MB - 1GB depending on queue size
 - **CPU**: Low, event-driven architecture
 - **Network**: Moderate, API calls for prices and simulation
@@ -409,24 +430,28 @@ COMPONENTS=all npm start
 ## Monitoring and Observability
 
 ### Health Checks
+
 - Component status monitoring
 - Database connectivity
 - External API availability
 - Blockchain sync status
 
 ### Metrics
+
 - Transaction success rates
 - Profitability accuracy
 - Processing latency
 - Error rates by component
 
 ### Alerting
+
 - Failed transactions
 - Component failures
 - API rate limits
 - Balance thresholds
 
 ### Logging
+
 - Structured JSON logging
 - Component-specific log levels
 - Error context preservation
@@ -435,23 +460,27 @@ COMPONENTS=all npm start
 ## Scalability and Reliability
 
 ### Horizontal Scaling
+
 - Stateless component design
 - Database-backed coordination
 - Load balancing support
 
 ### Fault Tolerance
+
 - Graceful error handling
 - Automatic retry mechanisms
 - Fallback strategies
 - Circuit breakers
 
 ### Data Consistency
+
 - Checkpoint-based processing
 - Atomic transactions
 - Idempotent operations
 - Reorg handling
 
 ### Recovery Mechanisms
+
 - Automatic restart on failures
 - State restoration from checkpoints
 - Queue replay capabilities

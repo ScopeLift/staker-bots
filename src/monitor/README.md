@@ -13,11 +13,11 @@ graph TB
         LST[LST Contract]
         EVENTS[Contract Events]
     end
-    
+
     subgraph "Monitor Module"
         MONITOR[StakerMonitor]
         PROCESSOR[EventProcessor]
-        
+
         subgraph "Event Types"
             STAKE_DEP[StakeDeposited]
             STAKE_WITH[StakeWithdrawn]
@@ -25,7 +25,7 @@ graph TB
             DEP_INIT[DepositInitialized]
             DEP_UPD[DepositUpdated]
         end
-        
+
         subgraph "Core Functions"
             LOOP[Processing Loop]
             BATCH[Batch Fetcher]
@@ -33,37 +33,37 @@ graph TB
             CHECK[Checkpoint Manager]
         end
     end
-    
+
     subgraph "Storage"
         DB[Database]
         QUEUE[Processing Queue]
     end
-    
+
     subgraph "Consumers"
         PROFIT[Profitability Module]
         EXEC[Executor Module]
     end
-    
+
     STAKER --> EVENTS
     LST --> EVENTS
     EVENTS --> MONITOR
-    
+
     MONITOR --> PROCESSOR
     MONITOR --> LOOP
     LOOP --> BATCH
     LOOP --> REORG
     LOOP --> CHECK
-    
+
     PROCESSOR --> STAKE_DEP
     PROCESSOR --> STAKE_WITH
     PROCESSOR --> DEL_ALTER
     PROCESSOR --> DEP_INIT
     PROCESSOR --> DEP_UPD
-    
+
     PROCESSOR --> DB
     MONITOR --> DB
     DB --> QUEUE
-    
+
     QUEUE --> PROFIT
     PROFIT --> EXEC
 ```
@@ -77,19 +77,19 @@ sequenceDiagram
     participant PROC as EventProcessor
     participant DB as Database
     participant QUEUE as Processing Queue
-    
+
     loop Every Poll Interval
         MON->>BC: Get latest block
         MON->>BC: Fetch events (batch)
         BC-->>MON: Event logs
-        
+
         loop For each event
             MON->>PROC: Process event
             PROC->>DB: Update deposit
             PROC->>QUEUE: Add to queue
             PROC-->>MON: Result
         end
-        
+
         MON->>DB: Update checkpoint
     end
 ```
@@ -101,6 +101,7 @@ sequenceDiagram
 **Purpose**: Main orchestrator for blockchain event monitoring.
 
 **Key Responsibilities**:
+
 - Maintains connection to blockchain
 - Fetches events in batches
 - Handles chain reorganizations
@@ -110,7 +111,9 @@ sequenceDiagram
 **Core Methods**:
 
 #### `processLoop()`
+
 Continuous loop that:
+
 1. Calculates block range to process
 2. Fetches events from contracts
 3. Groups events by transaction
@@ -119,6 +122,7 @@ Continuous loop that:
 6. Handles errors and retries
 
 #### `fetchEventsInBatches()`
+
 ```mermaid
 flowchart TD
     A[Calculate Range] --> B{Range > Max?}
@@ -138,21 +142,25 @@ flowchart TD
 **Event Handlers**:
 
 #### `processStakeDeposited()`
+
 - Creates new deposit or updates existing
 - Tracks owner, depositor, delegatee
 - Accumulates deposit amounts
 
 #### `processStakeWithdrawn()`
+
 - Reduces deposit amount
 - Removes deposit if fully withdrawn
 - Maintains withdrawal history
 
 #### `processDelegateeAltered()`
+
 - Updates deposit delegatee
 - Tracks delegation changes
 - Validates deposit exists
 
 #### `processDepositUpdated()`
+
 - Updates earning power
 - Tracks reward eligibility
 - Syncs with contract state
@@ -161,21 +169,21 @@ flowchart TD
 
 ```typescript
 interface StakeDepositedEvent {
-  depositId: string
-  ownerAddress: string
-  depositorAddress: string
-  delegateeAddress: string
-  amount: bigint
-  blockNumber: number
-  transactionHash: string
+  depositId: string;
+  ownerAddress: string;
+  depositorAddress: string;
+  delegateeAddress: string;
+  amount: bigint;
+  blockNumber: number;
+  transactionHash: string;
 }
 
 interface DelegateeAlteredEvent {
-  depositId: string
-  oldDelegatee: string
-  newDelegatee: string
-  blockNumber: number
-  transactionHash: string
+  depositId: string;
+  oldDelegatee: string;
+  newDelegatee: string;
+  blockNumber: number;
+  transactionHash: string;
 }
 ```
 
@@ -194,6 +202,7 @@ graph LR
 ```
 
 **Configuration**:
+
 - `maxBlockRange`: 2000 blocks per request
 - `confirmations`: 20 blocks for finality
 - `reorgDepth`: 64 blocks safety buffer
@@ -201,8 +210,9 @@ graph LR
 ### 2. Transaction Grouping
 
 Events are grouped by transaction for atomic processing:
+
 ```typescript
-Map<txHash, Event[]> // Groups events by transaction
+Map<txHash, Event[]>; // Groups events by transaction
 ```
 
 This ensures related events (e.g., deposit + delegation) are processed together.
@@ -215,13 +225,14 @@ stateDiagram-v2
     LoadCheckpoint --> ProcessBlocks
     ProcessBlocks --> UpdateCheckpoint
     UpdateCheckpoint --> ProcessBlocks
-    
+
     ProcessBlocks --> HandleReorg: Reorg Detected
     HandleReorg --> Rollback
     Rollback --> ProcessBlocks
 ```
 
 Checkpoints track:
+
 - `last_block_number`: Last successfully processed block
 - `block_hash`: Hash for reorg detection
 - `last_update`: Timestamp of last update
@@ -229,6 +240,7 @@ Checkpoints track:
 ### 4. Reorg Handling
 
 When a reorganization is detected:
+
 1. Roll back to safe block (current - reorgDepth)
 2. Re-process affected blocks
 3. Update checkpoint with new chain state
@@ -239,8 +251,8 @@ When a reorganization is detected:
 
 ```typescript
 // Exponential backoff with jitter
-delay = baseDelay * Math.pow(2, attempt) + jitter
-maxRetries = 5
+delay = baseDelay * Math.pow(2, attempt) + jitter;
+maxRetries = 5;
 ```
 
 ### Error Categories
@@ -264,16 +276,19 @@ graph TD
 ## Performance Optimization
 
 ### 1. Batch Processing
+
 - Fetch multiple blocks in single request
 - Process events in transaction groups
 - Bulk database operations
 
 ### 2. Caching
+
 - Contract interfaces cached
 - Recent blocks kept in memory
 - Checkpoint updates batched
 
 ### 3. Parallel Processing
+
 - Multiple contract queries in parallel
 - Independent events processed concurrently
 - Database writes queued
@@ -288,7 +303,7 @@ sequenceDiagram
     participant Database
     participant Queue
     participant Profitability
-    
+
     Monitor->>Database: Create/Update Deposit
     Monitor->>Queue: Add to Processing Queue
     Queue->>Profitability: Check Profitability
@@ -298,6 +313,7 @@ sequenceDiagram
 ### Event Emission
 
 The monitor emits events for:
+
 - New deposits discovered
 - Deposit amounts changed
 - Delegations altered
@@ -306,6 +322,7 @@ The monitor emits events for:
 ## Configuration
 
 ### Key Parameters
+
 ```typescript
 {
   pollInterval: 15,        // Seconds between polls
@@ -317,6 +334,7 @@ The monitor emits events for:
 ```
 
 ### Health Monitoring
+
 - Tracks last successful poll
 - Monitors error rates
 - Checks block lag
@@ -333,15 +351,19 @@ The monitor emits events for:
 ## Common Issues and Solutions
 
 ### Issue: Processing Lag
+
 **Solution**: Increase batch size or reduce poll interval
 
 ### Issue: RPC Rate Limits
+
 **Solution**: Implement request throttling and caching
 
 ### Issue: Memory Growth
+
 **Solution**: Limit in-memory event buffer size
 
 ### Issue: Missed Events
+
 **Solution**: Use deposit discovery scan periodically
 
 ## Metrics

@@ -12,16 +12,16 @@ graph TB
         SUPABASE[Supabase Cloud]
         FILESYSTEM[Local Filesystem]
     end
-    
+
     subgraph "Database Module"
         WRAPPER[DatabaseWrapper]
         IFACE[IDatabase Interface]
-        
+
         subgraph "Implementations"
             SUPA_IMPL[Supabase Implementation]
             JSON_IMPL[JsonDatabase]
         end
-        
+
         subgraph "Domain Modules"
             DEPOSITS[deposits.ts]
             CHECKPOINTS[checkpoints.ts]
@@ -32,17 +32,17 @@ graph TB
             ERRORS[errors.ts]
         end
     end
-    
+
     subgraph "Consumers"
         MONITOR[Monitor Module]
         EXECUTOR[Executor Module]
         PROFIT[Profitability Module]
     end
-    
+
     WRAPPER --> IFACE
     WRAPPER --> SUPA_IMPL
     WRAPPER --> JSON_IMPL
-    
+
     SUPA_IMPL --> DEPOSITS
     SUPA_IMPL --> CHECKPOINTS
     SUPA_IMPL --> PROC_QUEUE
@@ -50,7 +50,7 @@ graph TB
     SUPA_IMPL --> TX_DETAILS
     SUPA_IMPL --> GOVLST
     SUPA_IMPL --> ERRORS
-    
+
     DEPOSITS --> SUPABASE
     CHECKPOINTS --> SUPABASE
     PROC_QUEUE --> SUPABASE
@@ -58,9 +58,9 @@ graph TB
     TX_DETAILS --> SUPABASE
     GOVLST --> SUPABASE
     ERRORS --> SUPABASE
-    
+
     JSON_IMPL --> FILESYSTEM
-    
+
     MONITOR --> WRAPPER
     EXECUTOR --> WRAPPER
     PROFIT --> WRAPPER
@@ -81,7 +81,7 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     PROCESSING_QUEUE {
         string id PK
         string deposit_id FK
@@ -93,7 +93,7 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     TRANSACTION_QUEUE {
         string id PK
         string deposit_id FK
@@ -107,7 +107,7 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     TRANSACTION_DETAILS {
         string id PK
         string transaction_id UK
@@ -122,14 +122,14 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
-    
+
     CHECKPOINTS {
         string component_type PK
         int last_block_number
         string block_hash
         timestamp last_update
     }
-    
+
     GOVLST_CLAIM_HISTORY {
         string id PK
         string govlst_address
@@ -140,7 +140,7 @@ erDiagram
         string transaction_hash
         timestamp created_at
     }
-    
+
     ERROR_LOGS {
         string id PK
         string service_name
@@ -151,7 +151,7 @@ erDiagram
         json context
         timestamp created_at
     }
-    
+
     DEPOSITS ||--o{ PROCESSING_QUEUE : has
     DEPOSITS ||--o{ TRANSACTION_QUEUE : has
     TRANSACTION_QUEUE ||--o| TRANSACTION_DETAILS : details
@@ -164,6 +164,7 @@ erDiagram
 **Purpose**: Defines the contract for all database implementations.
 
 **Key Method Categories**:
+
 - **Deposits**: CRUD operations for staking deposits
 - **Checkpoints**: Block processing state management
 - **Processing Queue**: Profitability check queue management
@@ -177,19 +178,21 @@ erDiagram
 **Purpose**: Provides automatic fallback between database implementations.
 
 **Features**:
+
 - Primary database selection (Supabase/JSON)
 - Automatic fallback to JSON on Supabase failure
 - Transparent error handling
 - Method wrapping for all database operations
 
 **Flow**:
+
 ```mermaid
 sequenceDiagram
     participant Client
     participant Wrapper
     participant Supabase
     participant JsonDB
-    
+
     Client->>Wrapper: Database operation
     Wrapper->>Supabase: Try operation
     alt Success
@@ -208,6 +211,7 @@ sequenceDiagram
 **Purpose**: Cloud-based database storage using Supabase.
 
 **Structure**:
+
 - `client.ts`: Supabase client initialization
 - `deposits.ts`: Deposit operations
 - `checkpoints.ts`: Checkpoint operations
@@ -223,6 +227,7 @@ sequenceDiagram
 **Purpose**: Local file-based storage for development and fallback.
 
 **Features**:
+
 - In-memory data with file persistence
 - Thread-safe write operations
 - Automatic file creation
@@ -238,7 +243,7 @@ sequenceDiagram
     participant Module
     participant DB as DatabaseWrapper
     participant Store as Storage
-    
+
     Module->>DB: Create/Update Entity
     DB->>DB: Validate Data
     DB->>Store: Write Operation
@@ -254,7 +259,7 @@ sequenceDiagram
     participant Module
     participant DB as DatabaseWrapper
     participant Store as Storage
-    
+
     Module->>DB: Query Request
     DB->>Store: Fetch Data
     Store->>Store: Apply Filters
@@ -266,31 +271,37 @@ sequenceDiagram
 ## Key Tables
 
 ### 1. Deposits
+
 - Tracks all staking deposits
 - Links owners, depositors, and delegatees
 - Stores amounts and earning power
 
 ### 2. Processing Queue
+
 - Manages deposits awaiting profitability checks
 - Tracks check attempts and results
 - Maintains processing status
 
 ### 3. Transaction Queue
+
 - Queues profitable claims for execution
 - Tracks transaction submission status
 - Stores gas prices and tip information
 
 ### 4. Transaction Details
+
 - Comprehensive transaction execution records
 - Links multiple deposits to single transaction
 - Tracks profitability calculations and actual results
 
 ### 5. Checkpoints
+
 - Maintains blockchain synchronization state
 - Prevents reprocessing of blocks
 - Handles chain reorganizations
 
 ### 6. Error Logs
+
 - Centralized error tracking
 - Categorized by service and severity
 - Includes context and metadata
@@ -298,6 +309,7 @@ sequenceDiagram
 ## Usage Examples
 
 ### Creating a Deposit
+
 ```typescript
 await database.createDeposit({
   deposit_id: '12345',
@@ -305,27 +317,29 @@ await database.createDeposit({
   amount: '1000000000000000000',
   delegatee_address: '0x...',
   created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString()
+  updated_at: new Date().toISOString(),
 });
 ```
 
 ### Processing Queue Management
+
 ```typescript
 // Add to queue
 const item = await database.createProcessingQueueItem({
   deposit_id: '12345',
   status: ProcessingQueueStatus.PENDING,
-  delegatee: '0x...'
+  delegatee: '0x...',
 });
 
 // Update status
 await database.updateProcessingQueueItem(item.id, {
   status: ProcessingQueueStatus.PROCESSING,
-  last_profitability_check: JSON.stringify(checkResult)
+  last_profitability_check: JSON.stringify(checkResult),
 });
 ```
 
 ### Transaction Tracking
+
 ```typescript
 // Create transaction details
 await database.createTransactionDetails({
@@ -333,13 +347,14 @@ await database.createTransactionDetails({
   deposit_ids: ['12345', '67890'],
   status: TransactionDetailsStatus.PENDING,
   min_expected_reward: '1000000000000000000',
-  gas_cost_estimate: '50000000000000000'
+  gas_cost_estimate: '50000000000000000',
 });
 ```
 
 ## Migration System
 
 SQL migrations are automatically applied on startup:
+
 1. Core tables (deposits, checkpoints)
 2. Monitor tables (processing states)
 3. Queue tables (transaction management)
@@ -351,6 +366,7 @@ SQL migrations are automatically applied on startup:
 ## Error Handling
 
 The module implements comprehensive error handling:
+
 - Automatic retry logic for transient failures
 - Fallback to JSON database on persistent errors
 - Error logging with full context

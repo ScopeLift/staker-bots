@@ -147,7 +147,8 @@ export const CONFIG = {
   },
   tenderly: {
     useSimulation: process.env.TENDERLY_USE_SIMULATE === 'true',
-    skipSimulationBelowPayout: process.env.TENDERLY_SKIP_SIMULATION_BELOW_PAYOUT !== 'false',
+    skipSimulationBelowPayout:
+      process.env.TENDERLY_SKIP_SIMULATION_BELOW_PAYOUT !== 'false',
     accessKey: process.env.TENDERLY_ACCESS_KEY || '',
     accountName: process.env.TENDERLY_ACCOUNT_NAME || '',
     projectName: process.env.TENDERLY_PROJECT_NAME || '',

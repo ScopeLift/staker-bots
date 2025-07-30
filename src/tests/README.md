@@ -13,38 +13,38 @@ graph TB
         SETUP[Test Setup & Helpers]
         MOCKS[Mock Providers & Services]
     end
-    
+
     subgraph "Unit Tests"
         GAS_TEST[GasCostEstimator.test.ts]
         SIM_TEST[SimulationService.test.ts]
         UNIT_UTILS[Unit Test Utilities]
     end
-    
+
     subgraph "Integration Tests"
         PROFIT_EXEC[GovLstProfitabilityExecutor.test.ts]
         RELAYER_CLEAN[RelayerCleanup.test.ts]
         SWAP_SIM[UniswapSwapSimulation.test.ts]
         INT_UTILS[Integration Test Utilities]
     end
-    
+
     subgraph "Test Targets"
         MODULES[All System Modules]
         WORKFLOWS[End-to-End Workflows]
         APIS[External API Integrations]
     end
-    
+
     JEST --> UNIT_TESTS
     JEST --> INTEGRATION_TESTS
-    
+
     UNIT_TESTS --> GAS_TEST
     UNIT_TESTS --> SIM_TEST
     UNIT_TESTS --> UNIT_UTILS
-    
+
     INTEGRATION_TESTS --> PROFIT_EXEC
     INTEGRATION_TESTS --> RELAYER_CLEAN
     INTEGRATION_TESTS --> SWAP_SIM
     INTEGRATION_TESTS --> INT_UTILS
-    
+
     GAS_TEST --> MODULES
     SIM_TEST --> MODULES
     PROFIT_EXEC --> WORKFLOWS
@@ -59,6 +59,7 @@ graph TB
 **Purpose**: Test individual components in isolation with mocked dependencies.
 
 #### GasCostEstimator.test.ts
+
 - **Scope**: Price conversion and gas cost calculations
 - **Key Tests**:
   - Gas cost calculation with known prices
@@ -76,19 +77,20 @@ describe('GasCostEstimator', () => {
         maxPriorityFeePerGas: ethers.parseUnits('2', 'gwei'),
       }),
     };
-    
+
     const estimator = new GasCostEstimator();
     const gasCostInTokens = await estimator.estimateGasCostInRewardToken(
       mockProvider,
-      300000n
+      300000n,
     );
-    
+
     expect(gasCostInTokens).toBeGreaterThan(0n);
   });
 });
 ```
 
 #### SimulationService.test.ts
+
 - **Scope**: Tenderly API integration and response parsing
 - **Key Tests**:
   - Transaction simulation success/failure
@@ -105,9 +107,9 @@ describe('SimulationService', () => {
       to: '0x...',
       data: '0x...',
       gas: 300000,
-      gasPrice: '20000000000'
+      gasPrice: '20000000000',
     });
-    
+
     expect(result.success).toBe(true);
     expect(result.gasUsed).toBeGreaterThan(0);
   });
@@ -119,6 +121,7 @@ describe('SimulationService', () => {
 **Purpose**: Test complete workflows with real or realistic dependencies.
 
 #### GovLstProfitabilityExecutor.test.ts
+
 - **Scope**: End-to-end profitability analysis and execution
 - **Key Tests**:
   - Complete profit analysis workflow
@@ -131,20 +134,20 @@ describe('GovLst Profitability Executor Integration', () => {
   it('should process profitable deposits end-to-end', async () => {
     // Setup test data
     const deposits = TEST_DEPOSITS;
-    
+
     // Initialize components
     const database = new DatabaseWrapper();
     const profitEngine = new GovLstProfitabilityEngineWrapper();
     const executor = new ExecutorWrapper();
-    
+
     // Run profitability analysis
     const analysis = await profitEngine.analyzeAndGroupDeposits(deposits);
-    
+
     // Execute profitable batches
     for (const group of analysis.deposit_groups) {
       const tx = await executor.queueTransaction(
         group.deposit_ids,
-        profitabilityCheck
+        profitabilityCheck,
       );
       expect(tx.status).toBe(TransactionStatus.QUEUED);
     }
@@ -153,6 +156,7 @@ describe('GovLst Profitability Executor Integration', () => {
 ```
 
 #### RelayerCleanup.test.ts
+
 - **Scope**: OpenZeppelin Defender integration and cleanup
 - **Key Tests**:
   - Relayer transaction management
@@ -161,6 +165,7 @@ describe('GovLst Profitability Executor Integration', () => {
   - Error recovery
 
 #### UniswapSwapSimulation.test.ts
+
 - **Scope**: Token swap functionality and simulation
 - **Key Tests**:
   - Swap simulation accuracy
@@ -180,24 +185,25 @@ const TEST_DEPOSITS = [
     owner_address: '0x6Fbb31f8c459d773A8d0f67C8C055a70d943C1F1',
     amount: '19200000000000000000000',
     earning_power: '15000000000000000000000',
-    rewards: '500000000000000000000'
+    rewards: '500000000000000000000',
   },
   // ... more test data
 ];
 
 // Mock provider responses
 const mockProvider = {
-  getFeeData: () => Promise.resolve({
-    gasPrice: ethers.parseUnits('20', 'gwei'),
-    maxFeePerGas: ethers.parseUnits('25', 'gwei')
-  }),
-  getTransactionReceipt: (hash) => Promise.resolve(mockReceipt)
+  getFeeData: () =>
+    Promise.resolve({
+      gasPrice: ethers.parseUnits('20', 'gwei'),
+      maxFeePerGas: ethers.parseUnits('25', 'gwei'),
+    }),
+  getTransactionReceipt: (hash) => Promise.resolve(mockReceipt),
 };
 
 // Mock contract responses
 const mockContract = {
   payoutAmount: () => Promise.resolve(ethers.parseEther('4400')),
-  unclaimedReward: (id) => Promise.resolve(rewardMap.get(id))
+  unclaimedReward: (id) => Promise.resolve(rewardMap.get(id)),
 };
 ```
 
@@ -207,14 +213,14 @@ const mockContract = {
 beforeEach(async () => {
   // Initialize test database
   database = new DatabaseWrapper({ type: 'json', jsonDbPath: ':memory:' });
-  
+
   // Setup mock provider
   provider = new MockProvider();
-  
+
   // Initialize contracts with test ABIs
   stakerContract = new ethers.Contract(STAKER_ADDRESS, stakerAbi, provider);
   govLstContract = new ethers.Contract(GOVLST_ADDRESS, govlstAbi, provider);
-  
+
   // Seed test data
   await seedTestData();
 });
@@ -234,9 +240,10 @@ afterEach(async () => {
 export class MockProviderFactory {
   static createWithGasPrice(gasPriceGwei: number): ethers.Provider {
     return {
-      getFeeData: () => Promise.resolve({
-        gasPrice: ethers.parseUnits(gasPriceGwei.toString(), 'gwei')
-      })
+      getFeeData: () =>
+        Promise.resolve({
+          gasPrice: ethers.parseUnits(gasPriceGwei.toString(), 'gwei'),
+        }),
     } as ethers.Provider;
   }
 }
@@ -244,10 +251,10 @@ export class MockProviderFactory {
 export class MockContractFactory {
   static createStakerContract(rewardMap: Map<string, bigint>) {
     return {
-      unclaimedReward: (depositId: bigint) => 
+      unclaimedReward: (depositId: bigint) =>
         Promise.resolve(rewardMap.get(depositId.toString()) || 0n),
-      deposits: (depositId: bigint) => 
-        Promise.resolve(mockDepositData.get(depositId.toString()))
+      deposits: (depositId: bigint) =>
+        Promise.resolve(mockDepositData.get(depositId.toString())),
     };
   }
 }
@@ -258,7 +265,7 @@ export class MockContractFactory {
 ```typescript
 export async function createTestDeposit(
   database: DatabaseWrapper,
-  overrides: Partial<Deposit> = {}
+  overrides: Partial<Deposit> = {},
 ): Promise<Deposit> {
   const deposit = {
     deposit_id: '12345',
@@ -266,16 +273,16 @@ export async function createTestDeposit(
     amount: '1000000000000000000000',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-    ...overrides
+    ...overrides,
   };
-  
+
   await database.createDeposit(deposit);
   return deposit;
 }
 
 export function expectProfitabilityCheck(
   check: GovLstProfitabilityCheck,
-  expectedProfitable: boolean
+  expectedProfitable: boolean,
 ): void {
   expect(check.is_profitable).toBe(expectedProfitable);
   expect(check.estimates.total_shares).toBeGreaterThan(0n);
@@ -322,22 +329,22 @@ describe('Error Scenarios', () => {
   it('should handle network failures gracefully', async () => {
     // Mock network failure
     mockProvider.getFeeData.mockRejectedValue(new Error('Network error'));
-    
+
     const result = await estimator.estimateGasCostInRewardToken(
       mockProvider,
-      300000n
+      300000n,
     );
-    
+
     // Should use fallback values
     expect(result).toBeGreaterThan(0n);
   });
-  
+
   it('should handle insufficient balance', async () => {
     // Mock insufficient balance scenario
     mockContract.balanceOf.mockResolvedValue(0n);
-    
+
     await expect(
-      executor.validateTransaction(depositIds, profitabilityCheck)
+      executor.validateTransaction(depositIds, profitabilityCheck),
     ).rejects.toThrow('Insufficient balance');
   });
 });
@@ -370,11 +377,7 @@ module.exports = {
   transform: {
     '^.+\\.ts$': 'ts-jest',
   },
-  collectCoverageFrom: [
-    'src/**/*.ts',
-    '!src/**/*.d.ts',
-    '!src/tests/**',
-  ],
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/tests/**'],
   coverageThreshold: {
     global: {
       branches: 80,

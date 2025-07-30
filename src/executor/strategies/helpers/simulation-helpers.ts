@@ -79,17 +79,17 @@ export async function simulateTransaction(
     // Get current gas price for realistic cost calculations
     let realGasPrice: bigint = BigInt(0);
     let simulationGasPrice: string;
-    
+
     try {
       const provider = lstContract.runner?.provider as ethers.Provider;
       if (provider) {
         const feeData = await provider.getFeeData();
         realGasPrice = feeData.gasPrice || BigInt(0);
-        
+
         // For simulation: Apply minimum threshold for Tenderly stability
         const MIN_SIMULATION_GAS_PRICE = ethers.parseUnits('1', 'gwei');
         let adjustedGasPrice = realGasPrice;
-        
+
         if (realGasPrice < MIN_SIMULATION_GAS_PRICE) {
           adjustedGasPrice = MIN_SIMULATION_GAS_PRICE;
           logger.info('Using minimum gas price for simulation stability', {
@@ -98,7 +98,7 @@ export async function simulateTransaction(
             reason: 'sub-1-gwei protection for Tenderly',
           });
         }
-        
+
         simulationGasPrice = adjustedGasPrice.toString();
         logger.debug('Gas price setup for simulation', {
           realGasPriceGwei: Number(realGasPrice) / 1e9,
@@ -128,9 +128,10 @@ export async function simulateTransaction(
 
     // Ensure minimum gas limit for simulation to avoid failures with very low estimates
     const MIN_SIMULATION_GAS = 2000000; // 2m gas minimum for complex operations
-    const simulationGasLimit = Number(gasLimit) < MIN_SIMULATION_GAS 
-      ? MIN_SIMULATION_GAS 
-      : Number(gasLimit);
+    const simulationGasLimit =
+      Number(gasLimit) < MIN_SIMULATION_GAS
+        ? MIN_SIMULATION_GAS
+        : Number(gasLimit);
 
     // Add debug logging
     logger.debug('Preparing simulation transaction', {
@@ -209,7 +210,7 @@ export async function simulateTransaction(
     ) {
       const newGasLimit = Math.max(
         Math.ceil(simulationResult.gasUsed * 1.52), // 50% buffer
-        MIN_SIMULATION_GAS // Ensure minimum
+        MIN_SIMULATION_GAS, // Ensure minimum
       );
 
       const retrySimulationTx = {
@@ -365,17 +366,17 @@ export async function estimateGasUsingSimulation(
     // Get current gas price for realistic cost calculations
     let realGasPrice: bigint = BigInt(0);
     let simulationGasPrice: string;
-    
+
     try {
       const provider = lstContract.runner?.provider as ethers.Provider;
       if (provider) {
         const feeData = await provider.getFeeData();
         realGasPrice = feeData.gasPrice || BigInt(0);
-        
+
         // For simulation: Apply minimum threshold for Tenderly stability
         const MIN_SIMULATION_GAS_PRICE = ethers.parseUnits('1', 'gwei');
         let adjustedGasPrice = realGasPrice;
-        
+
         if (realGasPrice < MIN_SIMULATION_GAS_PRICE) {
           adjustedGasPrice = MIN_SIMULATION_GAS_PRICE;
           logger.info('Using minimum gas price for simulation stability', {
@@ -384,7 +385,7 @@ export async function estimateGasUsingSimulation(
             reason: 'sub-1-gwei protection for Tenderly',
           });
         }
-        
+
         simulationGasPrice = adjustedGasPrice.toString();
         logger.debug('Gas price setup for simulation', {
           realGasPriceGwei: Number(realGasPrice) / 1e9,
@@ -422,7 +423,10 @@ export async function estimateGasUsingSimulation(
     // Use a high gas limit for estimation but ensure it's reasonable
     const MIN_ESTIMATION_GAS = 1000000; // 1M gas minimum for gas estimation
     const MAX_ESTIMATION_GAS = 10000000; // 10M gas maximum to avoid excessive costs
-    const estimationGasLimit = Math.min(MAX_ESTIMATION_GAS, Math.max(MIN_ESTIMATION_GAS, 5000000));
+    const estimationGasLimit = Math.min(
+      MAX_ESTIMATION_GAS,
+      Math.max(MIN_ESTIMATION_GAS, 5000000),
+    );
 
     // Create simulation transaction with a high gas limit to ensure it doesn't fail due to gas
     const simulationTx: SimulationTransaction = {
