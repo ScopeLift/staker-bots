@@ -12,7 +12,7 @@ graph TB
         ENV[.env file]
         PROC[Process Environment]
     end
-    
+
     subgraph "Configuration Module"
         INDEX[index.ts]
         CONST[constants.ts]
@@ -21,14 +21,14 @@ graph TB
         HELPERS[helpers.ts]
         LOGGER[errorLogger.ts]
     end
-    
+
     subgraph "Configuration Objects"
         CONFIG[CONFIG Object]
         CONSTANTS[CONSTANTS Object]
         ABI[Contract ABIs]
         ERR[Error Classes]
     end
-    
+
     subgraph "Consumers"
         MONITOR[Monitor Module]
         EXEC[Executor Module]
@@ -37,21 +37,21 @@ graph TB
         PRICE[Prices Module]
         SIM[Simulation Module]
     end
-    
+
     ENV --> INDEX
     PROC --> INDEX
     INDEX --> CONFIG
     CONST --> CONSTANTS
     ABIS --> ABI
     ERRORS --> ERR
-    
+
     CONFIG --> MONITOR
     CONFIG --> EXEC
     CONFIG --> PROFIT
     CONFIG --> DB
     CONFIG --> PRICE
     CONFIG --> SIM
-    
+
     CONSTANTS --> MONITOR
     CONSTANTS --> EXEC
     CONSTANTS --> PROFIT
@@ -69,14 +69,17 @@ graph TB
 **Purpose**: Loads environment variables and creates the main CONFIG object.
 
 **Input**:
+
 - Environment variables from `.env` file
 - Process environment variables
 
 **Output**:
+
 - `CONFIG` object with all system configuration
 - `createProvider()` helper function
 
 **Key Sections**:
+
 - **supabase**: Database connection settings
 - **monitor**: Event monitoring configuration
 - **executor**: Transaction execution settings
@@ -91,6 +94,7 @@ graph TB
 **Purpose**: Defines immutable system constants organized by domain.
 
 **Categories**:
+
 - **NETWORK_CONSTANTS**: Chain and network parameters
 - **TIME_CONSTANTS**: Time durations in seconds
 - **GAS_CONSTANTS**: Gas-related settings
@@ -106,6 +110,7 @@ graph TB
 **Purpose**: Stores Application Binary Interfaces for smart contracts.
 
 **Contracts**:
+
 - Staker contract ABI
 - GovLst contract ABI
 - ERC20 token ABI
@@ -116,6 +121,7 @@ graph TB
 **Purpose**: Defines custom error types for better error handling.
 
 **Error Types**:
+
 - `ConfigurationError`: Configuration validation failures
 - `GasEstimationError`: Gas calculation errors
 - `ProfitabilityError`: Profitability check failures
@@ -128,6 +134,7 @@ graph TB
 **Purpose**: Utility functions for configuration validation and transformation.
 
 **Functions**:
+
 - `validateAddress()`: Ethereum address validation
 - `parseWei()`: Safe BigInt parsing for Wei values
 - `getRequiredEnv()`: Required environment variable getter
@@ -138,6 +145,7 @@ graph TB
 **Purpose**: Centralized error logging with context.
 
 **Features**:
+
 - Structured error logging
 - Context preservation
 - Integration with monitoring services
@@ -150,7 +158,7 @@ sequenceDiagram
     participant ENV as Environment
     participant CFG as Configuration
     participant MOD as Other Modules
-    
+
     ENV->>CFG: Load .env variables
     CFG->>CFG: Validate required vars
     CFG->>CFG: Parse and transform values
@@ -166,7 +174,7 @@ sequenceDiagram
 ```mermaid
 graph TD
     CONFIG[Main CONFIG Object]
-    
+
     CONFIG --> SUPABASE[Supabase Config]
     CONFIG --> MONITOR[Monitor Config]
     CONFIG --> EXECUTOR[Executor Config]
@@ -175,7 +183,7 @@ graph TD
     CONFIG --> PROFIT[Profitability Config]
     CONFIG --> GOVLST[GovLst Config]
     CONFIG --> TENDERLY[Tenderly Config]
-    
+
     EXECUTOR --> SWAP[Swap Config]
     DEFENDER --> RELAYER[Relayer Config]
     RELAYER --> GAS_POLICY[Gas Policy]
@@ -185,12 +193,14 @@ graph TD
 ## Environment Variables
 
 ### Required Variables
+
 - `RPC_URL`: Ethereum RPC endpoint
 - `STAKER_CONTRACT_ADDRESS`: Staker contract address
 - `CHAIN_ID`: Ethereum chain ID
 - `LST_ADDRESS`: Liquid staking token address
 
 ### Optional Variables
+
 - `SUPABASE_URL`: Database URL
 - `SUPABASE_KEY`: Database authentication key
 - `PRIVATE_KEY`: Executor wallet private key

@@ -91,11 +91,13 @@ GOVLST_MAX_BATCH_SIZE=10
 ## Supabase Setup
 
 1. **Create a new Supabase project**
+
    - Go to [supabase.com](https://supabase.com)
    - Create a new project
    - Note your project URL and anon key
 
 2. **Run database migrations**
+
    ```bash
    npm run migrate
    ```
@@ -190,6 +192,7 @@ mkdir -p logs
 PM2 is a production process manager that keeps your application running continuously, restarts it if it crashes, and provides monitoring capabilities.
 
 **Why PM2 is Essential:**
+
 - **Auto-restart**: Automatically restarts your app if it crashes
 - **Load balancing**: Can run multiple instances
 - **Monitoring**: Built-in monitoring and logging
@@ -311,15 +314,18 @@ pm2 restart staker-bots
 ### Common Issues
 
 1. **Environment Variables Not Loading**
+
    - Ensure `.env` file is in the root directory
    - Check file permissions: `chmod 644 .env`
 
 2. **Database Connection Issues**
+
    - Verify Supabase URL and key
    - Check network connectivity
    - Ensure migrations have run successfully
 
 3. **PM2 Not Starting on Boot**
+
    - Run `pm2 startup` and follow instructions
    - Ensure `pm2 save` was run after starting processes
 

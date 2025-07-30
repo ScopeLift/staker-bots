@@ -142,18 +142,23 @@ export class SimulationService {
       // Ensure minimum gas price for simulation to prevent Tenderly failures
       const MIN_SIMULATION_GAS_PRICE_GWEI = 1; // 1 gwei minimum
       const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20; // 20 gwei default
-      
+
       let gasPrice = transaction.gasPrice;
-      
+
       // Handle missing or very low gas price
       if (!gasPrice || gasPrice === '0') {
         // Use default gas price for simulation
-        gasPrice = ethers.parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei').toString();
+        gasPrice = ethers
+          .parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei')
+          .toString();
       } else {
         // Parse the provided gas price and ensure it meets minimum
         const gasPriceWei = BigInt(gasPrice);
-        const minGasPriceWei = ethers.parseUnits(MIN_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei');
-        
+        const minGasPriceWei = ethers.parseUnits(
+          MIN_SIMULATION_GAS_PRICE_GWEI.toString(),
+          'gwei',
+        );
+
         if (gasPriceWei < minGasPriceWei) {
           gasPrice = minGasPriceWei.toString();
         }
@@ -217,20 +222,25 @@ export class SimulationService {
       // Ensure minimum gas price for simulation to prevent Tenderly failures
       const MIN_SIMULATION_GAS_PRICE_GWEI = 1; // 1 gwei minimum
       const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20; // 20 gwei default
-      
+
       // Process gas prices for all transactions
       const processedTransactions = transactions.map((tx) => {
         let gasPrice = tx.gasPrice;
-        
+
         // Handle missing or very low gas price
         if (!gasPrice || gasPrice === '0') {
           // Use default gas price for simulation
-          gasPrice = ethers.parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei').toString();
+          gasPrice = ethers
+            .parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei')
+            .toString();
         } else {
           // Parse the provided gas price and ensure it meets minimum
           const gasPriceWei = BigInt(gasPrice);
-          const minGasPriceWei = ethers.parseUnits(MIN_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei');
-          
+          const minGasPriceWei = ethers.parseUnits(
+            MIN_SIMULATION_GAS_PRICE_GWEI.toString(),
+            'gwei',
+          );
+
           if (gasPriceWei < minGasPriceWei) {
             gasPrice = minGasPriceWei.toString();
           }
@@ -302,18 +312,23 @@ export class SimulationService {
       // Ensure minimum gas price for simulation to prevent Tenderly failures
       const MIN_SIMULATION_GAS_PRICE_GWEI = 1; // 1 gwei minimum
       const DEFAULT_SIMULATION_GAS_PRICE_GWEI = 20; // 20 gwei default
-      
+
       let gasPrice = transaction.gasPrice;
-      
+
       // Handle missing or very low gas price
       if (!gasPrice || gasPrice === '0') {
         // Use default gas price for simulation
-        gasPrice = ethers.parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei').toString();
+        gasPrice = ethers
+          .parseUnits(DEFAULT_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei')
+          .toString();
       } else {
         // Parse the provided gas price and ensure it meets minimum
         const gasPriceWei = BigInt(gasPrice);
-        const minGasPriceWei = ethers.parseUnits(MIN_SIMULATION_GAS_PRICE_GWEI.toString(), 'gwei');
-        
+        const minGasPriceWei = ethers.parseUnits(
+          MIN_SIMULATION_GAS_PRICE_GWEI.toString(),
+          'gwei',
+        );
+
         if (gasPriceWei < minGasPriceWei) {
           gasPrice = minGasPriceWei.toString();
         }

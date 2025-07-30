@@ -12,15 +12,15 @@ graph TB
         CMC[CoinMarketCap API]
         BLOCKCHAIN[Blockchain RPC]
     end
-    
+
     subgraph "Prices Module"
         INTERFACE[IPriceFeed Interface]
-        
+
         subgraph "Implementations"
             CMC_FEED[CoinMarketCapFeed]
             GAS_EST[GasCostEstimator]
         end
-        
+
         subgraph "Core Functions"
             PRICE_CACHE[Price Cache]
             ID_CACHE[Token ID Cache]
@@ -28,21 +28,21 @@ graph TB
             GAS_CALC[Gas Calculator]
         end
     end
-    
+
     subgraph "Consumers"
         PROFIT[Profitability Module]
         EXECUTOR[Executor Module]
     end
-    
+
     CMC_FEED --> CMC
     GAS_EST --> BLOCKCHAIN
     GAS_EST --> CMC_FEED
-    
+
     CMC_FEED --> PRICE_CACHE
     CMC_FEED --> ID_CACHE
     CMC_FEED --> CONV
     GAS_EST --> GAS_CALC
-    
+
     PROFIT --> CMC_FEED
     PROFIT --> GAS_EST
     EXECUTOR --> GAS_EST
@@ -55,15 +55,19 @@ graph TB
 **Purpose**: Defines the contract for price feed implementations.
 
 **Methods**:
+
 ```typescript
 interface IPriceFeed {
-  getTokenPrice(tokenAddress: string): Promise<TokenPrice>
-  getTokenPriceInWei(tokenAddress: string, amount: BigNumberish): Promise<bigint>
+  getTokenPrice(tokenAddress: string): Promise<TokenPrice>;
+  getTokenPriceInWei(
+    tokenAddress: string,
+    amount: BigNumberish,
+  ): Promise<bigint>;
 }
 
 interface TokenPrice {
-  usd: number
-  lastUpdated: Date
+  usd: number;
+  lastUpdated: Date;
 }
 ```
 
@@ -72,6 +76,7 @@ interface TokenPrice {
 **Purpose**: Fetches real-time token prices from CoinMarketCap API.
 
 **Key Features**:
+
 - Token address to CMC ID resolution
 - Price caching with TTL
 - Special handling for ETH and known tokens
@@ -79,13 +84,14 @@ interface TokenPrice {
 - Error handling with retries
 
 **Price Fetching Flow**:
+
 ```mermaid
 sequenceDiagram
     participant Client
     participant Feed as CoinMarketCapFeed
     participant Cache
     participant CMC as CoinMarketCap API
-    
+
     Client->>Feed: getTokenPrice(address)
     Feed->>Cache: Check cache
     alt Cache Hit
@@ -102,6 +108,7 @@ sequenceDiagram
 ```
 
 **Token ID Resolution**:
+
 ```mermaid
 flowchart TD
     A[Token Address] --> B{Known Token?}
@@ -120,6 +127,7 @@ flowchart TD
 **Purpose**: Estimates gas costs and converts them to reward token amounts.
 
 **Key Features**:
+
 - Real-time gas price fetching
 - EIP-1559 support with fallbacks
 - Price conversion with decimal handling
@@ -127,6 +135,7 @@ flowchart TD
 - Caching for performance
 
 **Gas Estimation Process**:
+
 ```mermaid
 graph LR
     A[Get Gas Price] --> B[Apply Buffer]
@@ -137,18 +146,20 @@ graph LR
 ```
 
 **Conversion Formula**:
+
 ```typescript
 // Gas cost in ETH
-gasCostETH = gasPrice * gasUnits
+gasCostETH = gasPrice * gasUnits;
 
 // Convert to USD
-gasCostUSD = gasCostETH * ethPriceUSD
+gasCostUSD = gasCostETH * ethPriceUSD;
 
 // Convert to reward tokens
-gasCostTokens = gasCostUSD / tokenPriceUSD
+gasCostTokens = gasCostUSD / tokenPriceUSD;
 
 // With decimal adjustment
-gasCostTokens = (gasCostETH * ethPriceScaled) / (tokenPriceScaled * decimalAdjustment)
+gasCostTokens =
+  (gasCostETH * ethPriceScaled) / (tokenPriceScaled * decimalAdjustment);
 ```
 
 ## Price Caching Strategy
@@ -162,13 +173,14 @@ graph TD
         L2[Token ID Cache - Permanent]
         L3[Symbol Cache - Permanent]
     end
-    
+
     L1 --> API[API Request]
     L2 --> API
     L3 --> API
 ```
 
 ### Cache Management
+
 - **Price Cache**: 10-minute TTL for price data
 - **ID Cache**: Permanent cache for address→CMC_ID mapping
 - **Symbol Cache**: Permanent cache for address→symbol mapping
@@ -191,16 +203,18 @@ stateDiagram-v2
 ```
 
 ### Fallback Values
+
 ```typescript
-FALLBACK_ETH_PRICE_USD = 2500     // Conservative ETH price
-FALLBACK_TOKEN_PRICE_USD = 0.1    // Conservative token price
-MINIMUM_GAS_COST_USD = 30         // Minimum transaction cost
-FALLBACK_GAS_PRICE_GWEI = 3       // Safe gas price
+FALLBACK_ETH_PRICE_USD = 2500; // Conservative ETH price
+FALLBACK_TOKEN_PRICE_USD = 0.1; // Conservative token price
+MINIMUM_GAS_COST_USD = 30; // Minimum transaction cost
+FALLBACK_GAS_PRICE_GWEI = 3; // Safe gas price
 ```
 
 ## Configuration
 
 ### Environment Variables
+
 ```typescript
 {
   COINMARKETCAP_API_KEY: string,        // CMC API key
@@ -210,6 +224,7 @@ FALLBACK_GAS_PRICE_GWEI = 3       // Safe gas price
 ```
 
 ### Price Feed Config
+
 ```typescript
 {
   apiKey: string,
@@ -224,6 +239,7 @@ FALLBACK_GAS_PRICE_GWEI = 3       // Safe gas price
 ## Usage Examples
 
 ### Get Token Price
+
 ```typescript
 const feed = new CoinMarketCapFeed(config, logger);
 const price = await feed.getTokenPrice('0x...');
@@ -231,17 +247,19 @@ console.log(`Price: $${price.usd}`);
 ```
 
 ### Estimate Gas Cost
+
 ```typescript
 const estimator = new GasCostEstimator();
 const gasUnits = 300000n;
 const gasPrice = await provider.getFeeData();
 const costInTokens = await estimator.estimateGasCostInRewardTokens(
   gasUnits,
-  gasPrice.gasPrice
+  gasPrice.gasPrice,
 );
 ```
 
 ### Convert ETH to Tokens
+
 ```typescript
 const prices = await feed.getTokenPrices();
 const ethAmount = ethers.parseEther('0.01'); // 0.01 ETH
@@ -251,16 +269,19 @@ const tokenAmount = (ethAmount * ethPriceScaled) / tokenPriceScaled;
 ## Performance Optimizations
 
 ### 1. Caching Strategy
+
 - **Multi-layer caching**: Price, ID, and symbol caches
 - **TTL management**: Automatic cache expiration
 - **Batch requests**: Parallel price fetching
 
 ### 2. Request Optimization
+
 - **Connection pooling**: Reuse HTTP connections
 - **Timeout handling**: Prevent hanging requests
 - **Rate limiting**: Respect API limits
 
 ### 3. Fallback Mechanisms
+
 - **Graceful degradation**: Use cached/fallback values
 - **Error recovery**: Automatic retry with backoff
 - **Minimum enforcement**: Prevent unrealistic values
@@ -268,6 +289,7 @@ const tokenAmount = (ethAmount * ethPriceScaled) / tokenPriceScaled;
 ## Integration Points
 
 ### With Profitability Module
+
 ```typescript
 // Gas cost conversion
 const gasCostInTokens = await estimator.convertGasUnitsToRewardToken(gasUnits);
@@ -278,6 +300,7 @@ const priceRatio = gasToken.usd / rewardToken.usd;
 ```
 
 ### With Executor Module
+
 ```typescript
 // Gas price estimation
 const gasPrice = await estimator.getCurrentGasPrice(provider);
@@ -307,26 +330,32 @@ if (estimatedCostUSD < minCostUSD) {
 ## Common Issues and Solutions
 
 ### Issue: Token Not Found
+
 **Solution**: Verify contract address and add manual ID mapping
 
 ### Issue: Stale Prices
+
 **Solution**: Reduce cache TTL or implement push notifications
 
 ### Issue: API Rate Limits
+
 **Solution**: Implement exponential backoff and request batching
 
 ### Issue: Price Volatility
+
 **Solution**: Use price buffers and frequent updates
 
 ## Monitoring
 
 ### Key Metrics
+
 - **Cache Hit Rate**: Percentage of requests served from cache
 - **API Response Time**: Average latency for price requests
 - **Error Rate**: Failed requests per time period
 - **Price Variance**: Deviation from expected ranges
 
 ### Health Checks
+
 - API connectivity validation
 - Price data freshness verification
 - Cache consistency checks

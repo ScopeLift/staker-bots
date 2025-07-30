@@ -405,24 +405,28 @@ export class RelayerExecutor implements IExecutor {
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
     try {
       // Early check: Skip simulation if expected profit is negative or zero
-      const expectedProfit = profitability.estimates.expected_profit || BigInt(0);
+      const expectedProfit =
+        profitability.estimates.expected_profit || BigInt(0);
       const payoutAmount = profitability.estimates.payout_amount || BigInt(0);
-      
+
       // If expected profit is 0 or negative, it means total rewards < (payout + gas cost)
       if (expectedProfit <= BigInt(0)) {
         const error = new TransactionValidationError(
           `Transaction not profitable: expected profit is ${expectedProfit}. Skipping expensive simulation.`,
-          { 
+          {
             depositIds: depositIds.map(String),
             expectedProfit: expectedProfit.toString(),
-            payoutAmount: payoutAmount.toString()
+            payoutAmount: payoutAmount.toString(),
           },
         );
-        this.logger.warn('Skipping simulation due to non-profitable transaction', {
-          expectedProfit: expectedProfit.toString(),
-          payoutAmount: payoutAmount.toString(),
-          depositCount: depositIds.length,
-        });
+        this.logger.warn(
+          'Skipping simulation due to non-profitable transaction',
+          {
+            expectedProfit: expectedProfit.toString(),
+            payoutAmount: payoutAmount.toString(),
+            depositCount: depositIds.length,
+          },
+        );
         return { isValid: false, error };
       }
 
@@ -461,20 +465,29 @@ export class RelayerExecutor implements IExecutor {
             {
               error: error instanceof Error ? error.message : String(error),
               depositIds: depositIds.map(String),
-              errorType: error instanceof Error ? error.constructor.name : typeof error,
+              errorType:
+                error instanceof Error ? error.constructor.name : typeof error,
             },
           );
-          
+
           // For certain types of simulation errors during low gas periods, add extra buffer
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          if (errorMessage.includes('gas') || errorMessage.includes('simulation')) {
-            this.logger.info('Adding extra gas buffer due to simulation issues', {
-              originalEstimate: profitability.estimates.gas_estimate.toString(),
-              bufferMultiplier: 1.5,
-            });
-            
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          if (
+            errorMessage.includes('gas') ||
+            errorMessage.includes('simulation')
+          ) {
+            this.logger.info(
+              'Adding extra gas buffer due to simulation issues',
+              {
+                originalEstimate:
+                  profitability.estimates.gas_estimate.toString(),
+                bufferMultiplier: 1.5,
+              },
+            );
+
             // Add 50% buffer to original estimate when simulation fails during potential low-gas periods
-            profitability.estimates.gas_estimate = 
+            profitability.estimates.gas_estimate =
               (profitability.estimates.gas_estimate * 150n) / 100n;
           }
         }
@@ -992,7 +1005,8 @@ export class RelayerExecutor implements IExecutor {
         const signerAddress = await this.relaySigner.getAddress();
 
         // Early check: Skip simulation if expected profit is negative or zero
-        const expectedProfit = tx.profitability.estimates.expected_profit || BigInt(0);
+        const expectedProfit =
+          tx.profitability.estimates.expected_profit || BigInt(0);
         if (expectedProfit <= BigInt(0)) {
           this.logger.warn(
             'Skipping simulation - not profitable, will retry later',
@@ -1250,30 +1264,36 @@ export class RelayerExecutor implements IExecutor {
       // Apply slight boost to gas values for reliable inclusion
       if (maxFeePerGas) {
         maxFeePerGas = (maxFeePerGas * 125n) / 100n;
-        
+
         // Ensure minimum gas price for Flashbots stability
         const MIN_GAS_PRICE_WEI = 1000000000n; // 1 gwei
         if (maxFeePerGas < MIN_GAS_PRICE_WEI) {
-          this.logger.warn('Max fee per gas is very low, using minimum threshold', {
-            actualGasPriceGwei: Number(maxFeePerGas) / 1e9,
-            minGasPriceGwei: 1,
-            usingMinimum: true,
-          });
+          this.logger.warn(
+            'Max fee per gas is very low, using minimum threshold',
+            {
+              actualGasPriceGwei: Number(maxFeePerGas) / 1e9,
+              minGasPriceGwei: 1,
+              usingMinimum: true,
+            },
+          );
           maxFeePerGas = MIN_GAS_PRICE_WEI;
         }
       }
 
       if (maxPriorityFeePerGas) {
         maxPriorityFeePerGas = (maxPriorityFeePerGas * 125n) / 100n;
-        
+
         // Ensure minimum priority fee
         const MIN_PRIORITY_FEE_WEI = 100000000n; // 0.1 gwei minimum priority fee
         if (maxPriorityFeePerGas < MIN_PRIORITY_FEE_WEI) {
-          this.logger.warn('Max priority fee per gas is very low, using minimum threshold', {
-            actualPriorityFeeGwei: Number(maxPriorityFeePerGas) / 1e9,
-            minPriorityFeeGwei: 0.1,
-            usingMinimum: true,
-          });
+          this.logger.warn(
+            'Max priority fee per gas is very low, using minimum threshold',
+            {
+              actualPriorityFeeGwei: Number(maxPriorityFeePerGas) / 1e9,
+              minPriorityFeeGwei: 0.1,
+              usingMinimum: true,
+            },
+          );
           maxPriorityFeePerGas = MIN_PRIORITY_FEE_WEI;
         }
       }

@@ -10,55 +10,55 @@ The main `index.ts` file serves as the application entry point and orchestrates 
 graph TB
     subgraph "Application Entry Point"
         MAIN[index.ts]
-        
+
         subgraph "Initialization"
             DB_INIT[Database Init]
             LOGGER_INIT[Logger Init]
             CONFIG_LOAD[Config Load]
             ERROR_INIT[Error Logger Init]
         end
-        
+
         subgraph "Component Management"
             COMP_SELECT[Component Selection]
             HEALTH_CHECK[Health Monitoring]
             SHUTDOWN[Graceful Shutdown]
         end
     end
-    
+
     subgraph "System Components"
         MONITOR[StakerMonitor]
         EXECUTOR[ExecutorWrapper]
         PROFIT[ProfitabilityEngine]
     end
-    
+
     subgraph "Infrastructure"
         DATABASE[Database]
         PROVIDER[Blockchain Provider]
         CONTRACTS[Smart Contracts]
         ERROR_LOG[Error Logging]
     end
-    
+
     MAIN --> INITIALIZATION
     MAIN --> COMP_SELECT
     MAIN --> HEALTH_CHECK
     MAIN --> SHUTDOWN
-    
+
     COMP_SELECT --> MONITOR
     COMP_SELECT --> EXECUTOR
     COMP_SELECT --> PROFIT
-    
+
     MONITOR --> DATABASE
     EXECUTOR --> DATABASE
     PROFIT --> DATABASE
-    
+
     MONITOR --> PROVIDER
     EXECUTOR --> PROVIDER
     PROFIT --> PROVIDER
-    
+
     MONITOR --> CONTRACTS
     EXECUTOR --> CONTRACTS
     PROFIT --> CONTRACTS
-    
+
     MONITOR --> ERROR_LOG
     EXECUTOR --> ERROR_LOG
     PROFIT --> ERROR_LOG
@@ -74,13 +74,13 @@ sequenceDiagram
     participant MON as Monitor
     participant EXEC as Executor
     participant PROFIT as Profitability
-    
+
     ENV->>MAIN: Load Configuration
     MAIN->>DB: Initialize Database
     MAIN->>MAIN: Create Loggers
     MAIN->>MAIN: Setup Error Handlers
     MAIN->>DB: Ensure Checkpoints
-    
+
     rect rgb(200, 220, 240)
     note right of MAIN: Component Initialization
     MAIN->>MON: Initialize Monitor
@@ -90,7 +90,7 @@ sequenceDiagram
     MAIN->>PROFIT: Initialize Profitability
     PROFIT->>PROFIT: Start Analysis Loop
     end
-    
+
     MAIN->>MAIN: Setup Health Checks
     MAIN->>MAIN: Register Shutdown Handlers
     MAIN->>ENV: Application Ready
@@ -114,13 +114,23 @@ const database = new DatabaseWrapper({
 ```typescript
 const loggers = {
   main: new ConsoleLogger('info'),
-  monitor: new ConsoleLogger('info', { color: '\x1b[34m', prefix: '[Monitor]' }),
-  profitability: new ConsoleLogger('info', { color: '\x1b[32m', prefix: '[Profitability]' }),
-  executor: new ConsoleLogger('info', { color: '\x1b[33m', prefix: '[Executor]' })
+  monitor: new ConsoleLogger('info', {
+    color: '\x1b[34m',
+    prefix: '[Monitor]',
+  }),
+  profitability: new ConsoleLogger('info', {
+    color: '\x1b[32m',
+    prefix: '[Profitability]',
+  }),
+  executor: new ConsoleLogger('info', {
+    color: '\x1b[33m',
+    prefix: '[Executor]',
+  }),
 };
 ```
 
 **Features**:
+
 - Color-coded output for visual distinction
 - Component-specific prefixes
 - Configurable log levels
@@ -133,7 +143,7 @@ const errorLoggers = {
   main: createErrorLogger('main-service', database),
   monitor: createErrorLogger('monitor-service', database),
   profitability: createErrorLogger('profitability-service', database),
-  executor: createErrorLogger('executor-service', database)
+  executor: createErrorLogger('executor-service', database),
 };
 ```
 
@@ -144,7 +154,9 @@ const errorLoggers = {
 ```typescript
 function createProvider() {
   if (!CONFIG.monitor.rpcUrl) {
-    throw new Error('RPC URL is not configured. Please set RPC_URL environment variable.');
+    throw new Error(
+      'RPC URL is not configured. Please set RPC_URL environment variable.',
+    );
   }
   return new ethers.JsonRpcProvider(CONFIG.monitor.rpcUrl);
 }
@@ -157,8 +169,10 @@ function createProvider() {
 ### Environment-Based Configuration
 
 ```typescript
-const rawComponents = process.env.COMPONENTS?.split(',').map(c => c.trim().toLowerCase()) || ['all'];
-const componentsToRun = rawComponents.includes('all') 
+const rawComponents = process.env.COMPONENTS?.split(',').map((c) =>
+  c.trim().toLowerCase(),
+) || ['all'];
+const componentsToRun = rawComponents.includes('all')
   ? ['monitor', 'executor', 'profitability']
   : rawComponents;
 ```
@@ -194,12 +208,13 @@ graph TD
     C --> P
     C --> B
     C --> A
-    
+
     A -.-> B
     B -.-> C
 ```
 
 **Dependency Rules**:
+
 - All components require Database
 - Executor and Profitability require Provider
 - Profitability requires Executor
@@ -269,7 +284,7 @@ sequenceDiagram
     participant PROFIT as Profitability
     participant EXEC as Executor
     participant MON as Monitor
-    
+
     SIG->>MAIN: SIGINT/SIGTERM
     MAIN->>PROFIT: Stop Engine
     PROFIT->>PROFIT: Finish Current Analysis
@@ -283,20 +298,20 @@ sequenceDiagram
 ```typescript
 async function shutdown(signal: string) {
   mainLogger.info(`Received ${signal}. Starting graceful shutdown...`);
-  
+
   // Stop components in reverse order
   if (runningComponents.profitabilityEngine) {
     await runningComponents.profitabilityEngine.stop();
   }
-  
+
   if (runningComponents.executor) {
     await runningComponents.executor.stop();
   }
-  
+
   if (runningComponents.monitor) {
     await runningComponents.monitor.stop();
   }
-  
+
   process.exit(0);
 }
 ```
@@ -381,10 +396,10 @@ try {
 async function ensureCheckpointsAtStartBlock(database, logger, errorLogger) {
   const startBlock = CONFIG.monitor.startBlock;
   const componentTypes = ['staker-monitor', 'executor', 'profitability-engine'];
-  
+
   for (const componentType of componentTypes) {
     const checkpoint = await database.getCheckpoint(componentType);
-    
+
     if (!checkpoint || checkpoint.last_block_number < startBlock) {
       await database.updateCheckpoint({
         component_type: componentType,
@@ -402,6 +417,7 @@ async function ensureCheckpointsAtStartBlock(database, logger, errorLogger) {
 ## Deployment Modes
 
 ### Development Mode
+
 ```bash
 NODE_ENV=development
 COMPONENTS=all
@@ -410,6 +426,7 @@ DB=json
 ```
 
 ### Production Mode
+
 ```bash
 NODE_ENV=production
 COMPONENTS=all
@@ -419,12 +436,14 @@ TENDERLY_USE_SIMULATE=true
 ```
 
 ### Monitor-Only Mode
+
 ```bash
 COMPONENTS=monitor
 DB=supabase
 ```
 
 ### Executor-Only Mode
+
 ```bash
 COMPONENTS=executor,profitability
 EXECUTOR_TYPE=defender
