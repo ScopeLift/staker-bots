@@ -177,7 +177,7 @@ export const EXECUTOR = {
   },
 
   QUEUE: {
-    QUEUE_PROCESSOR_INTERVAL: 3000, // 3 seconds (changed from 60000)
+    QUEUE_PROCESSOR_INTERVAL: 15000, // 15 seconds (increased from 3 seconds for CU optimization)
     MAX_BATCH_SIZE: 100, // Maximum number of deposits per batch
     MIN_BATCH_SIZE: 1, // Minimum number of deposits per batch
     MAX_RETRIES: 3, // Maximum number of retries per transaction

@@ -5,6 +5,32 @@ import { SimulationTransaction } from '@/simulation/interfaces';
 import { ethers } from 'ethers';
 import { CONFIG } from '@/configuration';
 
+// Simulation cache for optimization
+interface SimulationCacheEntry {
+  result: {
+    success: boolean;
+    gasEstimate: bigint | null;
+    error?: string;
+    optimizedGasLimit?: bigint;
+  };
+  timestamp: number;
+}
+
+const simulationCache = new Map<string, SimulationCacheEntry>();
+const SIMULATION_CACHE_TTL = 300000; // 5 minutes cache
+
+/**
+ * Generates a cache key for simulation results
+ */
+function generateSimulationCacheKey(
+  contractAddress: string,
+  recipient: string,
+  minExpectedReward: bigint,
+  depositIds: bigint[],
+): string {
+  return `${contractAddress}-${recipient}-${minExpectedReward.toString()}-${depositIds.map((id) => id.toString()).join(',')}`;
+}
+
 /**
  * Simulates a transaction to verify it will succeed and estimate gas costs
  * This uses Tenderly simulation API to validate the transaction without submitting to the chain
@@ -73,6 +99,27 @@ export async function simulateTransaction(
       txId: tx.id,
     });
     return { success: true, gasEstimate: null };
+  }
+
+  // Check simulation cache first
+  const contractAddress = lstContract.target.toString();
+  const cacheKey = generateSimulationCacheKey(
+    contractAddress,
+    finalSignerAddress,
+    minExpectedReward,
+    depositIds,
+  );
+
+  const now = Date.now();
+  const cachedEntry = simulationCache.get(cacheKey);
+
+  if (cachedEntry && now - cachedEntry.timestamp < SIMULATION_CACHE_TTL) {
+    logger.info('Using cached simulation result', {
+      txId: tx.id,
+      cacheKey: cacheKey.substring(0, 32) + '...',
+      cacheAgeMs: now - cachedEntry.timestamp,
+    });
+    return cachedEntry.result;
   }
 
   try {
@@ -239,12 +286,20 @@ export async function simulateTransaction(
           optimizedGasLimit: newGasLimit.toString(),
         });
 
-        return {
+        const result = {
           success: true,
           gasEstimate:
             gasEstimate || BigInt(Math.ceil(retryResult.gasUsed * 1.2)),
           optimizedGasLimit: BigInt(newGasLimit),
         };
+
+        // Cache the successful retry result
+        simulationCache.set(cacheKey, {
+          result,
+          timestamp: now,
+        });
+
+        return result;
       }
     }
 
@@ -257,11 +312,19 @@ export async function simulateTransaction(
         gasUsed: simulationResult.gasUsed || 0,
       });
 
-      return {
+      const result = {
         success: false,
         gasEstimate: null,
         error: `${simulationResult.error?.code}: ${simulationResult.error?.message}`,
       };
+
+      // Cache failed results with shorter TTL (1 minute)
+      simulationCache.set(cacheKey, {
+        result,
+        timestamp: now,
+      });
+
+      return result;
     }
 
     // Use gas from simulation if it's higher than our estimate (plus buffer)
@@ -279,10 +342,18 @@ export async function simulateTransaction(
       simulationStatus: simulationResult.status,
     });
 
-    return {
+    const result = {
       success: true,
       gasEstimate,
     };
+
+    // Cache the successful result
+    simulationCache.set(cacheKey, {
+      result,
+      timestamp: now,
+    });
+
+    return result;
   } catch (error) {
     // Enhance error logging
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -297,11 +368,24 @@ export async function simulateTransaction(
       depositCount: depositIds.length,
     });
 
-    return {
+    const result = {
       success: false,
       gasEstimate: null,
       error: errorMessage,
     };
+
+    // Only cache non-network errors (avoid caching transient failures)
+    if (
+      !errorMessage.includes('network') &&
+      !errorMessage.includes('timeout')
+    ) {
+      simulationCache.set(cacheKey, {
+        result,
+        timestamp: now,
+      });
+    }
+
+    return result;
   }
 }
 

@@ -41,7 +41,7 @@ export const CONFIG = {
       | 'warn'
       | 'error',
     databaseType: (process.env.DB || 'json') as 'json' | 'supabase',
-    pollInterval: parseInt(process.env.POLL_INTERVAL || '15'),
+    pollInterval: parseInt(process.env.POLL_INTERVAL || '30'), // Increased from 15 to 30 seconds
     maxBlockRange: parseInt(process.env.MAX_BLOCK_RANGE || '2000'),
     maxRetries: parseInt(process.env.MAX_RETRIES || '5'),
     reorgDepth: parseInt(process.env.REORG_DEPTH || '64'),

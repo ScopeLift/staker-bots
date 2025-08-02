@@ -56,6 +56,9 @@ export class StakerMonitor extends EventEmitter {
   private processingPromise?: Promise<void>;
   private lastProcessedBlock: number;
   private depositScanInProgress: boolean;
+  private cachedBlockNumber: number;
+  private lastBlockNumberUpdate: number;
+  private readonly BLOCK_NUMBER_CACHE_TTL = 5000; // 5 seconds cache
 
   constructor(config: ExtendedMonitorConfig) {
     super();
@@ -82,6 +85,8 @@ export class StakerMonitor extends EventEmitter {
     this.isRunning = false;
     this.lastProcessedBlock = config.startBlock;
     this.depositScanInProgress = false;
+    this.cachedBlockNumber = 0;
+    this.lastBlockNumberUpdate = 0;
   }
 
   /**
@@ -189,7 +194,22 @@ export class StakerMonitor extends EventEmitter {
 
   private async getCurrentBlock(): Promise<number> {
     try {
-      return await this.provider.getBlockNumber();
+      const now = Date.now();
+
+      // Use cached block number if it's still fresh
+      if (
+        this.cachedBlockNumber > 0 &&
+        now - this.lastBlockNumberUpdate < this.BLOCK_NUMBER_CACHE_TTL
+      ) {
+        return this.cachedBlockNumber;
+      }
+
+      // Fetch fresh block number
+      const blockNumber = await this.provider.getBlockNumber();
+      this.cachedBlockNumber = blockNumber;
+      this.lastBlockNumberUpdate = now;
+
+      return blockNumber;
     } catch (error) {
       if (this.errorLogger) {
         await this.errorLogger.error(error as Error, {
@@ -254,6 +274,50 @@ export class StakerMonitor extends EventEmitter {
   }
 
   /**
+   * Queries contract events in batches for improved efficiency
+   * @param contract - Contract instance to query
+   * @param eventNames - Array of event names to query
+   * @param fromBlock - Starting block number
+   * @param toBlock - Ending block number
+   * @returns Flattened array of all events
+   */
+  private async queryContractEvents(
+    contract: ethers.Contract,
+    eventNames: string[],
+    fromBlock: number,
+    toBlock: number,
+  ): Promise<ethers.Log[]> {
+    try {
+      const eventPromises = eventNames.map(async (eventName) => {
+        try {
+          const filter = contract.filters[eventName];
+          if (typeof filter === 'function') {
+            return await contract.queryFilter(filter(), fromBlock, toBlock);
+          }
+          return [];
+        } catch (error) {
+          this.logger.warn(
+            `Failed to query ${eventName} events: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return [];
+        }
+      });
+
+      const eventArrays = await Promise.all(eventPromises);
+      return eventArrays.flat();
+    } catch (error) {
+      this.logger.error('Error in batch event querying:', {
+        error: error instanceof Error ? error.message : String(error),
+        contractAddress: await contract.getAddress(),
+        eventNames,
+        fromBlock,
+        toBlock,
+      });
+      return [];
+    }
+  }
+
+  /**
    * Processes events within a specified block range.
    * Fetches and processes StakeDeposited, StakeWithdrawn, and DelegateeAltered events.
    * Groups related events by transaction for atomic processing.
@@ -268,77 +332,101 @@ export class StakerMonitor extends EventEmitter {
     try {
       this.logger.info(`Processing blocks ${fromBlock} to ${toBlock}`);
 
-      // Define a helper function to safely query an event filter
-      const safeQueryFilter = async (
-        contract: ethers.Contract,
-        eventName: string,
-        fromBlock: number,
-        toBlock: number,
-      ) => {
-        try {
-          const filter = contract.filters[eventName];
-          if (typeof filter === 'function') {
-            return await contract.queryFilter(filter(), fromBlock, toBlock);
-          }
-          return [];
-        } catch (error) {
-          this.logger.warn(
-            `Failed to query ${eventName} events: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          return [];
-        }
+      // Query events in batches for better efficiency
+      const [lstContractEvents, stakerContractEvents] = await Promise.all([
+        this.queryContractEvents(
+          this.lstContract,
+          [
+            'Staked',
+            'StakedWithAttribution',
+            'Unstaked',
+            'DepositInitialized',
+            'DepositUpdated',
+            'DepositSubsidized',
+          ],
+          fromBlock,
+          toBlock,
+        ),
+        this.queryContractEvents(
+          this.contract,
+          [
+            'StakeDeposited',
+            'StakeWithdrawn',
+            'DelegateeAltered',
+            'ClaimerAltered',
+            'RewardClaimed',
+            'EarningPowerBumped',
+            'RewardNotified',
+          ],
+          fromBlock,
+          toBlock,
+        ),
+      ]);
+
+      // Helper function to filter events by topic hash
+      const filterEventsByTopic = (
+        events: ethers.Log[],
+        eventSignature: string,
+      ): ethers.Log[] => {
+        const topic = ethers.id(eventSignature);
+        return events.filter((log) => log.topics[0] === topic);
       };
 
-      // Query for events, safely handling missing filters
-      const [
-        lstDepositEvents,
-        depositedEvents,
-        withdrawnEvents,
-        alteredEvents,
-        stakedWithAttributionEvents,
-        unstakedEvents,
-        depositInitializedEvents,
-        depositUpdatedEvents,
-        claimerAlteredEvents,
-        rewardClaimedEvents,
-        depositSubsidizedEvents,
-        earningPowerBumpedEvents,
-        rewardNotifiedEvents,
-      ] = await Promise.all([
-        safeQueryFilter(this.lstContract, 'Staked', fromBlock, toBlock),
-        safeQueryFilter(this.contract, 'StakeDeposited', fromBlock, toBlock),
-        safeQueryFilter(this.contract, 'StakeWithdrawn', fromBlock, toBlock),
-        safeQueryFilter(this.contract, 'DelegateeAltered', fromBlock, toBlock),
-        safeQueryFilter(
-          this.lstContract,
-          'StakedWithAttribution',
-          fromBlock,
-          toBlock,
-        ),
-        safeQueryFilter(this.lstContract, 'Unstaked', fromBlock, toBlock),
-        safeQueryFilter(
-          this.lstContract,
-          'DepositInitialized',
-          fromBlock,
-          toBlock,
-        ),
-        safeQueryFilter(this.lstContract, 'DepositUpdated', fromBlock, toBlock),
-        safeQueryFilter(this.contract, 'ClaimerAltered', fromBlock, toBlock),
-        safeQueryFilter(this.contract, 'RewardClaimed', fromBlock, toBlock),
-        safeQueryFilter(
-          this.lstContract,
-          'DepositSubsidized',
-          fromBlock,
-          toBlock,
-        ),
-        safeQueryFilter(
-          this.contract,
-          'EarningPowerBumped',
-          fromBlock,
-          toBlock,
-        ),
-        safeQueryFilter(this.contract, 'RewardNotified', fromBlock, toBlock),
-      ]);
+      // Filter LST contract events by type
+      const lstDepositEvents = filterEventsByTopic(
+        lstContractEvents,
+        'Staked(address,uint256)',
+      );
+      const stakedWithAttributionEvents = filterEventsByTopic(
+        lstContractEvents,
+        'StakedWithAttribution(address,uint256,uint256)',
+      );
+      const unstakedEvents = filterEventsByTopic(
+        lstContractEvents,
+        'Unstaked(address,uint256)',
+      );
+      const depositInitializedEvents = filterEventsByTopic(
+        lstContractEvents,
+        'DepositInitialized(uint256,address)',
+      );
+      const depositUpdatedEvents = filterEventsByTopic(
+        lstContractEvents,
+        'DepositUpdated(uint256,uint256,uint256)',
+      );
+      const depositSubsidizedEvents = filterEventsByTopic(
+        lstContractEvents,
+        'DepositSubsidized(uint256,uint256)',
+      );
+
+      // Filter Staker contract events by type
+      const depositedEvents = filterEventsByTopic(
+        stakerContractEvents,
+        'StakeDeposited(address,uint256,uint256)',
+      );
+      const withdrawnEvents = filterEventsByTopic(
+        stakerContractEvents,
+        'StakeWithdrawn(uint256,uint256,uint256)',
+      );
+      const alteredEvents = filterEventsByTopic(
+        stakerContractEvents,
+        'DelegateeAltered(uint256,address)',
+      );
+      const claimerAlteredEvents = filterEventsByTopic(
+        stakerContractEvents,
+        'ClaimerAltered(uint256,address)',
+      );
+      const rewardClaimedEvents = filterEventsByTopic(
+        stakerContractEvents,
+        'RewardClaimed(uint256,address,uint256)',
+      );
+      const earningPowerBumpedEvents = filterEventsByTopic(
+        stakerContractEvents,
+        'EarningPowerBumped(uint256,uint256,uint256)',
+      );
+      const rewardNotifiedEvents = filterEventsByTopic(
+        stakerContractEvents,
+        'RewardNotified(uint256,uint256,uint256)',
+      );
 
       this.logger.info('Events found:', {
         lstDeposit: lstDepositEvents.length,
