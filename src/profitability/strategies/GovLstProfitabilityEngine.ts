@@ -16,6 +16,7 @@ import { CoinMarketCapFeed } from '@/prices/CoinmarketcapFeed';
 import { TokenPrice } from '@/prices/interface';
 import { SimulationService } from '@/simulation';
 import { estimateGasUsingSimulation } from '@/executor/strategies/helpers/simulation-helpers';
+import { MulticallBatcher } from '@/utils/multicall';
 
 /**
  * Updated ProfitabilityConfig to include errorLogger
@@ -33,6 +34,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly logger: Logger;
   private readonly errorLogger?: ErrorLogger;
   private readonly priceFeed: CoinMarketCapFeed;
+  private readonly multicallBatcher: MulticallBatcher;
   private isRunning: boolean;
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
@@ -84,6 +86,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     this.lastUpdateTimestamp = 0;
     this.config = config;
     this.simulationService = simulationService;
+    this.multicallBatcher = new MulticallBatcher(provider, this.logger);
 
     // Initialize price feed
     this.priceFeed = new CoinMarketCapFeed(
@@ -964,16 +967,19 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       this.activeBin.gas_estimate = actualGasEstimate; // Use actual simulation gas estimate
       this.activeBin.total_payout = payoutAmount;
 
-      // Generate deposit details for profitability check
-      const depositDetails = await Promise.all(
-        this.activeBin.deposit_ids.map(async (id) => {
-          const reward = await this.stakerContract.unclaimedReward(id);
-          return {
-            depositId: id,
-            rewards: reward,
-          };
-        }),
+      // Generate deposit details for profitability check using batched calls
+      const batchedRewards = await this.multicallBatcher.batchUnclaimedRewards(
+        this.stakerContract,
+        this.activeBin.deposit_ids,
       );
+
+      const depositDetails = this.activeBin.deposit_ids.map((id, index) => {
+        const reward = batchedRewards[index] || BigInt(0); // Use 0 if batch call failed
+        return {
+          depositId: id,
+          rewards: reward,
+        };
+      });
 
       // Calculate minimum expected reward threshold
       const minExpectedReward = this.calculateMinExpectedReward(
@@ -1081,15 +1087,19 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
       // Function to process a batch with retries
       const processBatch = async (batchIds: bigint[]) => {
-        // Process batch with retries
+        // Process batch with retries using multicall
         const results = await this.withRetry(
           async () => {
-            const results = await Promise.all(
-              batchIds.map(async (id) => {
-                const reward = await this.stakerContract.unclaimedReward(id);
-                return { id, reward };
-              }),
-            );
+            const batchedRewards =
+              await this.multicallBatcher.batchUnclaimedRewards(
+                this.stakerContract,
+                batchIds,
+              );
+
+            const results = batchIds.map((id, index) => ({
+              id,
+              reward: batchedRewards[index] || BigInt(0), // Use 0 if batch call failed
+            }));
 
             // Check if all rewards are 0, might indicate we need to wait for chain update
             const allZero = results.every(({ reward }) => reward === BigInt(0));

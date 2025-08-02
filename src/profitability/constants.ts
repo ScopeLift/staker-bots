@@ -9,7 +9,7 @@ export const GAS_CONSTANTS = {
 
 // Queue Processing Constants
 export const QUEUE_CONSTANTS = {
-  PROCESSOR_INTERVAL: 60_000, // 1 minute in ms
+  PROCESSOR_INTERVAL: 120_000, // 2 minutes in ms (increased from 1 minute for CU optimization)
   MAX_BATCH_SIZE: 50,
   MIN_BATCH_SIZE: 1,
 } as const;

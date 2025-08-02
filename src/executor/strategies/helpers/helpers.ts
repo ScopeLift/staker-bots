@@ -101,13 +101,20 @@ export async function calculateGasParameters(
   gasEstimate: bigint,
   gasBoostPercentage: number,
   logger: Logger,
+  cachedGasPrice?: bigint,
 ): Promise<{
   finalGasLimit: bigint;
   boostedGasPrice: bigint;
 }> {
   const finalGasLimit = calculateGasLimit(gasEstimate, 1, logger);
-  const feeData = await provider.getFeeData();
-  const baseGasPrice = feeData.gasPrice || 0n;
+
+  let baseGasPrice: bigint;
+  if (cachedGasPrice !== undefined) {
+    baseGasPrice = cachedGasPrice;
+  } else {
+    const feeData = await provider.getFeeData();
+    baseGasPrice = feeData.gasPrice || 0n;
+  }
 
   // Ensure minimum gas price for stability
   const MIN_GAS_PRICE_WEI = 1000000000n; // 1 gwei
@@ -119,6 +126,7 @@ export async function calculateGasParameters(
       actualGasPriceGwei: Number(baseGasPrice) / 1e9,
       minGasPriceGwei: 1,
       usingMinimum: true,
+      usingCachedPrice: cachedGasPrice !== undefined,
     });
   }
 

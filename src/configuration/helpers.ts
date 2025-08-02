@@ -108,7 +108,7 @@ export function calculateGasLimit(
 }
 
 /**
- * Polls for a transaction receipt with retries
+ * Polls for a transaction receipt with exponential backoff
  */
 export async function pollForReceipt(
   txHash: string,
@@ -116,8 +116,12 @@ export async function pollForReceipt(
   logger: Logger,
   confirmations: number = 1,
 ): Promise<EthersTransactionReceipt | null> {
-  const maxAttempts = 30; // Try for about 5 minutes with 10-second intervals
-  const pollingInterval = 10000; // 10 seconds
+  const maxAttempts = 15; // Reduced from 30
+  const initialPollingInterval = 3000; // Start with 3 seconds
+  const maxPollingInterval = 30000; // Cap at 30 seconds
+  const backoffMultiplier = 1.5; // Exponential backoff factor
+
+  let pollingInterval = initialPollingInterval;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
@@ -127,8 +131,19 @@ export async function pollForReceipt(
       )) as unknown as EthersTransactionReceipt;
 
       if (!receipt) {
-        // If no receipt yet, wait and try again
+        // If no receipt yet, wait with exponential backoff
+        logger.debug('Transaction receipt not found, retrying with backoff', {
+          txHash,
+          attempt: attempt + 1,
+          nextPollingIntervalMs: pollingInterval,
+        });
         await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+
+        // Increase polling interval for next attempt (exponential backoff)
+        pollingInterval = Math.min(
+          pollingInterval * backoffMultiplier,
+          maxPollingInterval,
+        );
         continue;
       }
 
@@ -137,20 +152,38 @@ export async function pollForReceipt(
       const receiptConfirmations = currentBlock - receipt.blockNumber + 1;
 
       if (receiptConfirmations >= confirmations) {
+        logger.info('Transaction confirmed', {
+          txHash,
+          blockNumber: receipt.blockNumber,
+          confirmations: receiptConfirmations,
+          attemptsTaken: attempt + 1,
+        });
         return receipt;
       }
 
-      // Not enough confirmations, wait and try again
-      await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+      // Not enough confirmations, wait with current interval (no backoff for confirmations)
+      logger.debug('Waiting for confirmations', {
+        txHash,
+        currentConfirmations: receiptConfirmations,
+        requiredConfirmations: confirmations,
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(pollingInterval, 5000)),
+      ); // Cap confirmation polling at 5s
     } catch (error) {
       logger.warn('Error polling for receipt', {
         error: error instanceof Error ? error.message : String(error),
         txHash,
-        attempt,
+        attempt: attempt + 1,
+        nextPollingIntervalMs: pollingInterval,
       });
 
-      // Wait and try again
+      // Wait with exponential backoff on error
       await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+      pollingInterval = Math.min(
+        pollingInterval * backoffMultiplier,
+        maxPollingInterval,
+      );
     }
   }
 

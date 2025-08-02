@@ -99,6 +99,9 @@ export class BaseExecutor implements IExecutor {
   private readonly config: ExecutorConfig;
   private readonly gasCostEstimator: GasCostEstimator;
   private readonly simulationService: SimulationService | null;
+  private cachedGasPrice: bigint;
+  private lastGasPriceUpdate: number;
+  private readonly GAS_PRICE_CACHE_TTL = 30000; // 30 seconds cache
 
   /**
    * Creates a new BaseExecutor instance
@@ -129,6 +132,8 @@ export class BaseExecutor implements IExecutor {
     this.processingInterval = null;
     this.provider = provider;
     this.config = config;
+    this.cachedGasPrice = 0n;
+    this.lastGasPriceUpdate = 0;
 
     // Initialize simulation service (with fallback)
     try {
@@ -391,28 +396,10 @@ export class BaseExecutor implements IExecutor {
         };
       }
 
-      // Get current gas price and calculate gas cost
-      const feeData = await this.provider.getFeeData();
-      if (!feeData.gasPrice) {
-        const error = new TransactionValidationError(
-          'Failed to get gas price from provider',
-          {
-            feeData: feeData,
-          },
-        );
-        if (this.errorLogger) {
-          await this.errorLogger.warn(error, {
-            context: 'base-executor-gas-price-missing',
-          });
-        }
-        return {
-          isValid: false,
-          error,
-        };
-      }
-
+      // Get current gas price and calculate gas cost using cached method
+      const gasPrice = await this.getCachedGasPrice();
       const gasBoostMultiplier = BigInt(100 + this.config.gasBoostPercentage);
-      const boostedGasPrice = (feeData.gasPrice * gasBoostMultiplier) / 100n;
+      const boostedGasPrice = (gasPrice * gasBoostMultiplier) / 100n;
       const estimatedGasCost =
         boostedGasPrice * profitability.estimates.gas_estimate;
 
@@ -718,6 +705,58 @@ export class BaseExecutor implements IExecutor {
    */
   private async getWalletBalance(): Promise<bigint> {
     return this.provider.getBalance(this.wallet.address);
+  }
+
+  /**
+   * Gets cached gas price or fetches fresh if cache expired
+   * @returns Gas price in wei
+   */
+  private async getCachedGasPrice(): Promise<bigint> {
+    try {
+      const now = Date.now();
+
+      // Use cached gas price if it's still fresh
+      if (
+        this.cachedGasPrice > 0n &&
+        now - this.lastGasPriceUpdate < this.GAS_PRICE_CACHE_TTL
+      ) {
+        return this.cachedGasPrice;
+      }
+
+      // Fetch fresh gas price
+      const feeData = await this.provider.getFeeData();
+      const gasPrice = feeData.gasPrice || 0n;
+
+      // Handle very low gas prices (sub 1 gwei)
+      const MIN_GAS_PRICE_GWEI = 1n;
+      const MIN_GAS_PRICE_WEI = MIN_GAS_PRICE_GWEI * 10n ** 9n;
+
+      const adjustedGasPrice =
+        gasPrice < MIN_GAS_PRICE_WEI ? MIN_GAS_PRICE_WEI : gasPrice;
+
+      // Handle zero gas price
+      const finalGasPrice =
+        adjustedGasPrice === 0n ? 3n * 10n ** 9n : adjustedGasPrice; // 3 gwei fallback
+
+      this.cachedGasPrice = finalGasPrice;
+      this.lastGasPriceUpdate = now;
+
+      return finalGasPrice;
+    } catch (error) {
+      this.logger.warn('Failed to get gas price, using cached or fallback', {
+        error: error instanceof Error ? error.message : String(error),
+        cachedGasPrice: this.cachedGasPrice.toString(),
+      });
+
+      if (this.errorLogger) {
+        await this.errorLogger.warn(error as Error, {
+          context: 'get-cached-gas-price',
+        });
+      }
+
+      // Use cached value if available, otherwise use fallback
+      return this.cachedGasPrice > 0n ? this.cachedGasPrice : 3n * 10n ** 9n; // 3 gwei fallback
+    }
   }
 
   /**
@@ -1073,17 +1112,7 @@ export class BaseExecutor implements IExecutor {
         throw error;
       }
 
-      // Get current gas price with buffer
-      const feeData = await this.provider.getFeeData();
-      if (!feeData.gasPrice) {
-        const error = new Error('Failed to get gas price from provider');
-        if (this.errorLogger) {
-          await this.errorLogger.warn(error, {
-            context: 'base-executor-estimate-gas-no-gas-price',
-          });
-        }
-        throw error;
-      }
+      // Gas price will be retrieved via cached method in calculateGasParameters
 
       const tipReceiver = this.config.defaultTipReceiver || this.wallet.address;
       if (!tipReceiver) {
@@ -1172,11 +1201,13 @@ export class BaseExecutor implements IExecutor {
     finalGasLimit: bigint;
     boostedGasPrice: bigint;
   }> {
+    const cachedGasPrice = await this.getCachedGasPrice();
     return calculateGasParameters(
       this.provider,
       gasEstimate,
       this.config.gasBoostPercentage,
       this.logger,
+      cachedGasPrice,
     );
   }
 
