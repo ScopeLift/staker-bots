@@ -49,4 +49,19 @@ export interface IGovLstProfitabilityEngine {
   analyzeAndGroupDeposits(
     deposits: GovLstDeposit[],
   ): Promise<GovLstBatchAnalysis>;
+
+  /**
+   * Get reward accumulation tracker status
+   */
+  getRewardTrackerStatus(): any;
+
+  /**
+   * Manually resume operations (override pause)
+   */
+  resumeOperations(): void;
+
+  /**
+   * Force pause for a specific duration
+   */
+  forcePause(durationHours: number, reason: string): void;
 }

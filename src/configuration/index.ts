@@ -125,6 +125,21 @@ export const CONFIG = {
     maxBatchSize: 10,
     defaultTipReceiver: process.env.TIP_RECEIVER_ADDRESS || '',
     rewardTokenAddress: process.env.REWARD_TOKEN_ADDRESS || '',
+    rewardAccumulation: {
+      expectedRewardsPerPeriod: process.env.EXPECTED_REWARDS_PER_PERIOD 
+        ? BigInt(process.env.EXPECTED_REWARDS_PER_PERIOD) 
+        : ethers.parseEther('5000'), // 5k ETH per period
+      accumulationPeriodHours: parseInt(process.env.ACCUMULATION_PERIOD_HOURS || '12'),
+      minimumProfitableRatio: parseFloat(process.env.MIN_PROFITABLE_RATIO || '0.6'), // 60%
+      sampleIntervalMinutes: parseInt(process.env.REWARD_SAMPLE_INTERVAL_MINUTES || '30'),
+      maxSamples: parseInt(process.env.MAX_REWARD_SAMPLES || '48'), // 24 hours worth
+      defaultPauseDurationHours: parseInt(process.env.DEFAULT_PAUSE_HOURS || '6'),
+      pauseBufferFactor: parseFloat(process.env.PAUSE_BUFFER_FACTOR || '0.8'), // 80% of calculated
+      maxPauseDurationHours: parseInt(process.env.MAX_PAUSE_HOURS || '12'),
+      minPauseDurationHours: parseInt(process.env.MIN_PAUSE_HOURS || '1'),
+      highProfitThreshold: parseFloat(process.env.HIGH_PROFIT_THRESHOLD || '1.5'), // 150% of payout
+      cooldownHoursAfterSuccess: parseInt(process.env.COOLDOWN_HOURS_AFTER_SUCCESS || '2'),
+    },
     priceFeed: {
       tokenAddress: process.env.PRICE_FEED_TOKEN_ADDRESS || '',
       cacheDuration: 10 * 60 * 1000, // 10 minutes

@@ -937,4 +937,25 @@ export class GovLstProfitabilityEngineWrapper
   get config(): ProfitabilityEngineConfig {
     return this.engine.config;
   }
+
+  /**
+   * Get reward accumulation tracker status
+   */
+  getRewardTrackerStatus() {
+    return this.engine.getRewardTrackerStatus();
+  }
+
+  /**
+   * Manually resume operations (override pause)
+   */
+  resumeOperations(): void {
+    this.engine.resumeOperations();
+  }
+
+  /**
+   * Force pause for a specific duration
+   */
+  forcePause(durationHours: number, reason: string): void {
+    this.engine.forcePause(durationHours, reason);
+  }
 }
