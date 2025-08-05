@@ -22,6 +22,7 @@ import { ContractDataCache } from '@/utils/ContractDataCache';
 import { CUMonitor } from '@/utils/CUMonitor';
 import { SimplifiedLogger } from '@/utils/SimplifiedLogger';
 import { DepositCountPredictor } from '@/utils/DepositCountPredictor';
+import { RewardAccumulationTracker } from '@/utils/RewardAccumulationTracker';
 
 /**
  * Updated ProfitabilityConfig to include errorLogger
@@ -45,6 +46,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly cuMonitor: CUMonitor;
   private readonly simpleLogger: SimplifiedLogger;
   private readonly depositPredictor: DepositCountPredictor;
+  private readonly rewardTracker: RewardAccumulationTracker;
   private isRunning: boolean;
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
@@ -103,6 +105,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     this.cuMonitor = new CUMonitor(this.logger);
     this.simpleLogger = new SimplifiedLogger(this.logger, 'Profitability');
     this.depositPredictor = new DepositCountPredictor(this.stakerContract, this.logger);
+    this.rewardTracker = new RewardAccumulationTracker(this.logger, CONFIG.profitability.rewardAccumulation);
     
     // Initialize multicall batcher with CU monitor
     this.multicallBatcher = new MulticallBatcher(
@@ -635,6 +638,17 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         depositCount: depositIds.length,
       });
 
+      // Track reward levels and check if operations should be paused
+      this.rewardTracker.trackRewardLevels(totalAvailableRewards, payoutAmount);
+      
+      // Check if we should pause operations to save CUs
+      if (this.rewardTracker.shouldPauseOperations()) {
+        const status = this.rewardTracker.getStatus();
+        this.simpleLogger.critical(`⏸️ Operations paused - ${status.pauseRemainingMinutes} minutes remaining`);
+        
+        return this.createEmptyBatchAnalysis();
+      }
+
       // Sort deposits by rewards in descending order for optimal filling
       // Add secondary sort by deposit_id for deterministic ordering when rewards are equal
       const sortedDeposits = [...normalizedDeposits].sort((a, b) => {
@@ -800,6 +814,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           this.activeBin.expected_profit = expectedProfit;
 
           this.simpleLogger.critical(`🎯 PROFITABLE: ${this.activeBin.deposit_ids.length} deposits, ${ethers.formatEther(expectedProfit)} ETH profit`);
+
+          // Record this as a successful transaction for reward accumulation tracking
+          this.rewardTracker.recordSuccessfulTransaction(this.activeBin.total_rewards, payoutAmount);
 
           readyBins.push(this.activeBin);
         } else {
@@ -1810,5 +1827,26 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     }
 
     throw new Error(errorMessage);
+  }
+
+  /**
+   * Get reward accumulation tracker status
+   */
+  getRewardTrackerStatus() {
+    return this.rewardTracker.getStatus();
+  }
+
+  /**
+   * Manually resume operations (override pause)
+   */
+  resumeOperations(): void {
+    this.rewardTracker.resumeOperations();
+  }
+
+  /**
+   * Force pause for a specific duration
+   */
+  forcePause(durationHours: number, reason: string): void {
+    this.rewardTracker.forcePause(durationHours, reason);
   }
 }
