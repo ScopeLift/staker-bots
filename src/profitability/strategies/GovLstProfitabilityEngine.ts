@@ -525,6 +525,15 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     try {
       if (!deposits.length) return this.createEmptyBatchAnalysis();
 
+      // Check if operations should be paused BEFORE any expensive operations
+      if (this.rewardTracker.shouldPauseOperations()) {
+        const status = this.rewardTracker.getStatus();
+        this.simpleLogger.critical('⏸️ Operations paused - skipping analysis', {
+          remainingMinutes: status.pauseRemainingMinutes,
+        });
+        return this.createEmptyBatchAnalysis();
+      }
+
       this.logger.info('Starting single-bin accumulation analysis:', {
         depositCount: deposits.length,
       });

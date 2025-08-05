@@ -268,6 +268,24 @@ export class GovLstProfitabilityEngineWrapper
     deposits: GovLstDeposit[],
   ): Promise<GovLstBatchAnalysis> {
     try {
+      // Check if operations should be paused BEFORE expensive analysis
+      const rewardTrackerStatus = this.engine.getRewardTrackerStatus();
+      if (rewardTrackerStatus.isPaused) {
+        this.logger.info('⏸️ Operations paused - returning empty analysis:', {
+          reason: rewardTrackerStatus.pauseReason,
+          remainingMinutes: rewardTrackerStatus.pauseRemainingMinutes,
+          resumeTime: rewardTrackerStatus.pauseEndTime,
+        });
+        // Return empty analysis instead of doing expensive work
+        return {
+          deposit_groups: [],
+          total_expected_profit: BigInt(0),
+          total_gas_estimate: BigInt(0),
+          total_deposits: 0,
+          analysis_timestamp: Date.now(),
+        };
+      }
+
       return await this.engine.analyzeAndGroupDeposits(deposits);
     } catch (error) {
       if (this.errorLogger) {
@@ -711,6 +729,17 @@ export class GovLstProfitabilityEngineWrapper
   // Update checkAndProcessRewards to use serialized values when queueing transactions
   private async checkAndProcessRewards(): Promise<void> {
     try {
+      // Check if operations should be paused BEFORE making any API calls
+      const rewardTrackerStatus = this.engine.getRewardTrackerStatus();
+      if (rewardTrackerStatus.isPaused) {
+        this.logger.info('Operations are paused, skipping reward check cycle:', {
+          reason: rewardTrackerStatus.pauseReason,
+          remainingMinutes: rewardTrackerStatus.pauseRemainingMinutes,
+          resumeTime: rewardTrackerStatus.pauseEndTime,
+        });
+        return;
+      }
+
       // Get executor status first
       const executorStatus = await this.executor.getStatus();
       this.logger.info('Starting reward check cycle with components:', {
@@ -771,9 +800,8 @@ export class GovLstProfitabilityEngineWrapper
         govLstDeposits.push(govLstDeposit);
       }
 
-      // Use GovLstProfitabilityEngine to analyze deposits
-      const analysis =
-        await this.engine.analyzeAndGroupDeposits(govLstDeposits);
+      // Use GovLstProfitabilityEngine to analyze deposits (through wrapper to respect pause)
+      const analysis = await this.analyzeAndGroupDeposits(govLstDeposits);
 
       this.logger.info('Deposit analysis results:', {
         totalGroups: analysis.deposit_groups.length,
