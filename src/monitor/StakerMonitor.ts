@@ -30,6 +30,7 @@ import { EventProcessingError, MonitorError } from '@/configuration/errors';
 import { stakerAbi } from '@/configuration/abis';
 import { ErrorLogger } from '@/configuration/errorLogger';
 import { Deposit } from '@/database/interfaces/types';
+import { DepositCountPredictor } from '@/utils/DepositCountPredictor';
 
 /**
  * Extended MonitorConfig that includes the error logger
@@ -59,6 +60,7 @@ export class StakerMonitor extends EventEmitter {
   private cachedBlockNumber: number;
   private lastBlockNumberUpdate: number;
   private readonly BLOCK_NUMBER_CACHE_TTL = 5000; // 5 seconds cache
+  private readonly depositPredictor: DepositCountPredictor;
 
   constructor(config: ExtendedMonitorConfig) {
     super();
@@ -87,6 +89,7 @@ export class StakerMonitor extends EventEmitter {
     this.depositScanInProgress = false;
     this.cachedBlockNumber = 0;
     this.lastBlockNumberUpdate = 0;
+    this.depositPredictor = new DepositCountPredictor(this.contract, this.logger);
   }
 
   /**
@@ -274,6 +277,43 @@ export class StakerMonitor extends EventEmitter {
   }
 
   /**
+   * Retry function with exponential backoff for rate limiting
+   */
+  private async retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    operationName: string,
+    maxRetries = 3
+  ): Promise<T> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        
+        // Check if it's a rate limiting error
+        if (errorMessage.includes('compute units per second capacity') || 
+            errorMessage.includes('429') || 
+            errorMessage.includes('rate limit')) {
+          
+          if (attempt < maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Exponential backoff, max 5s
+            this.logger.warn(
+              `Rate limit hit for ${operationName}, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`
+            );
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+        }
+        
+        // If it's not a rate limit error or we've exhausted retries, throw
+        throw error;
+      }
+    }
+    
+    throw new Error(`Failed after ${maxRetries} attempts`);
+  }
+
+  /**
    * Queries contract events in batches for improved efficiency
    * @param contract - Contract instance to query
    * @param eventNames - Array of event names to query
@@ -288,23 +328,35 @@ export class StakerMonitor extends EventEmitter {
     toBlock: number,
   ): Promise<ethers.Log[]> {
     try {
-      const eventPromises = eventNames.map(async (eventName) => {
+      // Execute event queries sequentially with rate limiting to avoid CU/second limits
+      // Each eth_getLogs costs 60 CUs, so we need to be careful with parallel requests
+      const allEvents: ethers.Log[] = [];
+      
+      for (const eventName of eventNames) {
         try {
           const filter = contract.filters[eventName];
           if (typeof filter === 'function') {
-            return await contract.queryFilter(filter(), fromBlock, toBlock);
+            // Retry with exponential backoff for rate limiting
+            const events = await this.retryWithBackoff(async () => {
+              return await contract.queryFilter(filter(), fromBlock, toBlock);
+            }, eventName);
+            
+            allEvents.push(...events);
+            
+            // Add delay between requests to respect rate limits (60 CUs each)
+            // Small delay to stay under CU/second capacity
+            if (eventNames.indexOf(eventName) < eventNames.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 150)); // 150ms delay
+            }
           }
-          return [];
         } catch (error) {
           this.logger.warn(
-            `Failed to query ${eventName} events: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to query ${eventName} events after retries: ${error instanceof Error ? error.message : String(error)}`,
           );
-          return [];
         }
-      });
-
-      const eventArrays = await Promise.all(eventPromises);
-      return eventArrays.flat();
+      }
+      
+      return allEvents;
     } catch (error) {
       this.logger.error('Error in batch event querying:', {
         error: error instanceof Error ? error.message : String(error),
@@ -1438,15 +1490,27 @@ export class StakerMonitor extends EventEmitter {
 
       this.logger.info(`Found ${existingDepositIds.size} deposits in database`);
 
-      // Process sequentially starting from deposit ID 1
+      // Get predicted scan limit to reduce API calls
+      const predictedScanLimit = await this.depositPredictor.getPredictedScanLimit();
+      const stats = this.depositPredictor.getStats();
+      
+      this.logger.info(`🔮 Deposit prediction stats`, {
+        predictedLimit: predictedScanLimit,
+        lastKnownMax: stats.lastKnownMax,
+        avgGrowthPerMin: stats.avgGrowthPerMinute.toFixed(2),
+        sampleCount: stats.samples,
+        lastSampleMinutesAgo: stats.lastSampleMinutesAgo.toFixed(1)
+      });
+
+      // Process sequentially starting from deposit ID 1, but limit scan range
       let currentId = 1;
       let emptyCounter = 0;
       const MAX_EMPTY_TO_STOP = 10; // Very conservative - only stop after many empty deposits
 
-      this.logger.info(`Starting sequential deposit scan from ID ${currentId}`);
+      this.logger.info(`Starting sequential deposit scan from ID ${currentId} to ~${predictedScanLimit}`);
 
-      // Keep scanning until we find many consecutive completely empty deposits
-      while (emptyCounter < MAX_EMPTY_TO_STOP) {
+      // Keep scanning until we find many consecutive completely empty deposits OR reach predicted limit
+      while (emptyCounter < MAX_EMPTY_TO_STOP && currentId <= predictedScanLimit) {
         try {
           if (!this.contract || typeof this.contract.deposits !== 'function') {
             throw new Error(
