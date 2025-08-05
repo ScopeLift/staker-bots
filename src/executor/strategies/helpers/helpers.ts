@@ -1032,8 +1032,36 @@ export async function processQueue(
 
     await Promise.all(queuedTxs.map((tx) => executeTransaction(tx)));
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Check for fatal 403 authentication errors that require process restart
+    if (errorMessage.includes('Request failed with status code 403') || 
+        errorMessage.includes('User is not authorized') ||
+        errorMessage.includes('Forbidden')) {
+      logger.error('❌ FATAL: OpenZeppelin Defender authentication error detected', {
+        error: errorMessage,
+        action: 'RESTARTING_PROCESS',
+        isPeriodicCheck,
+        queueSize: queue.size,
+      });
+      
+      errorLogger.error(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          stage: 'processQueue-fatal-auth-error',
+          isPeriodicCheck,
+          queueSize: queue.size,
+          fatal: true,
+        },
+      );
+      
+      // Exit process to trigger restart (PM2/Docker will restart automatically)  
+      logger.error('🔄 Exiting process for restart due to Defender 403 errors...');
+      process.exit(1);
+    }
+    
     logger.error('Failed to process queue', {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage,
       isPeriodicCheck,
       queueSize: queue.size,
     });
