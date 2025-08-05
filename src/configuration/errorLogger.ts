@@ -36,6 +36,33 @@ export class ErrorLogger {
   }
 
   /**
+   * Recursively converts BigInt values to strings for JSON serialization
+   */
+  private serializeBigInts(obj: unknown): unknown {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    if (typeof obj === 'bigint') {
+      return obj.toString();
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.serializeBigInts(item));
+    }
+
+    if (typeof obj === 'object') {
+      const result: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(obj)) {
+        result[key] = this.serializeBigInts(value);
+      }
+      return result;
+    }
+
+    return obj;
+  }
+
+  /**
    * Log an error to the database and optionally to the console
    */
   async logError(
@@ -50,14 +77,14 @@ export class ErrorLogger {
       // Extract context if available (from BaseError)
       const context = error instanceof BaseError ? error.context : undefined;
 
-      // Create error log object
+      // Create error log object with BigInt serialization handling
       const errorLog: ErrorLog = {
         service_name: this.serviceName,
         error_message: errorMessage,
         stack_trace: stackTrace,
         severity,
-        meta,
-        context,
+        meta: this.serializeBigInts(meta) as Record<string, unknown> | undefined,
+        context: this.serializeBigInts(context) as Record<string, unknown> | undefined,
       };
 
       // Log to console if enabled

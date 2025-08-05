@@ -17,6 +17,11 @@ import { TokenPrice } from '@/prices/interface';
 import { SimulationService } from '@/simulation';
 import { estimateGasUsingSimulation } from '@/executor/strategies/helpers/simulation-helpers';
 import { MulticallBatcher } from '@/utils/multicall';
+import { BlockNumberCache } from '@/utils/BlockNumberCache';
+import { ContractDataCache } from '@/utils/ContractDataCache';
+import { CUMonitor } from '@/utils/CUMonitor';
+import { SimplifiedLogger } from '@/utils/SimplifiedLogger';
+import { DepositCountPredictor } from '@/utils/DepositCountPredictor';
 
 /**
  * Updated ProfitabilityConfig to include errorLogger
@@ -35,6 +40,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   private readonly errorLogger?: ErrorLogger;
   private readonly priceFeed: CoinMarketCapFeed;
   private readonly multicallBatcher: MulticallBatcher;
+  private readonly blockNumberCache: BlockNumberCache;
+  private readonly contractDataCache: ContractDataCache;
+  private readonly cuMonitor: CUMonitor;
+  private readonly simpleLogger: SimplifiedLogger;
+  private readonly depositPredictor: DepositCountPredictor;
   private isRunning: boolean;
   private lastGasPrice: bigint;
   private lastUpdateTimestamp: number;
@@ -46,7 +56,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
   } | null = null;
   private readonly PRICE_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes in milliseconds
   public readonly config: ProfitabilityConfig;
-  private static readonly BATCH_SIZE = 100; // Number of deposits to fetch in a single batch
+  private static readonly BATCH_SIZE = 20; // Number of deposits to fetch in a single batch (reduced for rate limiting)
   private activeBin: GovLstDepositGroup | null = null; // Current active bin being filled
   private readonly simulationService: SimulationService | null;
 
@@ -86,7 +96,50 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
     this.lastUpdateTimestamp = 0;
     this.config = config;
     this.simulationService = simulationService;
-    this.multicallBatcher = new MulticallBatcher(provider, this.logger);
+    
+    // Initialize monitoring components first
+    this.blockNumberCache = new BlockNumberCache(this.logger);
+    this.contractDataCache = new ContractDataCache(this.logger);
+    this.cuMonitor = new CUMonitor(this.logger);
+    this.simpleLogger = new SimplifiedLogger(this.logger, 'Profitability');
+    this.depositPredictor = new DepositCountPredictor(this.stakerContract, this.logger);
+    
+    // Initialize multicall batcher with CU monitor
+    this.multicallBatcher = new MulticallBatcher(
+      provider, 
+      this.logger,
+      5, // Max 5 concurrent calls to respect rate limits
+      200, // 200ms delay between batches
+      false, // Disable Multicall3 - it's not working with current setup
+      this.cuMonitor // Pass CU monitor for tracking
+    );
+    
+    // Periodic cache cleanup and CU monitoring
+    setInterval(() => {
+      this.contractDataCache.cleanup();
+      const cuStats = this.cuMonitor.getUsageStats();
+      const recommendations = this.cuMonitor.getOptimizationRecommendations();
+      
+      this.simpleLogger.critical('System maintenance', {
+        caches: {
+          blocks: this.blockNumberCache.getStats().size,
+          contracts: this.contractDataCache.getStats().deposits.size
+        },
+        cuUsage: {
+          daily: cuStats.dailyUsage,
+          percent: cuStats.percentUsed + '%'
+        }
+      });
+      
+      if (recommendations.length > 0) {
+        this.simpleLogger.warn('CU optimization needed', { 
+          count: recommendations.length,
+          top: recommendations[0]
+        });
+      }
+      
+      this.simpleLogger.maybeSummary();
+    }, 600000); // Every 10 minutes
 
     // Initialize price feed
     this.priceFeed = new CoinMarketCapFeed(
@@ -494,20 +547,18 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         'Fetching payout amount',
       );
 
-      // Calculate realistic gas cost based on actual usage patterns
-      // Production data shows ~2-2.6M gas for 60-70 deposits
-      const REALISTIC_GAS_UNITS = BigInt(2500000); // 2.5M gas based on production simulations
+      // Calculate conservative gas cost for Stage 1 threshold
+      // Use 3x realistic estimate to avoid Stage 1 shortfalls
+      const REALISTIC_GAS_UNITS = BigInt(7500000); // 7.5M gas (3x 2.5M) for conservative Stage 1
       const gasPrice = await this.getGasPriceWithBuffer();
       const gasCostWei = gasPrice * REALISTIC_GAS_UNITS;
       const realisticGasCost =
         await this.convertGasCostToRewardTokens(gasCostWei);
 
-      this.logger.info('Using realistic gas estimate for Stage 1 threshold', {
+      this.simpleLogger.debug('Conservative gas estimate for Stage 1', {
         gasUnits: REALISTIC_GAS_UNITS.toString(),
-        gasPrice: ethers.formatUnits(gasPrice, 'gwei'),
-        gasCostWei: gasCostWei.toString(),
-        gasCostInTokens: realisticGasCost.toString(),
-        gasCostInTokensFormatted: ethers.formatEther(realisticGasCost),
+        gasPriceGwei: ethers.formatUnits(gasPrice, 'gwei'),
+        gasCostETH: ethers.formatEther(realisticGasCost),
       });
 
       // We'll calculate enhanced gas cost and actualGasEstimate later, after we know total rewards
@@ -636,14 +687,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
 
       // Stage 1: Initial check - trigger first simulation when rewards > payout + margin
       if (this.activeBin?.total_rewards >= optimalThreshold) {
-        this.logger.info(
-          'Stage 1: Initial threshold reached, running first simulation',
-          {
-            totalRewards: this.activeBin.total_rewards.toString(),
-            optimalThreshold: optimalThreshold.toString(),
-            depositCount: this.activeBin.deposit_ids.length,
-          },
-        );
+        this.simpleLogger.critical(`Stage 1: Found ${this.activeBin.deposit_ids.length} deposits worth ${ethers.formatEther(this.activeBin.total_rewards)} ETH`);
 
         // First simulation to get accurate gas cost
         let firstSimulationGasCost = realisticGasCost;
@@ -701,16 +745,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
             : BigInt(0)) +
           marginOnPayout;
 
-        this.logger.info('Stage 2: Checking against refined threshold', {
-          totalRewards: this.activeBin.total_rewards.toString(),
-          stage2Threshold: stage2Threshold.toString(),
-          firstSimulationGasCost: firstSimulationGasCost.toString(),
-          payoutAmount: payoutAmount.toString(),
-          scaledProfitMarginBasisPoints:
-            scaledProfitMarginBasisPoints.toString(),
-          marginOnPayout: marginOnPayout.toString(),
-          depositCount: this.activeBin.deposit_ids.length,
-        });
+        // Silent threshold check
 
         if (this.activeBin.total_rewards >= stage2Threshold) {
           // Run second simulation for final validation
@@ -764,32 +799,11 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
               : BigInt(0);
           this.activeBin.expected_profit = expectedProfit;
 
-          this.logger.info('Final profitability calculation', {
-            totalRewards: this.activeBin.total_rewards.toString(),
-            finalGasCost: finalGasCost.toString(),
-            expectedProfit: expectedProfit.toString(),
-            depositCount: this.activeBin.deposit_ids.length,
-          });
+          this.simpleLogger.critical(`🎯 PROFITABLE: ${this.activeBin.deposit_ids.length} deposits, ${ethers.formatEther(expectedProfit)} ETH profit`);
 
           readyBins.push(this.activeBin);
         } else {
-          this.logger.info(
-            'Stage 2: Insufficient rewards after accurate gas estimation',
-            {
-              totalRewards: this.activeBin.total_rewards.toString(),
-              stage2Threshold: stage2Threshold.toString(),
-              shortfall: (
-                stage2Threshold - this.activeBin.total_rewards
-              ).toString(),
-              breakdown: {
-                payoutAmount: payoutAmount.toString(),
-                gasCost: firstSimulationGasCost.toString(),
-                marginBasisPoints: scaledProfitMarginBasisPoints.toString(),
-                marginAmount: marginOnPayout.toString(),
-                calculation: `${payoutAmount} + ${firstSimulationGasCost} + ${marginOnPayout} = ${stage2Threshold}`,
-              },
-            },
-          );
+          // Silent rejection - no logging needed
         }
       }
 
@@ -1080,10 +1094,7 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
       const rewardsMap = new Map<string, bigint>();
       const batchSize = GovLstProfitabilityEngine.BATCH_SIZE;
 
-      this.logger.info('Starting batch fetch of unclaimed rewards:', {
-        totalDeposits: depositIds.length,
-        batchSize,
-      });
+      // Silent start - no logging
 
       // Function to process a batch with retries
       const processBatch = async (batchIds: bigint[]) => {
@@ -1101,9 +1112,13 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
               reward: batchedRewards[index] || BigInt(0), // Use 0 if batch call failed
             }));
 
-            // Check if all rewards are 0, might indicate we need to wait for chain update
-            const allZero = results.every(({ reward }) => reward === BigInt(0));
-            if (allZero) {
+            // Check if all rewards are 0 or null, might indicate RPC issues or chain state
+            const validResults = results.filter(({ reward }) => reward !== null);
+            const allZero = validResults.length > 0 && validResults.every(({ reward }) => reward === BigInt(0));
+            
+            // Only throw if we have valid results but they're all zero
+            // If we have no valid results, it's likely an RPC issue, not a chain state issue
+            if (allZero && validResults.length === results.length) {
               this.logger.info(
                 'All rewards are 0, waiting for chain update...',
               );
@@ -1111,6 +1126,15 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
               throw new Error(
                 'All rewards are zero - waiting for chain update',
               );
+            }
+            
+            // If we have mixed results (some null, some valid), continue without throwing
+            if (validResults.length < results.length) {
+              this.logger.warn('Some reward calls failed, continuing with valid results', {
+                validResults: validResults.length,
+                totalResults: results.length,
+                failedCalls: results.length - validResults.length
+              });
             }
 
             return results;
@@ -1120,14 +1144,14 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
           2000,
         );
 
-        // Store results
+        // Store results (only for non-null rewards)
         results.forEach(({ id, reward }) => {
-          rewardsMap.set(id.toString(), reward);
-          if (reward > BigInt(0)) {
-            this.logger.info('Fetched non-zero reward:', {
-              depositId: id.toString(),
-              reward: ethers.formatEther(reward),
-            });
+          if (reward !== null) {
+            rewardsMap.set(id.toString(), reward);
+            // Track non-zero rewards but don't log each one
+            if (reward > BigInt(0)) {
+              this.simpleLogger.trackRewards(1, ethers.formatEther(reward));
+            }
           }
         });
       };
@@ -1137,9 +1161,9 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         const batchIds = depositIds.slice(i, i + batchSize);
         await processBatch(batchIds);
 
-        // Small delay between batches
+        // Longer delay between batches to respect rate limits
         if (i + batchSize < depositIds.length) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
 
@@ -1151,12 +1175,10 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         (reward) => reward > BigInt(0),
       );
 
-      this.logger.info('Completed batch fetch of unclaimed rewards:', {
-        totalDeposits: depositIds.length,
-        successfulFetches: rewardsMap.size,
-        nonZeroRewards: nonZeroRewards.length,
-        totalRewardsInEther: ethers.formatEther(totalRewards),
-      });
+      // Only log if significant rewards found
+      if (nonZeroRewards.length > 10) {
+        this.simpleLogger.critical(`Found ${nonZeroRewards.length} profitable deposits (${ethers.formatEther(totalRewards)} ETH)`);
+      }
 
       return rewardsMap;
     } catch (error) {
@@ -1755,8 +1777,23 @@ export class GovLstProfitabilityEngine implements IGovLstProfitabilityEngine {
         }
 
         if (attempt < maxRetries) {
+          // Exponential backoff with jitter for rate limiting
+          const isRateLimited = lastError.message.includes('compute units per second') || 
+                               lastError.message.includes('429') ||
+                               lastError.message.includes('rate limit');
+          
+          const backoffDelay = isRateLimited 
+            ? delayMs * Math.pow(2, attempt) + Math.random() * 1000 // Longer backoff for rate limits
+            : delayMs * attempt;
+            
+          this.logger.info(`Waiting ${backoffDelay}ms before retry ${attempt + 1}/${maxRetries}`, {
+            context,
+            isRateLimited,
+            backoffDelay
+          });
+          
           await new Promise((resolve) =>
-            setTimeout(resolve, delayMs * attempt),
+            setTimeout(resolve, backoffDelay),
           );
         }
       }

@@ -409,25 +409,61 @@ export class RelayerExecutor implements IExecutor {
         profitability.estimates.expected_profit || BigInt(0);
       const payoutAmount = profitability.estimates.payout_amount || BigInt(0);
 
-      // If expected profit is 0 or negative, it means total rewards < (payout + gas cost)
-      if (expectedProfit <= BigInt(0)) {
+      // Use sophisticated validation that matches BaseExecutor logic
+      // Calculate required profit margin like BaseExecutor does
+      const gasCost = profitability.estimates.gas_cost || BigInt(0);
+      const baseAmountForMargin = payoutAmount + (CONFIG.profitability.includeGasCost ? gasCost : BigInt(0));
+      const minProfitMarginPercent = CONFIG.profitability.minProfitMargin;
+      const requiredProfitValue = (baseAmountForMargin * BigInt(Math.round(minProfitMarginPercent * 100))) / 10000n;
+      const minimumRequiredProfit = baseAmountForMargin + requiredProfitValue;
+      
+      if (expectedProfit < minimumRequiredProfit) {
+        const gasEstimate = profitability.estimates.gas_estimate || BigInt(0);
+        const totalRewards = profitability.deposit_details?.reduce((sum, d) => sum + (d.rewards || BigInt(0)), BigInt(0)) || BigInt(0);
+        
         const error = new TransactionValidationError(
-          `Transaction not profitable: expected profit is ${expectedProfit}. Skipping expensive simulation.`,
+          `Transaction does not meet profit requirements: expected profit ${ethers.formatEther(expectedProfit)} ETH < required ${ethers.formatEther(minimumRequiredProfit)} ETH`,
           {
             depositIds: depositIds.map(String),
             expectedProfit: expectedProfit.toString(),
+            minimumRequiredProfit: minimumRequiredProfit.toString(),
             payoutAmount: payoutAmount.toString(),
+            gasEstimate: gasEstimate.toString(),
+            gasCost: gasCost.toString(),
+            totalRewards: totalRewards.toString(),
+            baseAmountForMargin: baseAmountForMargin.toString(),
+            requiredProfitValue: requiredProfitValue.toString(),
+            minProfitMarginPercent: `${minProfitMarginPercent * 100}%`,
           },
         );
         this.logger.warn(
-          'Skipping simulation due to non-profitable transaction',
+          'Rejecting transaction - insufficient profit margin',
           {
-            expectedProfit: expectedProfit.toString(),
-            payoutAmount: payoutAmount.toString(),
+            expectedProfit: ethers.formatEther(expectedProfit),
+            minimumRequiredProfit: ethers.formatEther(minimumRequiredProfit),
+            payoutAmount: ethers.formatEther(payoutAmount),
+            gasEstimate: gasEstimate.toString(),
+            gasCost: ethers.formatEther(gasCost),
+            totalRewards: ethers.formatEther(totalRewards),
             depositCount: depositIds.length,
+            profitMarginPercent: `${minProfitMarginPercent * 100}%`,
           },
         );
         return { isValid: false, error };
+      }
+      
+      // Log marginal but acceptable transactions for monitoring
+      const profitMargin = expectedProfit - baseAmountForMargin;
+      if (profitMargin < BigInt(10000000000000000)) { // Less than 0.01 ETH margin
+        this.logger.info(
+          'Proceeding with marginal profit transaction',
+          {
+            expectedProfit: ethers.formatEther(expectedProfit),
+            profitMargin: ethers.formatEther(profitMargin),
+            payoutAmount: ethers.formatEther(payoutAmount),
+            depositCount: depositIds.length,
+          },
+        );
       }
 
       // Try to get a better gas estimate using simulation if available
