@@ -97,3 +97,20 @@ export type ScoreEvent = {
   created_at?: string;
   updated_at?: string;
 };
+
+export enum ThresholdTransition {
+  ABOVE_TO_BELOW = 'above_to_below',
+  BELOW_TO_ABOVE = 'below_to_above',
+}
+
+export type BumpReaction = {
+  id: string;
+  delegatee_address: string;
+  score_transition: ThresholdTransition;
+  previous_score: string;
+  new_score: string;
+  block_number: number;
+  deposits_processed: string[]; // Array of deposit IDs that were processed for this reaction
+  created_at: string;
+  updated_at: string;
+};

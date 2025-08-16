@@ -9,6 +9,8 @@ import {
   ErrorLog,
   ScoreEvent,
   TransactionType,
+  BumpReaction,
+  ThresholdTransition,
 } from './types';
 
 export interface IDatabase {
@@ -115,4 +117,15 @@ export interface IDatabase {
   // Score Events
   createScoreEvent(event: ScoreEvent): Promise<void>;
   getLatestScoreEvent(delegatee: string): Promise<ScoreEvent | null>;
+
+  // Bump Reactions
+  createBumpReaction(reaction: Omit<BumpReaction, 'id' | 'created_at' | 'updated_at'>): Promise<BumpReaction>;
+  getBumpReaction(id: string): Promise<BumpReaction | null>;
+  getBumpReactionsByDelegatee(delegateeAddress: string): Promise<BumpReaction[]>;
+  getLatestBumpReactionForDelegatee(delegateeAddress: string): Promise<BumpReaction | null>;
+  checkBumpReactionExists(
+    delegateeAddress: string,
+    transition: ThresholdTransition,
+    blockNumber: number,
+  ): Promise<boolean>;
 }

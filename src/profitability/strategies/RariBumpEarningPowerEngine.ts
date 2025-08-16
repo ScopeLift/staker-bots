@@ -3,7 +3,7 @@ import { IExecutor } from '../../executor/interfaces/IExecutor';
 import { IDatabase } from '../../database/interfaces/IDatabase';
 import { BaseProfitabilityEngine } from './BaseProfitabilityEngine';
 import { CalculatorWrapper } from '../../calculator/CalculatorWrapper';
-import { Deposit, ProcessingQueueItem } from '../../database/interfaces/types';
+import { Deposit, ProcessingQueueItem, BumpReaction, ThresholdTransition } from '../../database/interfaces/types';
 import {
   ProfitabilityQueueBatchResult,
   ProfitabilityQueueResult,
@@ -564,6 +564,76 @@ export class RariBumpEarningPowerEngine
     });
 
     try {
+      const ELIGIBILITY_THRESHOLD = BigInt('15000000000000000000'); // 15 with 18 decimals
+      const newAboveThreshold = score >= ELIGIBILITY_THRESHOLD;
+
+      // Get the latest reaction for this delegatee to determine previous state
+      const latestReaction = await this.database.getLatestBumpReactionForDelegatee(delegatee);
+      
+      let previousScore: bigint;
+      let previousAboveThreshold: boolean;
+
+      if (latestReaction) {
+        previousScore = BigInt(latestReaction.new_score);
+        previousAboveThreshold = previousScore >= ELIGIBILITY_THRESHOLD;
+      } else {
+        // If no previous reaction, we need to check the latest score event
+        const latestScoreEvent = await this.database.getLatestScoreEvent(delegatee);
+        if (latestScoreEvent) {
+          previousScore = BigInt(latestScoreEvent.score);
+          previousAboveThreshold = previousScore >= ELIGIBILITY_THRESHOLD;
+        } else {
+          // No previous data available - assume previous score was 0 (below threshold)
+          previousScore = 0n;
+          previousAboveThreshold = false;
+        }
+      }
+
+      logger.info(`📊 Threshold analysis for delegatee ${delegatee}`, {
+        previousScore: previousScore.toString(),
+        newScore: score.toString(),
+        previousAboveThreshold,
+        newAboveThreshold,
+        threshold: '15',
+      });
+
+      // Check if this is a threshold crossing
+      if (previousAboveThreshold === newAboveThreshold) {
+        logger.info(`⚪ No threshold crossing for delegatee ${delegatee} - no action needed`, {
+          previousAboveThreshold,
+          newAboveThreshold,
+        });
+        return;
+      }
+
+      // Determine the transition type
+      const transition = newAboveThreshold ? ThresholdTransition.BELOW_TO_ABOVE : ThresholdTransition.ABOVE_TO_BELOW;
+
+      logger.info(`🚨 THRESHOLD CROSSING DETECTED for delegatee ${delegatee}`, {
+        transition,
+        previousScore: previousScore.toString(),
+        newScore: score.toString(),
+      });
+
+      // Get current score event to find block number
+      const currentScoreEvent = await this.database.getLatestScoreEvent(delegatee);
+      const blockNumber = currentScoreEvent?.block_number || 0;
+
+      // Check if we've already reacted to this exact transition at this block
+      const alreadyReacted = await this.database.checkBumpReactionExists(
+        delegatee,
+        transition,
+        blockNumber,
+      );
+
+      if (alreadyReacted) {
+        logger.info(`⚠️ Already reacted to this transition for delegatee ${delegatee} at block ${blockNumber}`, {
+          transition,
+          blockNumber,
+        });
+        return;
+      }
+
       // Get all deposits for this delegatee
       logger.info(`🔍 Fetching deposits for delegatee ${delegatee}`);
       const deposits = await this.database.getDepositsByDelegatee(delegatee);
@@ -586,7 +656,35 @@ export class RariBumpEarningPowerEngine
       logger.info(
         `🔄 Processing deposits after score event for delegatee ${delegatee}`,
       );
-      await this.processDepositsBatch({ deposits });
+      const batchResult = await this.processDepositsBatch({ deposits });
+
+      // Record this reaction to prevent duplicate processing
+      const processedDepositIds = batchResult.details
+        .filter(detail => detail.result === 'queued')
+        .map(detail => detail.depositId.toString());
+
+      if (processedDepositIds.length > 0) {
+        await this.database.createBumpReaction({
+          delegatee_address: delegatee,
+          score_transition: transition,
+          previous_score: previousScore.toString(),
+          new_score: score.toString(),
+          block_number: blockNumber,
+          deposits_processed: processedDepositIds,
+        });
+
+        logger.info(`✅ Recorded bump reaction for delegatee ${delegatee}`, {
+          transition,
+          depositsProcessed: processedDepositIds.length,
+          blockNumber,
+        });
+      } else {
+        logger.info(`ℹ️ No deposits were queued for processing, skipping reaction record`, {
+          delegatee,
+          transition,
+          reason: 'No profitable bumps found',
+        });
+      }
     } catch (error) {
       logger.error(
         `❌ Error processing score event for delegatee ${delegatee}:`,

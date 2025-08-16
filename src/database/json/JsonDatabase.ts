@@ -12,6 +12,8 @@ import {
   ErrorLog,
   ScoreEvent,
   TransactionType,
+  BumpReaction,
+  ThresholdTransition,
 } from '../interfaces/types';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { v4 as uuidv4 } from 'uuid';
@@ -27,6 +29,7 @@ export class JsonDatabase implements IDatabase {
     govlst_claim_history: Record<string, GovLstClaimHistory>;
     errors: Record<string, ErrorLog>;
     score_events: ScoreEvent[];
+    bump_reactions: Record<string, BumpReaction>;
   };
 
   constructor(dbPath = 'staker-monitor-db.json') {
@@ -53,6 +56,7 @@ export class JsonDatabase implements IDatabase {
       govlst_claim_history: {},
       errors: {},
       score_events: [],
+      bump_reactions: {},
     };
 
     this.logger.info('JsonDatabase initializing at:', { path: this.dbPath });
@@ -94,6 +98,7 @@ export class JsonDatabase implements IDatabase {
             govlst_claim_history: loadedData.govlst_claim_history || {},
             errors: loadedData.errors || {},
             score_events: loadedData.score_events || [],
+            bump_reactions: loadedData.bump_reactions || {},
           };
 
           this.logger.info('Successfully loaded existing database:', {
@@ -569,5 +574,53 @@ export class JsonDatabase implements IDatabase {
     return Object.values(this.data.transaction_queue).filter(
       (item) => item.transaction_type === type && item.status === status,
     );
+  }
+
+  // Bump Reactions methods
+  async createBumpReaction(reaction: Omit<BumpReaction, 'id' | 'created_at' | 'updated_at'>): Promise<BumpReaction> {
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const newReaction: BumpReaction = {
+      id,
+      ...reaction,
+      created_at: now,
+      updated_at: now,
+    };
+    this.data.bump_reactions[id] = newReaction;
+    await this.saveToFile();
+    return newReaction;
+  }
+
+  async getBumpReaction(id: string): Promise<BumpReaction | null> {
+    return this.data.bump_reactions[id] || null;
+  }
+
+  async getBumpReactionsByDelegatee(delegateeAddress: string): Promise<BumpReaction[]> {
+    return Object.values(this.data.bump_reactions).filter(
+      (reaction) => reaction.delegatee_address === delegateeAddress,
+    );
+  }
+
+  async getLatestBumpReactionForDelegatee(delegateeAddress: string): Promise<BumpReaction | null> {
+    const reactions = await this.getBumpReactionsByDelegatee(delegateeAddress);
+    if (reactions.length === 0) return null;
+    
+    // Sort by block number descending to get the most recent
+    reactions.sort((a, b) => b.block_number - a.block_number);
+    return reactions[0] || null;
+  }
+
+  async checkBumpReactionExists(
+    delegateeAddress: string,
+    transition: ThresholdTransition,
+    blockNumber: number,
+  ): Promise<boolean> {
+    const reactions = Object.values(this.data.bump_reactions).filter(
+      (reaction) =>
+        reaction.delegatee_address === delegateeAddress &&
+        reaction.score_transition === transition &&
+        reaction.block_number === blockNumber,
+    );
+    return reactions.length > 0;
   }
 }

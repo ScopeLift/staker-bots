@@ -127,4 +127,11 @@ export class Calculator {
   private async getCurrentBlock(): Promise<number> {
     return this.provider.getBlockNumber();
   }
+
+  /**
+   * Get the calculator wrapper instance for external use
+   */
+  getCalculatorWrapper(): CalculatorWrapper {
+    return this.calculator;
+  }
 }

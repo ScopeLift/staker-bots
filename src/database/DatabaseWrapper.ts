@@ -10,6 +10,8 @@ import {
   ErrorLog,
   ScoreEvent,
   TransactionType,
+  BumpReaction,
+  ThresholdTransition,
 } from './interfaces/types';
 import * as supabaseDb from './supabase/deposits';
 import * as supabaseCheckpoints from './supabase/checkpoints';
@@ -156,6 +158,37 @@ export class DatabaseWrapper implements IDatabase {
         ),
         getLatestScoreEvent: this.wrapWithFallback(
           supabaseScoreEvents.getLatestScoreEvent,
+        ),
+        // Bump Reactions - fallback to JSON for now since Supabase doesn't have these tables
+        createBumpReaction: this.wrapWithFallback(
+          async (reaction: Omit<BumpReaction, 'id' | 'created_at' | 'updated_at'>) => {
+            const fallbackDb = this.getFallbackDb();
+            return fallbackDb.createBumpReaction(reaction);
+          },
+        ),
+        getBumpReaction: this.wrapWithFallback(
+          async (id: string) => {
+            const fallbackDb = this.getFallbackDb();
+            return fallbackDb.getBumpReaction(id);
+          },
+        ),
+        getBumpReactionsByDelegatee: this.wrapWithFallback(
+          async (delegateeAddress: string) => {
+            const fallbackDb = this.getFallbackDb();
+            return fallbackDb.getBumpReactionsByDelegatee(delegateeAddress);
+          },
+        ),
+        getLatestBumpReactionForDelegatee: this.wrapWithFallback(
+          async (delegateeAddress: string) => {
+            const fallbackDb = this.getFallbackDb();
+            return fallbackDb.getLatestBumpReactionForDelegatee(delegateeAddress);
+          },
+        ),
+        checkBumpReactionExists: this.wrapWithFallback(
+          async (delegateeAddress: string, transition: ThresholdTransition, blockNumber: number) => {
+            const fallbackDb = this.getFallbackDb();
+            return fallbackDb.checkBumpReactionExists(delegateeAddress, transition, blockNumber);
+          },
         ),
       };
     }
@@ -423,5 +456,30 @@ export class DatabaseWrapper implements IDatabase {
     status: TransactionQueueStatus,
   ): Promise<TransactionQueueItem[]> {
     return this.db.getTransactionQueueItemsByTypeAndStatus(type, status);
+  }
+
+  // Bump Reactions
+  async createBumpReaction(reaction: Omit<BumpReaction, 'id' | 'created_at' | 'updated_at'>): Promise<BumpReaction> {
+    return this.db.createBumpReaction(reaction);
+  }
+
+  async getBumpReaction(id: string): Promise<BumpReaction | null> {
+    return this.db.getBumpReaction(id);
+  }
+
+  async getBumpReactionsByDelegatee(delegateeAddress: string): Promise<BumpReaction[]> {
+    return this.db.getBumpReactionsByDelegatee(delegateeAddress);
+  }
+
+  async getLatestBumpReactionForDelegatee(delegateeAddress: string): Promise<BumpReaction | null> {
+    return this.db.getLatestBumpReactionForDelegatee(delegateeAddress);
+  }
+
+  async checkBumpReactionExists(
+    delegateeAddress: string,
+    transition: ThresholdTransition,
+    blockNumber: number,
+  ): Promise<boolean> {
+    return this.db.checkBumpReactionExists(delegateeAddress, transition, blockNumber);
   }
 }

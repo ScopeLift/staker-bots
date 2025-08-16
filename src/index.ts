@@ -714,11 +714,15 @@ async function main() {
 
     // 4. Initialize calculator wrapper if needed for bump engine
     if (componentsToRun.includes('bump')) {
-      mainLogger.info('Initializing calculator wrapper...');
+      mainLogger.info('Initializing calculator wrapper for bump engine...');
       runningComponents.calculatorWrapper = await initializeCalculator(
         profitabilityLogger,
         profitabilityErrorLogger,
       );
+      
+      // Start the calculator to process score events immediately
+      await runningComponents.calculatorWrapper.start();
+      mainLogger.info('Calculator wrapper started successfully');
     }
 
     // 5. Initialize Rari Bump Earning Power Engine if enabled
@@ -744,14 +748,19 @@ async function main() {
           profitabilityErrorLogger,
         );
 
-      // Connect calculator to profitability engine
+      // Connect calculator to profitability engine - CRITICAL for bump reactions
       const earningPowerCalculator =
-        runningComponents.calculatorWrapper.getEarningPowerCalculator();
-      if (earningPowerCalculator) {
+        runningComponents.calculatorWrapper?.getEarningPowerCalculator();
+      if (earningPowerCalculator && runningComponents.bumpEarningPowerEngine) {
         earningPowerCalculator.setProfitabilityEngine(
           runningComponents.bumpEarningPowerEngine,
         );
-        mainLogger.info('Connected calculator to bump earning power engine');
+        mainLogger.info('✅ Connected calculator to bump earning power engine - score events will now trigger bump reactions');
+      } else {
+        mainLogger.error('❌ FAILED to connect calculator to bump engine');
+        mainLogger.error('Calculator available:', !!earningPowerCalculator);
+        mainLogger.error('Bump engine available:', !!runningComponents.bumpEarningPowerEngine);
+        mainLogger.error('This means score events will NOT trigger bump reactions!');
       }
 
       // Start the bump earning power engine to begin periodic checks
@@ -781,43 +790,51 @@ async function main() {
 
     // 6. Initialize Rari Claim and Distribute Engine if enabled
     if (componentsToRun.includes('claim')) {
-      mainLogger.info('Initializing Rari Claim and Distribute Engine...');
-      if (!runningComponents.executor) {
-        throw new Error(
-          'Executor must be initialized before Claim and Distribute Engine',
-        );
+      // Check if claim and distribute is enabled by environment variable
+      const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+      if (!enableClaimAndDistribute) {
+        mainLogger.info('Claim and Distribute Engine disabled by ENABLE_CLAIM_AND_DISTRIBUTE environment variable - skipping initialization');
+      } else {
+        mainLogger.info('Initializing Rari Claim and Distribute Engine...');
+        if (!runningComponents.executor) {
+          throw new Error(
+            'Executor must be initialized before Claim and Distribute Engine',
+          );
+        }
+
+        runningComponents.claimDistributeEngine =
+          await initializeRariClaimDistributeEngine(
+            database,
+            runningComponents.executor,
+            profitabilityLogger,
+          );
+
+        // Start the claim and distribute engine
+        await runningComponents.claimDistributeEngine.start();
+        mainLogger.info('Claim and Distribute Engine started successfully');
       }
 
-      runningComponents.claimDistributeEngine =
-        await initializeRariClaimDistributeEngine(
-          database,
-          runningComponents.executor,
-          profitabilityLogger,
-        );
-
-      // Start the claim and distribute engine
-      await runningComponents.claimDistributeEngine.start();
-      mainLogger.info('Claim and Distribute Engine started successfully');
-
-      // Set up health check interval for claim engine
-      setInterval(async () => {
-        try {
-          if (runningComponents.claimDistributeEngine) {
-            const status =
-              await runningComponents.claimDistributeEngine.getStatus();
-            mainLogger.info('Claim and Distribute Engine health check:', {
-              isRunning: status.isRunning,
-              lastUpdateTimestamp: new Date(
-                status.lastUpdateTimestamp,
-              ).toISOString(),
+      // Set up health check interval for claim engine (only if it was actually initialized)
+      if (runningComponents.claimDistributeEngine) {
+        setInterval(async () => {
+          try {
+            if (runningComponents.claimDistributeEngine) {
+              const status =
+                await runningComponents.claimDistributeEngine.getStatus();
+              mainLogger.info('Claim and Distribute Engine health check:', {
+                isRunning: status.isRunning,
+                lastUpdateTimestamp: new Date(
+                  status.lastUpdateTimestamp,
+                ).toISOString(),
+              });
+            }
+          } catch (error) {
+            await profitabilityErrorLogger.error(error as Error, {
+              context: 'claim-engine-health-check',
             });
           }
-        } catch (error) {
-          await profitabilityErrorLogger.error(error as Error, {
-            context: 'claim-engine-health-check',
-          });
-        }
-      }, CONFIG.monitor.healthCheckInterval * 1000);
+        }, CONFIG.monitor.healthCheckInterval * 1000);
+      }
     }
 
     // Log final status
