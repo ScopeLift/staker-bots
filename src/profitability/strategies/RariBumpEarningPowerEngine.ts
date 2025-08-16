@@ -15,6 +15,7 @@ import { ethers } from 'ethers';
 import { BinaryEligibilityOracleEarningPowerCalculator } from '../../calculator';
 import { IPriceFeed } from '../../shared/price-feeds/interfaces';
 import { ProfitabilityConfig } from '../interfaces/types';
+import { TIME_CONSTANTS } from '../../configuration/constants';
 
 // Enhanced logger with more detailed output
 const logger = new ConsoleLogger('debug', {
@@ -55,6 +56,7 @@ export class RariBumpEarningPowerEngine
         tip: bigint,
       ): Promise<bigint>;
       REWARD_TOKEN(): Promise<string>;
+      updateEligibilityDelay(): Promise<bigint>;
     };
     provider: ethers.Provider;
     config: ProfitabilityConfig;
@@ -864,6 +866,65 @@ export class RariBumpEarningPowerEngine
       logger.info(
         `Deposit ${deposit.deposit_id} crossing threshold ${currentAboveThreshold ? 'above->below' : 'below->above'} (${ethers.formatEther(currentScore)} → ${ethers.formatEther(newScore)})`,
       );
+
+      // Check updateEligibilityDelay - user must wait specified time after becoming eligible
+      if (!currentAboveThreshold && newAboveThreshold) {
+        // This is a below->above threshold crossing, check if enough time has passed since eligibility
+        try {
+          // Get updateEligibilityDelay from contract, fallback to 604800 seconds (7 days)
+          let eligibilityDelaySeconds: bigint;
+          try {
+            if (this.stakerContract.updateEligibilityDelay) {
+              eligibilityDelaySeconds = await this.stakerContract.updateEligibilityDelay();
+            } else {
+              throw new Error('updateEligibilityDelay method not available on contract');
+            }
+          } catch (contractError) {
+            logger.warn(
+              `Could not read updateEligibilityDelay from contract, using fallback: ${(contractError as Error).message}`,
+            );
+            eligibilityDelaySeconds = BigInt(TIME_CONSTANTS.WEEK); // 604800 seconds
+          }
+          
+          // Get the latest score event for this delegatee to check when they became eligible
+          const latestScoreEvent = await this.database.getLatestScoreEvent(depositState.delegatee);
+          
+          if (latestScoreEvent) {
+            // Get the block timestamp when they became eligible
+            const eligibilityBlock = await this.provider.getBlock(latestScoreEvent.block_number);
+            if (eligibilityBlock && eligibilityBlock.timestamp) {
+              const eligibilityTimestamp = eligibilityBlock.timestamp * 1000; // Convert to milliseconds
+              const currentTimestamp = Date.now();
+              const timeSinceEligible = currentTimestamp - eligibilityTimestamp;
+              const requiredDelay = Number(eligibilityDelaySeconds) * 1000; // Convert to milliseconds
+              
+              if (timeSinceEligible < requiredDelay) {
+                const remainingTime = requiredDelay - timeSinceEligible;
+                logger.info(
+                  `Deposit ${deposit.deposit_id} must wait ${remainingTime / 1000}s more (updateEligibilityDelay: ${eligibilityDelaySeconds}s)`,
+                  {
+                    eligibilityTimestamp,
+                    currentTimestamp,
+                    timeSinceEligible,
+                    requiredDelay,
+                    remainingTime,
+                    eligibilityDelaySeconds: eligibilityDelaySeconds.toString(),
+                  }
+                );
+                return {
+                  profitable: false,
+                  reason: `updateEligibilityDelay not met: ${Math.ceil(remainingTime / 1000)}s remaining`,
+                };
+              }
+            }
+          }
+        } catch (error) {
+          logger.warn(
+            `Could not check eligibility delay for deposit ${deposit.deposit_id}: ${(error as Error).message}`,
+          );
+          // Continue with bump check if we can't determine eligibility timing
+        }
+      }
 
       // Get MAX_BUMP_TIP and unclaimed rewards
       const maxBumpTipValue = await this.stakerContract.maxBumpTip();
