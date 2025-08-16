@@ -797,11 +797,22 @@ export class RariBumpEarningPowerEngine
         },
       );
 
-      const currentScore = await this.calculatorWrapper.getEarningPower(
-        depositState.balance,
-        depositState.owner,
-        depositState.delegatee,
-      );
+      let currentScore: bigint;
+      try {
+        currentScore = await this.calculatorWrapper.getEarningPower(
+          depositState.balance,
+          depositState.owner,
+          depositState.delegatee,
+        );
+      } catch (error) {
+        logger.warn(
+          `❌ Could not calculate current earning power for deposit ${deposit.deposit_id}: ${error}`,
+        );
+        return {
+          profitable: false,
+          reason: 'Could not calculate current earning power',
+        };
+      }
 
       if (!currentScore) {
         logger.warn(

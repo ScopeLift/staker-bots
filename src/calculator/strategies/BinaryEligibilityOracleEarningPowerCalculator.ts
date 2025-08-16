@@ -142,7 +142,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
           );
         }
 
-        return [BigInt(latestScore.toString()), updatedBumpable];
+        return [BigInt(latestScore.toString()), isBumpable];
       }
 
       return [BigInt(newEarningPower.toString()), isBumpable];
