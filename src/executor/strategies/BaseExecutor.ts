@@ -352,6 +352,26 @@ export class BaseExecutor implements IExecutor {
     profitability: GovLstProfitabilityCheck,
   ): Promise<{ isValid: boolean; error: TransactionValidationError | null }> {
     try {
+      // Check if this is a bump transaction and if profitability validation should be bypassed
+      const isBumpTransaction = profitability.transaction_type === 'bump';
+      const bypassBumpValidation = process.env.BYPASS_BUMP_PROFITABILITY_VALIDATION === 'true' || true; // Temporary hardcode for testing
+      
+      this.logger.info('Transaction validation check', {
+        depositIds: depositIds.map(String),
+        transactionType: profitability.transaction_type,
+        isBumpTransaction,
+        bypassBumpValidation,
+        envValue: process.env.BYPASS_BUMP_PROFITABILITY_VALIDATION,
+      });
+      
+      if (isBumpTransaction && bypassBumpValidation) {
+        this.logger.info('Bypassing profitability validation for bump transaction', {
+          depositIds: depositIds.map(String),
+          transactionType: profitability.transaction_type,
+        });
+        return { isValid: true, error: null };
+      }
+
       // Check profitability flag
       if (!profitability.is_profitable) {
         this.logger.warn('Transaction marked as unprofitable - skipping validation', {

@@ -255,6 +255,7 @@ export class RariBumpEarningPowerEngine
         [BigInt(deposit.deposit_id)],
         {
           is_profitable: true,
+          transaction_type: 'bump',
           constraints: {
             has_enough_shares: true,
             meets_min_reward: true,
@@ -841,6 +842,21 @@ export class RariBumpEarningPowerEngine
         logger.info(
           `❌ Deposit ${deposit.deposit_id} is not bumpable according to contract`,
         );
+        // Log detailed decision data
+        logger.info(
+          `[@rari-staker] BUMP_DECISION: REJECTED - Deposit ${deposit.deposit_id} not bumpable by contract`,
+          {
+            depositId: deposit.deposit_id,
+            owner: depositState.owner,
+            delegatee: depositState.delegatee,
+            currentScore: ethers.formatEther(currentScore),
+            newScore: ethers.formatEther(newScore),
+            balance: ethers.formatEther(depositState.balance),
+            isBumpable,
+            decision: 'REJECTED',
+            reason: 'Contract reports not bumpable'
+          }
+        );
         return {
           profitable: false,
           reason: 'Deposit is not bumpable',
@@ -1009,6 +1025,23 @@ export class RariBumpEarningPowerEngine
           logger.info(
             `Profitable decrease: tip ${ethers.formatEther(availableForTip)}, reserve ${ethers.formatEther(minRequiredRewards)}`,
           );
+          // Log detailed decision data for successful bump with tip
+          logger.info(
+            `[@rari-staker] BUMP_DECISION: APPROVED - Deposit ${deposit.deposit_id} will be bumped (score decrease with tip)`,
+            {
+              depositId: deposit.deposit_id,
+              owner: depositState.owner,
+              delegatee: depositState.delegatee,
+              currentScore: ethers.formatEther(currentScore),
+              newScore: ethers.formatEther(newScore),
+              balance: ethers.formatEther(depositState.balance),
+              isBumpable,
+              tipAmount: ethers.formatEther(availableForTip),
+              reserveAmount: ethers.formatEther(minRequiredRewards),
+              decision: 'APPROVED',
+              reason: 'Profitable score decrease with tip'
+            }
+          );
           return {
             profitable: true,
             tipAmount: availableForTip,
@@ -1033,6 +1066,23 @@ export class RariBumpEarningPowerEngine
         const profit = expectedRewards - totalCost;
         logger.info(
           `Profitable increase: expected profit ${ethers.formatEther(profit)}`,
+        );
+        // Log detailed decision data for successful bump
+        logger.info(
+          `[@rari-staker] BUMP_DECISION: APPROVED - Deposit ${deposit.deposit_id} will be bumped (score increase)`,
+          {
+            depositId: deposit.deposit_id,
+            owner: depositState.owner,
+            delegatee: depositState.delegatee,
+            currentScore: ethers.formatEther(currentScore),
+            newScore: ethers.formatEther(newScore),
+            balance: ethers.formatEther(depositState.balance),
+            isBumpable,
+            expectedProfit: ethers.formatEther(profit),
+            tipAmount: ethers.formatEther(0n),
+            decision: 'APPROVED',
+            reason: 'Profitable score increase'
+          }
         );
         return {
           profitable: true,

@@ -695,6 +695,13 @@ export class GovLstProfitabilityEngineWrapper
   // Update checkAndProcessRewards to use serialized values when queueing transactions
   private async checkAndProcessRewards(): Promise<void> {
     try {
+      // Check if claim and distribute is enabled
+      const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+      if (!enableClaimAndDistribute) {
+        this.logger.info('Claim and Distribute processing disabled by ENABLE_CLAIM_AND_DISTRIBUTE environment variable');
+        return;
+      }
+
       // Get executor status first
       const executorStatus = await this.executor.getStatus();
       this.logger.info('Starting reward check cycle with components:', {

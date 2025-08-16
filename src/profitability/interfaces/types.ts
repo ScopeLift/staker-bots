@@ -91,6 +91,7 @@ export interface GovLstDepositGroup {
 
 export interface GovLstProfitabilityCheck {
   is_profitable: boolean;
+  transaction_type?: 'bump' | 'claim'; // Add transaction type for validation bypass
   constraints: {
     has_enough_shares: boolean;
     meets_min_reward: boolean;
