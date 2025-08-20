@@ -1,7 +1,6 @@
 import { ethers } from 'ethers';
 import { ConsoleLogger, Logger } from '@/monitor/logging';
 import { IProfitabilityEngine } from '../interfaces/IProfitabilityEngine';
-import { IExecutor } from '../../executor/interfaces/IExecutor';
 import { IDatabase } from '../../database/interfaces/IDatabase';
 import { BaseProfitabilityEngine } from './BaseProfitabilityEngine';
 import { Deposit, ProcessingQueueItem, TransactionType } from '../../database/interfaces/types';
@@ -213,6 +212,20 @@ export class RariClaimDistributeEngine
   }: {
     item: ProcessingQueueItem;
   }): Promise<ProfitabilityQueueResult> {
+    // Critical safety check: Block all processing if disabled
+    const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+    if (!enableClaimAndDistribute) {
+      this.logger.warn('BLOCKED: Claim and Distribute disabled - refusing to process item', {
+        depositId: item.deposit_id,
+        enabledFlag: false,
+      });
+      return {
+        success: false,
+        result: 'error',
+        details: { reason: 'ENABLE_CLAIM_AND_DISTRIBUTE is false' },
+      };
+    }
+
     try {
       const deposit = await this.database.getDeposit(item.deposit_id);
 
@@ -265,6 +278,16 @@ export class RariClaimDistributeEngine
         to: tx.to,
         rewardAmount: isClaimProfitable.rewardAmount,
       });
+
+      // Final safety check before queuing
+      const finalEnableCheck = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+      if (!finalEnableCheck) {
+        this.logger.error('CRITICAL: Attempted to queue transaction with ENABLE_CLAIM_AND_DISTRIBUTE=false', {
+          depositId: deposit.deposit_id,
+          enabledFlag: false,
+        });
+        throw new Error('BLOCKED: Cannot queue transaction - ENABLE_CLAIM_AND_DISTRIBUTE is false');
+      }
 
       await this.executor.queueTransaction(
         [BigInt(deposit.deposit_id)],
@@ -320,6 +343,27 @@ export class RariClaimDistributeEngine
   }: {
     deposits: Deposit[];
   }): Promise<ProfitabilityQueueBatchResult> {
+    // Critical safety check: Block all processing if disabled
+    const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+    if (!enableClaimAndDistribute) {
+      this.logger.warn('BLOCKED: Claim and Distribute disabled - refusing to process batch', {
+        depositCount: deposits.length,
+        enabledFlag: false,
+      });
+      return {
+        success: false,
+        total: deposits.length,
+        queued: 0,
+        notProfitable: 0,
+        errors: deposits.length,
+        details: deposits.map((deposit) => ({
+          depositId: deposit.deposit_id,
+          result: 'error',
+          details: { reason: 'ENABLE_CLAIM_AND_DISTRIBUTE is false' },
+        })),
+      };
+    }
+
     this.logger.info(
       `Processing claim and distribute batch with optimal selection for ${deposits.length} deposits`,
     );
@@ -558,6 +602,16 @@ export class RariClaimDistributeEngine
         profitMarginPercent: ((Number(actualProfit) / Number(totalRewards)) * 100).toFixed(2) + '%',
       });
 
+      // Final safety check before queuing batch
+      const finalEnableCheck = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+      if (!finalEnableCheck) {
+        this.logger.error('CRITICAL: Attempted to queue batch transaction with ENABLE_CLAIM_AND_DISTRIBUTE=false', {
+          depositCount: selectedDeposits.length,
+          enabledFlag: false,
+        });
+        throw new Error('BLOCKED: Cannot queue batch transaction - ENABLE_CLAIM_AND_DISTRIBUTE is false');
+      }
+
       await this.executor.queueTransaction(
         selectedDeposits.map((d) => BigInt(d.deposit_id)),
         {
@@ -694,6 +748,15 @@ export class RariClaimDistributeEngine
   }
 
   public async processDeposits(): Promise<void> {
+    // Critical safety check: Block all processing if disabled
+    const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+    if (!enableClaimAndDistribute) {
+      this.logger.warn('BLOCKED: Claim and Distribute disabled - refusing to process deposits', {
+        enabledFlag: false,
+      });
+      return;
+    }
+
     try {
       const deposits = await this.database.getAllDeposits();
       if (!deposits.length) {
@@ -729,99 +792,4 @@ export class RariClaimDistributeEngine
     this.lastUpdateTimestamp = Date.now();
   }
 
-  private async queueClaimTransaction(
-    deposit: Deposit,
-    unclaimedRewards: bigint,
-  ): Promise<void> {
-    // Create transaction data
-    const claimInterface = new ethers.Interface([
-      'function claimReward(uint256 depositId)',
-    ]);
-
-    // Safely convert deposit_id to BigInt, handling various input types
-    let depositIdBigInt: bigint;
-    try {
-      if (typeof deposit.deposit_id === 'bigint') {
-        depositIdBigInt = deposit.deposit_id;
-      } else if (typeof deposit.deposit_id === 'string') {
-        depositIdBigInt = BigInt(deposit.deposit_id);
-      } else if (typeof deposit.deposit_id === 'number') {
-        const depositIdNumber = Math.floor(deposit.deposit_id);
-        depositIdBigInt = BigInt(depositIdNumber);
-      } else {
-        throw new Error(`Invalid deposit_id type: ${typeof deposit.deposit_id}`);
-      }
-    } catch (conversionError) {
-      this.logger.error(`Failed to convert deposit_id for deposit ${deposit.deposit_id}`, {
-        error: conversionError instanceof Error ? conversionError.message : String(conversionError),
-        depositId: deposit.deposit_id,
-        type: typeof deposit.deposit_id,
-      });
-      throw new Error(`Failed to queue transaction: Invalid deposit ID`);
-    }
-
-    // Safely convert deposit amount to BigInt
-    let depositAmountBigInt: bigint;
-    try {
-      if (typeof deposit.amount === 'bigint') {
-        depositAmountBigInt = deposit.amount;
-      } else if (typeof deposit.amount === 'string') {
-        depositAmountBigInt = BigInt(deposit.amount);
-      } else if (typeof deposit.amount === 'number') {
-        const amountNumber = Math.floor(deposit.amount);
-        depositAmountBigInt = BigInt(amountNumber);
-      } else {
-        throw new Error(`Invalid amount type: ${typeof deposit.amount}`);
-      }
-    } catch (conversionError) {
-      this.logger.error(`Failed to convert amount for deposit ${deposit.deposit_id}`, {
-        error: conversionError instanceof Error ? conversionError.message : String(conversionError),
-        amount: deposit.amount,
-        type: typeof deposit.amount,
-      });
-      throw new Error(`Failed to queue transaction: Invalid deposit amount`);
-    }
-
-    const data = claimInterface.encodeFunctionData('claimReward', [
-      depositIdBigInt,
-    ]);
-
-    const tx = {
-      to: CONFIG.STAKER_CONTRACT_ADDRESS,
-      data,
-      gasLimit: CONFIG.CLAIM_GAS_LIMIT || '300000',
-    };
-
-    this.logger.info('Queueing claim transaction', {
-      depositId: deposit.deposit_id,
-      unclaimedRewards: unclaimedRewards.toString(),
-    });
-
-    await this.executor.queueTransaction(
-      [depositIdBigInt],
-      {
-        is_profitable: true,
-        constraints: {
-          has_enough_shares: true,
-          meets_min_reward: true,
-          meets_min_profit: true,
-        },
-        estimates: {
-          total_shares: depositAmountBigInt,
-          payout_amount: unclaimedRewards,
-          gas_estimate: BigInt(CONFIG.CLAIM_GAS_LIMIT || '300000'),
-          gas_cost: BigInt(CONFIG.CLAIM_GAS_LIMIT || '300000'),
-          expected_profit: unclaimedRewards,
-        },
-        deposit_details: [
-          {
-            depositId: depositIdBigInt,
-            rewards: unclaimedRewards,
-          },
-        ],
-      },
-      tx.data,
-      TransactionType.CLAIM_AND_DISTRIBUTE,
-    );
-  }
 }

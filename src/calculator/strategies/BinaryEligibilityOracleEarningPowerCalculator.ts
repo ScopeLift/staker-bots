@@ -142,7 +142,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
           );
         }
 
-        return [BigInt(latestScore.toString()), isBumpable];
+        return [BigInt(latestScore.toString()), updatedBumpable];
       }
 
       return [BigInt(newEarningPower.toString()), isBumpable];
@@ -160,7 +160,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
   async processScoreEvents(fromBlock: number, toBlock: number): Promise<void> {
     try {
-      const contractAddress = await this.contract.getAddress();
+      const contractAddress = CONFIG.monitor.rewardCalculatorAddress;
 
       this.logger.info('Querying score events from contract', {
         fromBlock,
@@ -226,7 +226,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         error,
         fromBlock,
         toBlock,
-        contractAddress: await this.contract.getAddress(),
+        contractAddress: CONFIG.monitor.rewardCalculatorAddress
       });
       throw error;
     }

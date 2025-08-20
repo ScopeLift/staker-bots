@@ -717,6 +717,15 @@ export class RariBumpEarningPowerEngine
       },
     );
 
+    // Check if profitability bypass is enabled for bump transactions
+    const bypassProfitability = process.env.BUMP_BYPASS_PROFITABILITY === 'true';
+    
+    if (bypassProfitability) {
+      logger.info(
+        `⚡ BUMP_BYPASS_PROFITABILITY is enabled - performing eligibility checks only for deposit ${deposit.deposit_id}`,
+      );
+    }
+
     try {
       // Safely convert deposit_id to BigInt, handling various input types
       let depositIdBigInt: bigint;
@@ -968,29 +977,30 @@ export class RariBumpEarningPowerEngine
       const gasLimit = BigInt(CONFIG.BUMP_GAS_LIMIT || '300000');
       const gasCost = gasPriceBigInt * gasLimit;
 
-      // For power decreases, we need to ensure enough rewards to cover:
-      // 1. Gas costs
-      // 2. Tip amount
-      // 3. maxBumpTip leftover for future operations
+      // For power decreases (going below threshold), we need to ensure enough rewards to cover:
+      // 1. The tip amount requested by the bot
+      // 2. maxBumpTip leftover AFTER the tip for future operations
       const isEarningPowerDecrease = newScore < currentScore;
 
       if (isEarningPowerDecrease) {
-        // Calculate minimum required rewards
-        const minRequiredRewards = gasCost + maxBumpTipValue;
-
-        // Check if we have enough unclaimed rewards
-        if (unclaimedRewards <= minRequiredRewards) {
+        // For negative bumps, we need to ensure:
+        // 1. The tip we request must be less than total unclaimed rewards
+        // 2. After paying the tip, there must be at least maxBumpTip remaining
+        
+        // First check if there are any unclaimed rewards at all
+        if (unclaimedRewards <= maxBumpTipValue) {
           logger.info(
-            `Insufficient rewards for decrease (${ethers.formatEther(unclaimedRewards)} < ${ethers.formatEther(minRequiredRewards)})`,
+            `Insufficient rewards: need at least maxBumpTip (${ethers.formatEther(maxBumpTipValue)}) remaining after tip, but only have ${ethers.formatEther(unclaimedRewards)} total`,
           );
           return {
             profitable: false,
-            reason: 'Insufficient rewards for gas and maxBumpTip reserve',
+            reason: 'Insufficient rewards: need maxBumpTip remaining after tip',
           };
         }
 
-        // We can use any remaining rewards above minRequiredRewards as tip
-        let availableForTip = unclaimedRewards - minRequiredRewards;
+        // Calculate the maximum tip we can request
+        // This is unclaimed rewards minus the maxBumpTip that must remain
+        let availableForTip = unclaimedRewards - maxBumpTipValue;
 
         // Apply safety caps to prevent overflow
         if (availableForTip > MAX_SAFE_TIP) {
@@ -1023,7 +1033,7 @@ export class RariBumpEarningPowerEngine
         // If we have enough for a tip, proceed with that amount
         if (availableForTip > 0n) {
           logger.info(
-            `Profitable decrease: tip ${ethers.formatEther(availableForTip)}, reserve ${ethers.formatEther(minRequiredRewards)}`,
+            `Profitable decrease: tip ${ethers.formatEther(availableForTip)}, reserve ${ethers.formatEther(maxBumpTipValue)}`,
           );
           // Log detailed decision data for successful bump with tip
           logger.info(
@@ -1037,7 +1047,7 @@ export class RariBumpEarningPowerEngine
               balance: ethers.formatEther(depositState.balance),
               isBumpable,
               tipAmount: ethers.formatEther(availableForTip),
-              reserveAmount: ethers.formatEther(minRequiredRewards),
+              reserveAmount: ethers.formatEther(maxBumpTipValue),
               decision: 'APPROVED',
               reason: 'Profitable score decrease with tip'
             }
@@ -1049,7 +1059,33 @@ export class RariBumpEarningPowerEngine
         }
       }
 
-      // For increases, calculate profitability
+      // For increases (going above threshold), check profitability unless bypassed
+      if (bypassProfitability) {
+        logger.info(
+          `Bypassing profitability check for score increase (BUMP_BYPASS_PROFITABILITY=true)`,
+        );
+        logger.info(
+          `[@rari-staker] BUMP_DECISION: APPROVED - Deposit ${deposit.deposit_id} will be bumped (score increase, profitability bypassed)`,
+          {
+            depositId: deposit.deposit_id,
+            owner: depositState.owner,
+            delegatee: depositState.delegatee,
+            currentScore: ethers.formatEther(currentScore),
+            newScore: ethers.formatEther(newScore),
+            balance: ethers.formatEther(depositState.balance),
+            isBumpable,
+            tipAmount: ethers.formatEther(0n),
+            decision: 'APPROVED',
+            reason: 'Score increase with profitability bypass'
+          }
+        );
+        return {
+          profitable: true,
+          tipAmount: 0n,
+        };
+      }
+      
+      // Calculate profitability for increases when not bypassed
       const scoreIncrease = newScore - currentScore;
       const rewardRatePerBlock = BigInt(
         CONFIG.REWARD_RATE_PER_BLOCK || '1000000000000000',

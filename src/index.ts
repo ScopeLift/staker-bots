@@ -543,6 +543,7 @@ async function initializeRariBumpEarningPowerEngine(
         tip: bigint,
       ): Promise<bigint>;
       REWARD_TOKEN(): Promise<string>;
+      updateEligibilityDelay(): Promise<bigint>;
     },
     provider,
     config: {
@@ -617,6 +618,7 @@ async function initializeRariClaimDistributeEngine(
         tip: bigint,
       ): Promise<bigint>;
       REWARD_TOKEN(): Promise<string>;
+      updateEligibilityDelay(): Promise<bigint>;
     },
     provider,
     config: {
@@ -758,8 +760,8 @@ async function main() {
         mainLogger.info('✅ Connected calculator to bump earning power engine - score events will now trigger bump reactions');
       } else {
         mainLogger.error('❌ FAILED to connect calculator to bump engine');
-        mainLogger.error('Calculator available:', !!earningPowerCalculator);
-        mainLogger.error('Bump engine available:', !!runningComponents.bumpEarningPowerEngine);
+        mainLogger.error('Calculator available:', { available: !!earningPowerCalculator });
+        mainLogger.error('Bump engine available:', { available: !!runningComponents.bumpEarningPowerEngine });
         mainLogger.error('This means score events will NOT trigger bump reactions!');
       }
 
@@ -793,7 +795,9 @@ async function main() {
       // Check if claim and distribute is enabled by environment variable
       const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
       if (!enableClaimAndDistribute) {
-        mainLogger.info('Claim and Distribute Engine disabled by ENABLE_CLAIM_AND_DISTRIBUTE environment variable - skipping initialization');
+        mainLogger.warn('❌ CRITICAL: Claim and Distribute Engine is DISABLED by ENABLE_CLAIM_AND_DISTRIBUTE=false');
+        mainLogger.warn('❌ NO claim and distribute transactions will be processed');
+        mainLogger.warn('❌ To enable, set ENABLE_CLAIM_AND_DISTRIBUTE=true in your .env file');
       } else {
         mainLogger.info('Initializing Rari Claim and Distribute Engine...');
         if (!runningComponents.executor) {

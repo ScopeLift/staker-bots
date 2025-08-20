@@ -21,7 +21,7 @@ function createBinaryEligibilityOracleCalculator(
   const logger = new ConsoleLogger('info');
   const scoreCache = new Map<string, bigint>();
 
-  const profitabilityEngine: GovLstProfitabilityEngineWrapper | null = null;
+  let profitabilityEngine: GovLstProfitabilityEngineWrapper | null = null;
 
   // Initialize contract
   if (!CONFIG.monitor.rewardCalculatorAddress) {
@@ -33,6 +33,16 @@ function createBinaryEligibilityOracleCalculator(
     REWARD_CALCULATOR_ABI,
     provider,
   ) as unknown as IRewardCalculator;
+
+  /**
+   * Set the profitability engine for score event notifications
+   */
+  function setProfitabilityEngine(engine: GovLstProfitabilityEngineWrapper): void {
+    profitabilityEngine = engine;
+    logger.info(
+      'Profitability engine registered for score event notifications',
+    );
+  }
 
   /**
    * Calculates the earning power for a stake
@@ -70,12 +80,76 @@ function createBinaryEligibilityOracleCalculator(
     oldEarningPower: bigint,
   ): Promise<[bigint, boolean]> {
     try {
+      // First try to get the latest score event from the database for this delegatee
+      let latestScoreEvent = null;
+
+      try {
+        latestScoreEvent = await db.getLatestScoreEvent(delegatee);
+        if (latestScoreEvent) {
+          logger.info(
+            'Using latest score event from database for getNewEarningPower',
+            {
+              delegatee,
+              score: latestScoreEvent.score,
+              blockNumber: latestScoreEvent.block_number,
+            },
+          );
+        } else {
+          logger.info(
+            'No latest score event found in database for delegatee',
+            {
+              delegatee,
+            },
+          );
+        }
+      } catch (dbError) {
+        logger.warn('Error getting latest score event from database', {
+          error: dbError,
+          delegatee,
+        });
+      }
+
+      // Call the contract's getNewEarningPower method
       const [newEarningPower, isBumpable] = await contract.getNewEarningPower(
         amountStaked,
         staker,
         delegatee,
         oldEarningPower,
       );
+
+      logger.info('Contract getNewEarningPower results', {
+        delegatee,
+        newEarningPower: newEarningPower.toString(),
+        isBumpable,
+        oldEarningPower: oldEarningPower.toString(),
+        hasLatestScoreEvent: !!latestScoreEvent,
+      });
+
+      // If we have a latest score event from the database, use it to make the final decision
+      if (latestScoreEvent) {
+        // Convert the score from string to bigint
+        const latestScore = BigInt(latestScoreEvent.score);
+
+        // A deposit is bumpable if the contract's newEarningPower matches the latest score in the database
+        // This means the earning power would be updated to the latest score
+        const updatedBumpable = newEarningPower === latestScore;
+
+        if (updatedBumpable !== isBumpable) {
+          logger.info(
+            'Overriding bumpable decision based on latest score event',
+            {
+              delegatee,
+              contractNewEarningPower: newEarningPower.toString(),
+              latestScore: latestScore.toString(),
+              contractIsBumpable: isBumpable,
+              updatedIsBumpable: updatedBumpable,
+            },
+          );
+        }
+
+        return [BigInt(latestScore.toString()), updatedBumpable];
+      }
+
       return [BigInt(newEarningPower.toString()), isBumpable];
     } catch (error) {
       logger.error('Error getting new earning power from contract:', {
@@ -172,22 +246,45 @@ function createBinaryEligibilityOracleCalculator(
         delegatee: event.delegatee,
         score: event.score.toString(), // Convert bigint to string for database
         block_number: event.block_number,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       });
 
       // Notify profitability engine about the score event if it's set
       if (profitabilityEngine) {
         try {
-          // Assumes the profitability engine has a method to handle score events
-          // This may need to be adjusted based on the actual API
-          await profitabilityEngine.onScoreEvent(event.delegatee, event.score);
-        } catch (notifyError) {
-          logger.error('Error notifying profitability engine:', {
-            error: notifyError,
+          logger.info('Forwarding score event to profitability engine', {
             delegatee: event.delegatee,
             score: event.score.toString(),
+            blockNumber: event.block_number,
           });
-          // Don't throw here, continue processing even if notification fails
+
+          await profitabilityEngine.onScoreEvent(event.delegatee, event.score);
+
+          logger.info(
+            'Successfully forwarded score event to profitability engine',
+            {
+              delegatee: event.delegatee,
+            },
+          );
+        } catch (notifyError) {
+          logger.error(
+            'Error notifying profitability engine of score event:',
+            {
+              error: notifyError,
+              event,
+            },
+          );
+          // Continue processing even if notification fails
         }
+      } else {
+        logger.warn(
+          'No profitability engine set, score event not forwarded',
+          {
+            delegatee: event.delegatee,
+            score: event.score.toString(),
+          },
+        );
       }
     } catch (error) {
       logger.error('Error processing score event:', {
@@ -203,6 +300,7 @@ function createBinaryEligibilityOracleCalculator(
     getEarningPower,
     getNewEarningPower,
     processScoreEvents,
+    setProfitabilityEngine,
   };
 }
 

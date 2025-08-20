@@ -227,6 +227,41 @@ export class BaseExecutor implements IExecutor {
     profitability: GovLstProfitabilityCheck,
     txData?: string,
   ): Promise<QueuedTransaction> {
+    // Critical safety check for claim and distribute transactions
+    const isClaimAndDistribute = profitability.transaction_type === 'claim' || 
+      (txData && (txData.includes('claimAndDistributeReward') || txData.startsWith('0x4406e5e5') || txData.startsWith('0x0cbeab6d')));
+    
+    if (isClaimAndDistribute) {
+      const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+      if (!enableClaimAndDistribute) {
+        this.logger.error('CRITICAL: Blocked claim and distribute transaction - ENABLE_CLAIM_AND_DISTRIBUTE=false', {
+          depositIds: depositIds.map(String),
+          transactionType: profitability.transaction_type,
+          enabledFlag: false,
+        });
+        
+        const error = new ExecutorError(
+          'BLOCKED: Cannot queue claim and distribute transaction - ENABLE_CLAIM_AND_DISTRIBUTE is false',
+          {
+            depositIds: depositIds.map(String),
+            transactionType: profitability.transaction_type,
+            enabledFlag: false,
+          },
+          false
+        );
+        
+        if (this.errorLogger) {
+          await this.errorLogger.error(error, {
+            context: 'claim-and-distribute-blocked',
+            depositIds: depositIds.map(String),
+            severity: 'critical',
+          });
+        }
+        
+        throw error;
+      }
+    }
+
     // Check if transaction is marked as profitable
     if (!profitability.is_profitable) {
       this.logger.warn('Attempted to queue unprofitable transaction - rejecting', {
@@ -354,17 +389,25 @@ export class BaseExecutor implements IExecutor {
     try {
       // Check if this is a bump transaction and if profitability validation should be bypassed
       const isBumpTransaction = profitability.transaction_type === 'bump';
+      const isClaimTransaction = profitability.transaction_type === 'claim';
       const bypassBumpValidation = process.env.BYPASS_BUMP_PROFITABILITY_VALIDATION === 'true' || true; // Temporary hardcode for testing
       
       this.logger.info('Transaction validation check', {
         depositIds: depositIds.map(String),
         transactionType: profitability.transaction_type,
         isBumpTransaction,
+        isClaimTransaction,
         bypassBumpValidation,
         envValue: process.env.BYPASS_BUMP_PROFITABILITY_VALIDATION,
       });
       
-      if (isBumpTransaction && bypassBumpValidation) {
+      // CRITICAL: Never bypass profitability validation for claim transactions
+      if (isClaimTransaction) {
+        this.logger.info('CLAIM transaction detected - profitability validation MANDATORY', {
+          depositIds: depositIds.map(String),
+          transactionType: profitability.transaction_type,
+        });
+      } else if (isBumpTransaction && bypassBumpValidation) {
         this.logger.info('Bypassing profitability validation for bump transaction', {
           depositIds: depositIds.map(String),
           transactionType: profitability.transaction_type,
@@ -934,6 +977,37 @@ export class BaseExecutor implements IExecutor {
     });
 
     try {
+      // Critical safety check for claim and distribute transactions before execution
+      const isClaimAndDistribute = tx.profitability.transaction_type === 'claim' || 
+        (tx.tx_data && (tx.tx_data.includes('claimAndDistributeReward') || tx.tx_data.startsWith('0x4406e5e5') || tx.tx_data.startsWith('0x0cbeab6d')));
+      
+      if (isClaimAndDistribute) {
+        const enableClaimAndDistribute = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+        if (!enableClaimAndDistribute) {
+          this.logger.error('CRITICAL: Blocked execution of claim and distribute transaction - ENABLE_CLAIM_AND_DISTRIBUTE=false', {
+            id: tx.id,
+            depositIds: tx.depositIds.map(String),
+            transactionType: tx.profitability.transaction_type,
+            enabledFlag: false,
+          });
+          
+          tx.status = TransactionStatus.FAILED;
+          tx.error = new Error('BLOCKED: Cannot execute claim and distribute transaction - ENABLE_CLAIM_AND_DISTRIBUTE is false');
+          this.queue.set(tx.id, tx);
+          
+          if (this.errorLogger) {
+            await this.errorLogger.error(tx.error, {
+              context: 'claim-and-distribute-execution-blocked',
+              txId: tx.id,
+              depositIds: tx.depositIds.map(String),
+              severity: 'critical',
+            });
+          }
+          
+          return;
+        }
+      }
+
       // Validate profitability before execution
       if (!tx.profitability.is_profitable) {
         this.logger.warn('Skipping unprofitable transaction execution', {
@@ -1121,6 +1195,17 @@ export class BaseExecutor implements IExecutor {
         
         // For Rari transactions, we need to send to the LST contract
         if (tx.tx_data.startsWith('0x4406e5e5') || tx.tx_data.startsWith('0x0cbeab6d')) { // claimAndDistributeReward method signatures
+          // Final execution-time check for claim and distribute
+          const finalEnableCheck = process.env.ENABLE_CLAIM_AND_DISTRIBUTE === 'true';
+          if (!finalEnableCheck) {
+            this.logger.error('CRITICAL: Final block - Rari transaction execution blocked', {
+              id: tx.id,
+              methodSignature: tx.tx_data.substring(0, 10),
+              enabledFlag: false,
+            });
+            throw new Error('CRITICAL: ENABLE_CLAIM_AND_DISTRIBUTE is false - blocking Rari transaction');
+          }
+
           if (!CONFIG.LST_ADDRESS) {
             throw new Error('LST_ADDRESS is not configured for Rari transactions');
           }
