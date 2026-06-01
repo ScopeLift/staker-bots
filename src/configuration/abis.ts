@@ -87,7 +87,7 @@ export const stakerAbi = [
   'function payoutAmount() external view returns (uint256)',
   'function claimAndDistributeReward(address tipReceiver, uint256 minTotalRewards, uint256[] calldata depositIds) external returns (uint256)',
   'function sharesOf(address account) external view returns (uint256)',
-  'function deposits(uint256 depositId) external view returns (address owner, uint256 balance, uint256 earningPower, address delegatee, address claimer)',
+  'function deposits(uint256 depositId) external view returns (uint96 balance, address owner, uint96 earningPower, address delegatee, address claimer)',
   'function unclaimedReward(uint256 depositId) external view returns (uint256)',
   'function claimReward(uint256 depositId) external returns (uint256)',
   'function bump(uint256 depositId, uint256 tip, address tipReceiver) external returns (uint256)',
