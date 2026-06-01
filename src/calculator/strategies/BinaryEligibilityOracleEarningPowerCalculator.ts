@@ -160,8 +160,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
   async processScoreEvents(fromBlock: number, toBlock: number): Promise<void> {
     try {
-      const contractAddress = (this.contract as unknown as { address: string })
-        .address;
+      const contractAddress = CONFIG.monitor.rewardCalculatorAddress;
 
       this.logger.info('Querying score events from contract', {
         fromBlock,
@@ -174,7 +173,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
 
       this.logger.info('Event filter details:', {
         address: contractAddress,
-        topics: filter.topics,
+        event: 'DelegateeScoreUpdated',
         fromBlock,
         toBlock,
       });
@@ -227,8 +226,7 @@ export class BinaryEligibilityOracleEarningPowerCalculator
         error,
         fromBlock,
         toBlock,
-        contractAddress: (this.contract as unknown as { address: string })
-          .address,
+        contractAddress: CONFIG.monitor.rewardCalculatorAddress,
       });
       throw error;
     }

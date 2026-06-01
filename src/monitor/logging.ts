@@ -27,25 +27,29 @@ export class ConsoleLogger implements Logger {
 
   debug(message: string, meta?: Record<string, unknown>): void {
     if (this.shouldLog('debug')) {
-      console.debug(this.formatMessage(message), meta);
+      if (meta === undefined) console.debug(this.formatMessage(message));
+      else console.debug(this.formatMessage(message), meta);
     }
   }
 
   info(message: string, meta?: Record<string, unknown>): void {
     if (this.shouldLog('info')) {
-      console.info(this.formatMessage(message), meta);
+      if (meta === undefined) console.info(this.formatMessage(message));
+      else console.info(this.formatMessage(message), meta);
     }
   }
 
   warn(message: string, meta?: Record<string, unknown>): void {
     if (this.shouldLog('warn')) {
-      console.warn(this.formatMessage(message), meta);
+      if (meta === undefined) console.warn(this.formatMessage(message));
+      else console.warn(this.formatMessage(message), meta);
     }
   }
 
   error(message: string, meta?: Record<string, unknown>): void {
     if (this.shouldLog('error')) {
-      console.error(this.formatMessage(message), meta);
+      if (meta === undefined) console.error(this.formatMessage(message));
+      else console.error(this.formatMessage(message), meta);
     }
   }
 }
