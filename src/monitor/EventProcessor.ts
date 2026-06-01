@@ -33,9 +33,10 @@ export class EventProcessor {
   ): Promise<ProcessingResult> {
     try {
       const existingDeposit = await this.db.getDeposit(event.depositId);
-      const newAmount = existingDeposit
-        ? BigInt(existingDeposit.amount) + BigInt(event.amount.toString())
-        : BigInt(event.amount.toString());
+      // depositBalance is the authoritative deposit balance after this event, so
+      // store it directly rather than accumulating per-event `amount` deltas
+      // (delta accumulation drops events under transaction grouping). See AGENTS.md §5.
+      const newAmount = BigInt(event.depositBalance.toString());
 
       const depositData = {
         owner_address: event.ownerAddress,
@@ -95,11 +96,10 @@ export class EventProcessor {
       const deposit = await this.db.getDeposit(event.depositId);
       if (!deposit) throw new DepositNotFoundError(event.depositId);
 
-      const remainingAmount = BigInt(deposit.amount) - event.withdrawnAmount;
-      const depositData =
-        remainingAmount <= 0
-          ? { amount: '0', delegatee_address: deposit.owner_address }
-          : { amount: remainingAmount.toString() };
+      // Store the authoritative post-withdrawal balance from the event rather
+      // than subtracting from a possibly-stale local amount (which could underflow
+      // and previously forced amount=0 and clobbered the delegatee). See AGENTS.md §5.
+      const depositData = { amount: event.depositBalance.toString() };
 
       await this.db.updateDeposit(event.depositId, depositData);
 

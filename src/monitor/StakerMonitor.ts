@@ -467,20 +467,17 @@ export class StakerMonitor extends EventEmitter {
 
         const { depositId, owner: ownerAddress } = depositEvent.args;
         const depositIdString = depositId.toString();
-        let amount = depositEvent.args.amount;
+        const amount = depositEvent.args.amount;
+        // Authoritative post-event total; persisted as the deposit balance (see
+        // EventProcessor) rather than accumulating deltas, which drops events
+        // under transaction grouping. See AGENTS.md §5.
+        const depositBalance = depositEvent.args.depositBalance;
 
         // Get depositor from LST event or fallback to owner
         const depositorAddress =
           lstDepositEvent?.args?.[0] ||
           lstDepositEvent?.args?.account ||
           ownerAddress;
-
-        // Use LST amount if available
-        if (lstDepositEvent?.args) {
-          const lstAmount =
-            lstDepositEvent.args[1] || lstDepositEvent.args.amount;
-          if (lstAmount) amount = lstAmount;
-        }
 
         // Get delegatee or use default
         let delegateeAddress =
@@ -500,6 +497,7 @@ export class StakerMonitor extends EventEmitter {
           delegateeAddress,
           depositorAddress,
           amount,
+          depositBalance,
           blockNumber: depositEvent.blockNumber!,
           transactionHash: depositEvent.transactionHash!,
         });
@@ -520,11 +518,12 @@ export class StakerMonitor extends EventEmitter {
     // Process withdrawals
     for (const event of events.withdrawn) {
       const typedEvent = event as ethers.EventLog;
-      const { depositId, amount } = typedEvent.args;
+      const { depositId, amount, depositBalance } = typedEvent.args;
 
       await this.handleStakeWithdrawn({
         depositId: depositId.toString(),
         withdrawnAmount: amount,
+        depositBalance,
         blockNumber: typedEvent.blockNumber!,
         transactionHash: typedEvent.transactionHash!,
       });

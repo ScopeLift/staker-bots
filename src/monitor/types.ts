@@ -28,6 +28,9 @@ export interface StakeDepositedEvent {
   delegateeAddress: string;
   depositorAddress: string;
   amount: BigNumberish;
+  // Authoritative deposit balance after this event (the event's `depositBalance`
+  // field). Persisted as the deposit's balance instead of accumulating deltas.
+  depositBalance: bigint;
   blockNumber: number;
   transactionHash: string;
 }
@@ -37,6 +40,9 @@ export interface StakeWithdrawnEvent {
   blockNumber: number;
   transactionHash: string;
   withdrawnAmount: bigint;
+  // Authoritative deposit balance after this withdrawal (the event's
+  // `depositBalance` field).
+  depositBalance: bigint;
 }
 
 export interface DelegateeAlteredEvent {

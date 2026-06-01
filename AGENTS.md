@@ -19,12 +19,12 @@ and submits transactions.
 
 Key on-chain actors (observed at runtime; sourced from env / `src/configuration`):
 
-| Role | Address | Notes |
-|---|---|---|
-| Staker | `0xfb0dF2b1Ca894BFdC0e3a200a26B87C5b348CeB6` | RariStaker, **deployed at block 2714010** |
-| GovLst / LST token | `0xf5b1009B9B5e36346f4A6B586FA35d02996703bf` | custodies pooled stake; `owner` of most deposits |
-| Reward calculator | `0xAc5315251B91D2Fa4bf61cE479DF792778A7f464` | binary eligibility oracle (`DelegateeScoreUpdated`) |
-| Default delegatee | `0x0000000000000000000000000000000000000B01` | fallback for GovLst-owned deposits |
+| Role               | Address                                      | Notes                                               |
+| ------------------ | -------------------------------------------- | --------------------------------------------------- |
+| Staker             | `0xfb0dF2b1Ca894BFdC0e3a200a26B87C5b348CeB6` | RariStaker, **deployed at block 2714010**           |
+| GovLst / LST token | `0xf5b1009B9B5e36346f4A6B586FA35d02996703bf` | custodies pooled stake; `owner` of most deposits    |
+| Reward calculator  | `0xAc5315251B91D2Fa4bf61cE479DF792778A7f464` | binary eligibility oracle (`DelegateeScoreUpdated`) |
+| Default delegatee  | `0x0000000000000000000000000000000000000B01` | fallback for GovLst-owned deposits                  |
 
 The bot has **two keeper actions**, each wrapped by one engine:
 
@@ -80,9 +80,10 @@ wired together in `src/index.ts`.
   2713795 in testing, which is correctly just before deployment.)
 
 ### Tooling gaps (pre-existing)
+
 - **No ESLint config exists** (`.eslintrc*` / `eslint.config.*` / `eslintConfig`
   are all absent). `pnpm lint` and the CI "Run ESLint" step therefore fail with
-  *"ESLint couldn't find a configuration file."* Prettier and `tsc` are fine.
+  _"ESLint couldn't find a configuration file."_ Prettier and `tsc` are fine.
 - **No tests** (no `*.test.ts`) despite a commit titled "add simulation, tests".
 - `pnpm typecheck` is clean once dependencies are fully installed.
 
@@ -113,20 +114,21 @@ All committed. File references are post-fix.
 
 4. **`deposits()` ABI struct mismatch (REAL bug).** `src/configuration/abis.ts`
    declared `deposits(uint256) returns (address owner, uint256 balance, uint256
-   earningPower, ...)`, but the actual Staker struct is
+earningPower, ...)`, but the actual Staker struct is
    **`(uint96 balance, address owner, uint96 earningPower, address delegatee,
-   address claimer)`** — `owner`/`balance` were swapped (and ints are `uint96`).
-   Effect: `depositState.balance` decoded the owner *address* as a ~1.4e48
+address claimer)`** — `owner`/`balance` were swapped (and ints are `uint96`).
+   Effect: `depositState.balance` decoded the owner _address_ as a ~1.4e48
    number, and `depositState.owner` was garbage. This fed the bump engine's
    `isBumpProfitable` (which reads `depositState.balance`/`.owner` and passes them
    to the calculator), producing bogus "earning power changed" results — every
    such bump would revert on-chain (and, since pre-encoded txs skip simulation in
-   `BaseExecutor`, could be *sent* and burn gas). Fixed at `abis.ts:90`. Engines
+   `BaseExecutor`, could be _sent_ and burn gas). Fixed at `abis.ts:90`. Engines
    access fields by name, so the one-line ABI change corrects the runtime decode
    everywhere.
 
 ### Verified, NOT a bug
-- "Many deposits have the same balance" was a *symptom* of bug #4: the displayed
+
+- "Many deposits have the same balance" was a _symptom_ of bug #4: the displayed
   "balance" was really the `owner` address, and deposits #1–#18 are all owned by
   the LST (`0xf5b1009…703bf`), so they shared a value. Real balances differ.
 
@@ -136,7 +138,8 @@ All committed. File references are post-fix.
 
 Highest-impact first. None of these are addressed in code yet.
 
-- **Monitor stores wrong deposit balances** — see §5 (the main one).
+- ~~Monitor stores wrong deposit balances~~ — **fixed in code 2026-06-01** (see
+  §5); existing `data/*.json` records stay stale until a re-sync.
 - **Profitability math uses hardcoded stale prices.** `GasCostEstimator.ts:29`
   and `GovLstProfitabilityEngine.ts:915-916` hardcode `ETH=$1800`, `token=$1`. A
   real CoinMarketCap feed exists but isn't wired into these calculations.
@@ -160,19 +163,27 @@ Highest-impact first. None of these are addressed in code yet.
 
 ---
 
-## 5. Monitor deposit-balance bug + proposed fix
+## 5. Monitor deposit-balance bug + fix (implemented 2026-06-01)
+
+> **Status: fixed in code.** The implementation steps below were applied across
+> `src/monitor/types.ts`, `StakerMonitor.ts`, and `EventProcessor.ts` (the
+> "use LST amount" override and the withdrawal underflow-clamp were removed).
+> `tsc`/Prettier pass. **Existing JSON records remain stale until a re-sync** —
+> delete `data/rari-staker-monitor-db.json` and let the monitor rebuild.
 
 ### Symptom
+
 Stored `amount` in `data/*.json` does **not** match on-chain balances:
 
 | deposit | stored `amount` | true on-chain balance |
-|---|---|---|
-| #1 | 1619.40 | 6016.03 |
-| #5 | 22694.82 | 46237.48 |
+| ------- | --------------- | --------------------- |
+| #1      | 1619.40         | 6016.03               |
+| #5      | 22694.82        | 46237.48              |
 
 `earning_power` is never stored at all (always `(none)`).
 
 ### Root cause (verified against chain, not the ABI bug)
+
 Confirmed independent of fix #4 — the monitor **never calls `deposits()`**; it
 builds records from events only. And it's **not** a `START_BLOCK` coverage gap:
 `START_BLOCK` (2713795) is before deployment (2714010), and re-scanning the chain
@@ -189,6 +200,7 @@ So the events are complete and correct, but the monitor's **delta-accumulation
 pipeline drops/distorts** a large fraction of them (there are ~5,378
 `StakeDeposited` + ~3,945 `StakeWithdrawn` events — heavy reward-restaking churn).
 Two mechanisms in the code cause this:
+
 - `EventProcessor.processStakeDeposited` (`src/monitor/EventProcessor.ts:36-38`)
   sums per-event `amount` deltas: `newAmount = existing.amount + event.amount`.
 - `StakerMonitor` groups events **per transaction** and keeps only one
@@ -198,6 +210,7 @@ Two mechanisms in the code cause this:
   LST-event amount on user-stake txs.
 
 ### Proposed fix — store the authoritative `depositBalance`
+
 Each `StakeDeposited`/`StakeWithdrawn` event already carries `depositBalance`, the
 **authoritative running total after that event**. Storing it directly (instead of
 accumulating deltas) makes the persisted balance exactly correct and immune to
@@ -230,7 +243,7 @@ threaded through):
 
 **After the change**, existing JSON records remain wrong until a re-sync. Either
 delete `data/rari-staker-monitor-db.json` and let it rebuild from `START_BLOCK`,
-or reprocess. Note the bot's *live* reads (bump uses the now-fixed `deposits()`
+or reprocess. Note the bot's _live_ reads (bump uses the now-fixed `deposits()`
 getter; claim uses `unclaimedReward()`) are already accurate regardless of the
 stored `amount`, which is mainly used as the **list of deposit IDs** to check —
 so this fix is primarily about data integrity/observability, plus avoiding the
