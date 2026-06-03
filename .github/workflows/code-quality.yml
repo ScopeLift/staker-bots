@@ -2,9 +2,9 @@ name: Code Quality
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ['*']
   push:
-    branches: ["main"]
+    branches: ['main']
 
 jobs:
   quality:
@@ -13,17 +13,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v2
-        with:
-          version: 9
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
+
+      # pnpm/action-setup is still a Node-20 action; install pnpm via Node 24's
+      # own npm instead so every action runs on Node 24 (no deprecation warning).
+      - name: Install pnpm
+        run: npm install -g pnpm@9.15.9
 
       - name: Install dependencies
         run: pnpm install
