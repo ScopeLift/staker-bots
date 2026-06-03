@@ -1,0 +1,68 @@
+# Scheduled claim-and-distribute keeper for the Rari GovLst wind-down.
+#
+# Runs scripts/claim.ts on a cron. Scheduled runs always --broadcast; the manual
+# "Run workflow" button defaults to a report-only dry run (toggle to broadcast).
+#
+# Required repo secrets  (Settings -> Secrets and variables -> Actions -> Secrets):
+#   RPC_URL        RARI Chain RPC endpoint (may embed an API key -> keep secret)
+#   PRIVATE_KEY    keeper wallet key (dedicated, low-balance; not reused elsewhere)
+# Optional repo variable (same screen -> Variables):
+#   CLAIM_PROFIT_BUFFER   whole reward tokens of surplus to require (default 0)
+name: Claim and Distribute
+
+on:
+  schedule:
+    # Every hour, on the hour. Cranked up for initial validation — scale back
+    # (e.g. '0 */8 * * *') once it's proven stable.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      broadcast:
+        description: 'Broadcast transactions? (default false = report-only dry run)'
+        type: boolean
+        default: false
+
+# Never let two claim runs overlap (avoid double-claim / nonce races). A new run
+# waits for the in-flight one rather than cancelling it — it may be mid-broadcast.
+concurrency:
+  group: claim-and-distribute
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  claim:
+    name: Claim and Distribute
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Secrets:
+      RPC_URL: ${{ secrets.RPC_URL }}
+      PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      # Public RARI Chain config (safe to commit):
+      CHAIN_ID: '1380012617'
+      STAKER_CONTRACT_ADDRESS: '0xfb0dF2b1Ca894BFdC0e3a200a26B87C5b348CeB6'
+      LST_ADDRESS: '0xf5b1009B9B5e36346f4A6B586FA35d02996703bf'
+      # Optional tuning (empty -> script default of 0):
+      CLAIM_PROFIT_BUFFER: ${{ vars.CLAIM_PROFIT_BUFFER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run claim
+        # Scheduled runs always broadcast; manual runs honor the broadcast input.
+        run: pnpm exec tsx scripts/claim.ts ${{ (github.event_name == 'schedule' || inputs.broadcast) && '--broadcast' || '' }}
