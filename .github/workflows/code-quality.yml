@@ -1,10 +1,10 @@
 name: Code Quality
 
+# Disabled for the wind-down: no longer runs on PRs or merges to main. Left as
+# manual-only (workflow_dispatch) so it can still be triggered by hand if needed;
+# delete this file outright to remove it entirely.
 on:
-  pull_request:
-    branches: ['*']
-  push:
-    branches: ['main']
+  workflow_dispatch:
 
 jobs:
   quality:
