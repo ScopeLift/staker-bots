@@ -1,12 +1,20 @@
 # AGENTS.md
 
 Context and working notes for AI agents (and humans) working on this repo. Last
-substantive update: 2026-06-01.
+substantive update: 2026-06-03.
 
-This file captures hard-won context that is **not obvious from the code**:
-domain semantics, environment setup, bugs already found/fixed, and the
-known-outstanding issues — most importantly a data-accuracy bug in the monitor
-with a validated fix described at the end.
+This file captures hard-won context that is **not obvious from the code**: the
+current operating posture, domain semantics, environment setup, and bugs
+found/fixed.
+
+> 🛑 **Current status: WIND-DOWN.** Rari is sunsetting its staking program; this
+> repo only needs to operate for ~1 more month (from early June 2026). The full
+> `src/` bot is **no longer the operational path** — day-to-day work runs through
+> a small standalone keeper, **`scripts/claim.ts`**, on an hourly GitHub Actions
+> cron. **Bumping is irrelevant** (the oracle has stopped updating delegatee
+> scores, so nothing new becomes bumpable); the only job that matters is claiming
+> & distributing rewards. See **§8 "Wind-down operations"** for the runbook. The
+> `src/` bot and its engines (§1, §3–§5) are now mostly **historical context**.
 
 ---
 
@@ -51,7 +59,8 @@ A third, **dead** path exists (`queueClaimTransaction` → `claimReward(depositI
 > `ENABLE_BUMP_EARNING_POWER=true` / `ENABLE_CLAIM_AND_DISTRIBUTE=true`
 > (`RariBumpEarningPowerEngine.ts:900`, `RariClaimDistributeEngine.ts:122`).
 > With the flags off, the bot only monitors and calculates — it never queues or
-> sends a transaction.
+> sends a transaction. **For the wind-down, neither engine runs at all** — claiming
+> is done by the standalone `scripts/claim.ts` (see §8).
 
 Components are selected via `COMPONENTS=` (e.g. `monitor,executor,profitability,bump,claim`),
 wired together in `src/index.ts`.
@@ -60,11 +69,16 @@ wired together in `src/index.ts`.
 
 ## 2. Dev environment
 
-- **Toolchain is pinned with Volta** in `package.json`: Node **20.20.2**, pnpm
-  **9.15.9**. (Volta 2.x manages pnpm without the old `VOLTA_FEATURE_PNPM` flag.)
-- The committed lockfile is `lockfileVersion: 9.0` (pnpm ≥ 9). CI
-  (`.github/workflows/code-quality.yml`) was bumped from pnpm 8 → 9 to match.
-- If `node -v` doesn't show 20.20.2 inside the repo, another version manager
+- **Toolchain is pinned with Volta** in `package.json`: Node **24.16.0**, pnpm
+  **9.15.9** (`@types/node` is `^24`). Upgraded from Node 20 on 2026-06-03 to stay
+  off the deprecated GitHub-Actions Node-20 runtime. (Volta 2.x manages pnpm
+  without the old `VOLTA_FEATURE_PNPM` flag.)
+- The committed lockfile is `lockfileVersion: 9.0` (pnpm ≥ 9). Both workflows
+  (`code-quality.yml` + `claim.yml`) run on **Node-24 actions**:
+  `actions/checkout@v5` + `actions/setup-node@v5` (node-version 24), installing
+  pnpm via `npm install -g pnpm@9.15.9` instead of `pnpm/action-setup` (still a
+  Node-20 action, which would re-trigger the deprecation warning).
+- If `node -v` doesn't show 24.16.0 inside the repo, another version manager
   (nvm/Homebrew/asdf) is ahead of Volta in `PATH` — fix `PATH` ordering.
 - Install: `pnpm install` (use `CI=true pnpm install --frozen-lockfile` to skip
   the interactive "purge modules" prompt). Run: `pnpm dev` (= `tsx watch src/index.ts`).
@@ -165,11 +179,11 @@ Highest-impact first. None of these are addressed in code yet.
 
 ## 5. Monitor deposit-balance bug + fix (implemented 2026-06-01)
 
-> **Status: fixed in code.** The implementation steps below were applied across
-> `src/monitor/types.ts`, `StakerMonitor.ts`, and `EventProcessor.ts` (the
-> "use LST amount" override and the withdrawal underflow-clamp were removed).
-> `tsc`/Prettier pass. **Existing JSON records remain stale until a re-sync** —
-> delete `data/rari-staker-monitor-db.json` and let the monitor rebuild.
+> **Status: fixed & verified (2026-06-03).** Applied across `src/monitor/types.ts`,
+> `StakerMonitor.ts`, and `EventProcessor.ts` (the "use LST amount" override and
+> the withdrawal underflow-clamp were removed). The JSON DB was re-synced from
+> scratch and **all 19 deposits now match `deposits().balance` exactly**. The
+> "Proposed fix" write-up below is retained as the rationale/record.
 
 ### Symptom
 
@@ -279,3 +293,69 @@ stored `amount`.
   (bug #4 was one). Be suspicious of them; prefer verifying decodes against chain.
 - Prefer fixing ABIs in `src/configuration/abis.ts` (engines read fields by name,
   so a correct ABI fixes all callers at once).
+
+---
+
+## 8. Wind-down operations (what's actually running)
+
+For the sunset, the full `src/` bot is shelved. Everything runs through small
+scripts in `scripts/` + one workflow — none of them touch the monitor,
+calculator, executor, DB, or the profitability engines.
+
+### `scripts/claim.ts` — the keeper
+
+Stateless: each run reads live chain state and decides whether to claim. Reuses
+`CONFIG` and the (fixed) ABIs, nothing else.
+
+- **Economic rule:** `claimAndDistributeReward(recipient, minExpected, depositIds)`
+  on the LST makes the caller pay the fixed `payoutAmount` in reward token (the
+  "distribute" to LST holders) and sends the claimed staking rewards to
+  `recipient` (= the wallet). Self-sustaining as long as it only fires when
+  rewards cover the payout. Profit is **not** a goal; gas is the only subsidy.
+- **Trigger:** claims only when `Σ unclaimedReward ≥ payoutAmount + CLAIM_PROFIT_BUFFER`;
+  otherwise logs `⏭️ skip` and exits 0. Deposit IDs are hardcoded (LST-owned 1–18;
+  refresh from the DB if the set changes).
+- **Safety:** report-only by **default** — sends only with `--broadcast`. Always
+  `staticCall`s before sending (a bad encoding reverts in sim, not on-chain).
+  `minExpected = total` (zero slippage tolerance).
+- **Preconditions (first, every run):** wallet must have approved the LST and hold
+  ≥ `payoutAmount` of reward token. Insufficient → **warn** in report-only,
+  **fatal** under `--broadcast` (a misconfigured cron goes red, not silent).
+- **Env knobs:** `CLAIM_PROFIT_BUFFER` (whole reward tokens via `parseEther` — `1`
+  = 1 token, NOT raw units / no `1e18`), `MAX_GAS_PRICE_GWEI`, `CLAIM_GAS_LIMIT`,
+  `CLAIM_RECIPIENT`, plus the standard required vars.
+- **Logs** are emoji-tagged: 🔍 preflight · 💰 totals · ⏭️ skip · 👀 report-only ·
+  🚀 submitting · 📤 sent · ✅/❌ confirmed/failed · ⚠️ warn · ❌ FATAL.
+
+### `scripts/approve.ts` — one-off
+
+Approves the LST for the wallet's reward token (`uint256.max`). Report-only by
+default; `--broadcast` to send; idempotent (no-op if already max). Run once before
+the keeper can claim.
+
+### `.github/workflows/claim.yml` — the schedule
+
+- Runs `claim.ts --broadcast` on an **hourly** cron (cranked up for validation;
+  scale back to e.g. `0 */8 * * *` once proven) + a manual **workflow_dispatch**
+  button that defaults to **report-only**.
+- The cron and the dispatch button only work once the file is on the **default
+  branch (`main`)** — on a feature branch there's no "Run workflow" button and the
+  schedule won't fire.
+- **Secrets:** `RPC_URL`, `PRIVATE_KEY`. Optional **Variable:** `CLAIM_PROFIT_BUFFER`.
+  Public addresses (CHAIN_ID, staker, LST) are inlined in `env:`. Concurrency-
+  guarded (no overlapping runs); `permissions: contents: read`.
+
+### Operator runbook
+
+1. Dedicated, low-balance **keeper wallet**; fund with gas + ~1 `payoutAmount` of
+   reward token (working capital). Don't reuse the key elsewhere.
+2. `tsx scripts/approve.ts --broadcast` once.
+3. Add the two GitHub secrets; merge `claim.yml` to `main`.
+4. Validate via the manual dispatch (report-only), then let the cron run.
+5. Healthy steady state = green `⏭️ skip` runs until rewards cross the threshold,
+   then a green run that actually claims (📤/✅). Red usually = under-funded wallet
+   (a precondition throw); GitHub emails on scheduled-run failures.
+
+> Not yet exercised: a real broadcast claim. As of the Node-24 upgrade the keeper
+> was correctly **skipping** (unclaimed ~30.6 < 51 threshold); the first claim
+> above threshold is the final end-to-end validation, though it is `staticCall`-gated.
