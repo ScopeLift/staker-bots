@@ -118,7 +118,7 @@ async function main() {
     rewardToken.allowance(wallet.address, CONFIG.monitor.lstAddress),
   ]);
   log(
-    `preflight: payoutAmount ${ethers.formatEther(payout)}, allowance ${ethers.formatEther(allowance)}, ` +
+    `preflight: payoutAmount ${ethers.formatEther(payout)}, allowance ${Number(ethers.formatEther(allowance)).toExponential(2)}, ` +
       `reward-token balance ${ethers.formatEther(rewardBalance)}`,
   );
   precondition(
