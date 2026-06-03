@@ -66,6 +66,10 @@ const log = (msg: string, extra?: unknown) =>
   console.log(
     `[${ts()}] ${msg}${extra !== undefined ? ' ' + json(extra) : ''}`,
   );
+// Token amount for logs only: approximate, 4 dp, ~-prefixed. Never use for
+// on-chain math — those stay full-precision bigints.
+const tok = (wei: bigint) =>
+  `~${Number(Number(ethers.formatEther(wei)).toFixed(4))}`;
 
 // Unmet precondition: fatal under --broadcast, warn-and-continue in report-only
 // mode (so a report-only run still produces a report).
@@ -159,14 +163,14 @@ async function main() {
   }
   const threshold = payout + PROFIT_BUFFER;
   log(
-    `💰 unclaimed total ${ethers.formatEther(total)} across ${withRewards.length} deposit(s); ` +
+    `💰 unclaimed total ${tok(total)} across ${withRewards.length} deposit(s); ` +
       `payoutAmount ${ethers.formatEther(payout)} + buffer ${ethers.formatEther(PROFIT_BUFFER)} = threshold ${ethers.formatEther(threshold)}`,
   );
 
   // Only claim when the sweep clears payoutAmount + the profit buffer.
   if (withRewards.length === 0 || total < threshold) {
     log(
-      `⏭️ skip: aggregate unclaimed ${ethers.formatEther(total)} < threshold ${ethers.formatEther(threshold)}; nothing worth claiming yet`,
+      `⏭️ skip: aggregate unclaimed ${tok(total)} < threshold ${ethers.formatEther(threshold)}; nothing worth claiming yet`,
     );
     return;
   }
