@@ -12,9 +12,10 @@ name: Claim and Distribute
 
 on:
   schedule:
-    # Every hour, on the hour. Cranked up for initial validation — scale back
-    # (e.g. '0 */8 * * *') once it's proven stable.
-    - cron: '0 * * * *'
+    # Hourly at :19 — an off-peak minute (avoids the congested top-of-hour, which
+    # GitHub delays heavily). Cranked up for initial validation — scale back
+    # (e.g. '19 */8 * * *') once it's proven stable.
+    - cron: '19 * * * *'
   workflow_dispatch:
     inputs:
       broadcast:
