@@ -72,7 +72,7 @@ const log = (msg: string, extra?: unknown) =>
 function precondition(ok: boolean, message: string): void {
   if (ok) return;
   if (BROADCAST) throw new Error(message);
-  log(`WARN (report-only, continuing): ${message}`);
+  log(`⚠️ WARN (report-only, continuing): ${message}`);
 }
 
 async function main() {
@@ -118,7 +118,7 @@ async function main() {
     rewardToken.allowance(wallet.address, CONFIG.monitor.lstAddress),
   ]);
   log(
-    `preflight: payoutAmount ${ethers.formatEther(payout)}, allowance ${Number(ethers.formatEther(allowance)).toExponential(2)}, ` +
+    `🔍 preflight: payoutAmount ${ethers.formatEther(payout)}, allowance ${Number(ethers.formatEther(allowance)).toExponential(2)}, ` +
       `reward-token balance ${ethers.formatEther(rewardBalance)}`,
   );
   precondition(
@@ -141,7 +141,7 @@ async function main() {
     const ceiling = ethers.parseUnits(process.env.MAX_GAS_PRICE_GWEI, 'gwei');
     if (gasPrice > ceiling) {
       log(
-        `skip: gas price ${ethers.formatUnits(gasPrice, 'gwei')} gwei > ceiling ${process.env.MAX_GAS_PRICE_GWEI} gwei`,
+        `⏭️ skip: gas price ${ethers.formatUnits(gasPrice, 'gwei')} gwei > ceiling ${process.env.MAX_GAS_PRICE_GWEI} gwei`,
       );
       return;
     }
@@ -159,14 +159,14 @@ async function main() {
   }
   const threshold = payout + PROFIT_BUFFER;
   log(
-    `unclaimed total ${ethers.formatEther(total)} across ${withRewards.length} deposit(s); ` +
+    `💰 unclaimed total ${ethers.formatEther(total)} across ${withRewards.length} deposit(s); ` +
       `payoutAmount ${ethers.formatEther(payout)} + buffer ${ethers.formatEther(PROFIT_BUFFER)} = threshold ${ethers.formatEther(threshold)}`,
   );
 
   // Only claim when the sweep clears payoutAmount + the profit buffer.
   if (withRewards.length === 0 || total < threshold) {
     log(
-      `skip: aggregate unclaimed ${ethers.formatEther(total)} < threshold ${ethers.formatEther(threshold)}; nothing worth claiming yet`,
+      `⏭️ skip: aggregate unclaimed ${ethers.formatEther(total)} < threshold ${ethers.formatEther(threshold)}; nothing worth claiming yet`,
     );
     return;
   }
@@ -183,14 +183,14 @@ async function main() {
     );
   } catch (e: any) {
     log(
-      `skip: staticCall reverted — ${e?.shortMessage || e?.reason || e?.message}`,
+      `⏭️ skip: staticCall reverted — ${e?.shortMessage || e?.reason || e?.message}`,
     );
     return;
   }
 
   if (!BROADCAST) {
     log(
-      'report-only (pass --broadcast to send): staticCall succeeded; would submit claimAndDistributeReward',
+      '👀 report-only (pass --broadcast to send): staticCall succeeded; would submit claimAndDistributeReward',
       { deposits: withRewards, minExpected, recipient },
     );
     return;
@@ -210,7 +210,7 @@ async function main() {
     /* fall back to constant */
   }
 
-  log(`submitting claimAndDistributeReward`, {
+  log(`🚀 submitting claimAndDistributeReward`, {
     deposits: withRewards,
     minExpected,
     recipient,
@@ -222,14 +222,14 @@ async function main() {
     withRewards,
     { gasLimit },
   );
-  log(`tx sent ${tx.hash}`);
+  log(`📤 tx sent ${tx.hash}`);
   const rcpt = await tx.wait(1);
   log(
-    `tx ${rcpt?.status === 1 ? 'CONFIRMED' : 'FAILED'} block ${rcpt?.blockNumber} gasUsed ${rcpt?.gasUsed}`,
+    `${rcpt?.status === 1 ? '✅' : '❌'} tx ${rcpt?.status === 1 ? 'CONFIRMED' : 'FAILED'} block ${rcpt?.blockNumber} gasUsed ${rcpt?.gasUsed}`,
   );
 }
 
 main().catch((e) => {
-  console.error(`[${ts()}] FATAL`, e);
+  console.error(`[${ts()}] ❌ FATAL`, e);
   process.exit(1);
 });
