@@ -12,10 +12,12 @@ name: Claim and Distribute
 
 on:
   schedule:
-    # Hourly at :19 — an off-peak minute (avoids the congested top-of-hour, which
-    # GitHub delays heavily). Cranked up for initial validation — scale back
-    # (e.g. '19 */8 * * *') once it's proven stable.
-    - cron: '19 * * * *'
+    # Every 15 min on off-minutes (7/22/37/52) — dodges the congested round marks
+    # (:00/:15/:30/:45) that GitHub delays & drops most. Frequent on purpose so a
+    # claim fires promptly once the threshold is crossed (users aren't left
+    # waiting on rewards). Runs are idempotent + threshold-gated, so the extra
+    # ~20s runs are cheap and harmless.
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
       broadcast:
